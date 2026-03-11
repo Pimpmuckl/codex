@@ -49,6 +49,37 @@ just test
 cargo test --all-features
 ```
 
+### Sync a fork with `openai/codex`
+
+If this checkout is your own fork, plain `git pull` may only update from your fork remote (`origin`) instead of OpenAI's repo (`upstream`).
+
+Use this flow to update your forked `main` to the current `openai/codex` `main`:
+
+```bash
+cd /path/to/codex
+git fetch upstream
+git checkout main
+git reset --hard upstream/main
+git push --force-with-lease origin main
+```
+
+To make future `git pull --ff-only` commands read from OpenAI's `main` by default in this checkout:
+
+```bash
+git branch --set-upstream-to=upstream/main main
+git pull --ff-only
+git push --force-with-lease origin main
+```
+
+On a native Windows x64 host where your default Rust target is already `x86_64-pc-windows-msvc`, build the release executable with:
+
+```bash
+cd codex-rs
+cargo build --release -p codex-cli
+```
+
+The resulting binary will be written to `codex-rs/target/release/codex.exe`.
+
 ## Tracing / verbose logging
 
 Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.
