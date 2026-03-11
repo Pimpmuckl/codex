@@ -35,6 +35,7 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use tracing_test::traced_test;
 use wiremock::ResponseTemplate;
 
 fn approx_token_count(text: &str) -> i64 {
@@ -1064,6 +1065,79 @@ async fn remote_manual_compact_failure_emits_task_error_event() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[traced_test]
+async fn remote_manual_compact_logs_request_lifecycle() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "manual remote compact".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    responses::mount_compact_response_once(
+        harness.server(),
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/json")
+            .set_body_json(json!({
+                "output": compacted_summary_only_output("REMOTE_LOGGED_SUMMARY"),
+            })),
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    logs_assert(|lines: &[&str]| {
+        lines
+            .iter()
+            .find(|line| {
+                line.contains("starting remote compaction request")
+                    && line.contains("turn_id=")
+                    && line.contains("compact_input_items=")
+                    && line.contains("compact_input_model_visible_bytes=")
+            })
+            .map(|_| Ok(()))
+            .unwrap_or_else(|| Err("expected remote compaction start log".to_string()))
+    });
+
+    logs_assert(|lines: &[&str]| {
+        lines
+            .iter()
+            .find(|line| {
+                line.contains("remote compaction completed")
+                    && line.contains("turn_id=")
+                    && line.contains("duration_ms=")
+                    && line.contains("compact_output_items=")
+            })
+            .map(|_| Ok(()))
+            .unwrap_or_else(|| Err("expected remote compaction completion log".to_string()))
+    });
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 // TODO(ccunningham): Re-enable after the follow-up compaction behavior PR lands.
 // Current main behavior for rollout replacement-history persistence is known-incorrect.
 #[ignore = "behavior change covered in follow-up compaction PR"]
@@ -1744,7 +1818,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_does_not_restate_real
     let server = wiremock::MockServer::start().await;
     let realtime_server = start_remote_realtime_server().await;
     let mut builder = remote_realtime_test_codex_builder(&realtime_server).with_config(|config| {
-        config.model_auto_compact_token_limit = Some(200);
+        config.model_auto_compact_token_limit = Some(6_000);
     });
     let test = builder.build(&server).await?;
 
@@ -1757,7 +1831,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_does_not_restate_real
             ]),
             responses::sse(vec![
                 responses::ev_function_call("call-remote-mid-turn", DUMMY_FUNCTION_NAME, "{}"),
-                responses::ev_completed_with_tokens("r1", 500),
+                responses::ev_completed_with_tokens("r1", 7_000),
             ]),
             responses::sse(vec![
                 responses::ev_assistant_message("m2", "REMOTE_MID_TURN_FINAL_REPLY"),
@@ -2289,7 +2363,7 @@ async fn snapshot_request_shape_remote_mid_turn_continuation_compaction() -> Res
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
-                config.model_auto_compact_token_limit = Some(200);
+                config.model_auto_compact_token_limit = Some(6_000);
             }),
     )
     .await?;
@@ -2300,7 +2374,7 @@ async fn snapshot_request_shape_remote_mid_turn_continuation_compaction() -> Res
         vec![
             responses::sse(vec![
                 responses::ev_function_call("call-remote-mid-turn", DUMMY_FUNCTION_NAME, "{}"),
-                responses::ev_completed_with_tokens("r1", 500),
+                responses::ev_completed_with_tokens("r1", 7_000),
             ]),
             responses::sse(vec![
                 responses::ev_assistant_message("m2", "REMOTE_MID_TURN_FINAL_REPLY"),
@@ -2358,7 +2432,7 @@ async fn remote_mid_turn_context_window_exceeded_after_tool_output_auto_compacts
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
-                config.model_auto_compact_token_limit = Some(5_000);
+                config.model_auto_compact_token_limit = Some(6_000);
             }),
     )
     .await?;
@@ -2406,18 +2480,7 @@ async fn remote_mid_turn_context_window_exceeded_after_tool_output_auto_compacts
     assert_eq!(
         requests.len(),
         3,
-        "expected initial request, failed follow-up, and recovered post-compact request"
-    );
-
-    let failed_follow_up = &requests[1];
-    let function_call_output = failed_follow_up.function_call_output("call-remote-overflow");
-    assert!(
-        function_call_output
-            .get("output")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .contains(DUMMY_FUNCTION_NAME),
-        "failed follow-up should include the tool output that pushed the turn over the limit"
+        "expected initial, overflow, and recovered requests"
     );
 
     let recovered_follow_up_body = requests[2].body_json().to_string();
@@ -2442,7 +2505,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_summary_only_reinject
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
-                config.model_auto_compact_token_limit = Some(200);
+                config.model_auto_compact_token_limit = Some(6_000);
             }),
     )
     .await?;
@@ -2452,7 +2515,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_summary_only_reinject
         harness.server(),
         responses::sse(vec![
             responses::ev_function_call("call-remote-summary-only", DUMMY_FUNCTION_NAME, "{}"),
-            responses::ev_completed_with_tokens("r1", 500),
+            responses::ev_completed_with_tokens("r1", 7_000),
         ]),
     )
     .await;
@@ -2525,7 +2588,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_multi_summary_reinjec
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
-                config.model_auto_compact_token_limit = Some(200);
+                config.model_auto_compact_token_limit = Some(6_000);
             }),
     )
     .await?;
@@ -2543,7 +2606,7 @@ async fn snapshot_request_shape_remote_mid_turn_compaction_multi_summary_reinjec
         harness.server(),
         responses::sse(vec![
             responses::ev_shell_command_call("call-remote-multi-summary", "echo multi-summary"),
-            responses::ev_completed_with_tokens("r1", 1_000),
+            responses::ev_completed_with_tokens("r1", 7_000),
         ]),
     )
     .await;

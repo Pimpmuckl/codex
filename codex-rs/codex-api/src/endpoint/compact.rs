@@ -40,7 +40,15 @@ impl<T: HttpTransport, A: AuthProvider> CompactClient<T, A> {
     ) -> Result<Vec<ResponseItem>, ApiError> {
         let resp = self
             .session
-            .execute(Method::POST, Self::path(), extra_headers, Some(body))
+            .execute_with(
+                Method::POST,
+                Self::path(),
+                extra_headers,
+                Some(body),
+                |req| {
+                    req.timeout = Some(self.session.provider().stream_idle_timeout);
+                },
+            )
             .await?;
         let parsed: CompactHistoryResponse =
             serde_json::from_slice(&resp.body).map_err(|e| ApiError::Stream(e.to_string()))?;
@@ -67,10 +75,17 @@ struct CompactHistoryResponse {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use bytes::Bytes;
     use codex_client::Request;
+    use codex_client::RequestCompression;
     use codex_client::Response;
     use codex_client::StreamResponse;
     use codex_client::TransportError;
+    use http::StatusCode;
+    use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     #[derive(Clone, Default)]
     struct DummyTransport;
@@ -95,11 +110,77 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct RecordingTransport {
+        requests: Arc<Mutex<Vec<Request>>>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for RecordingTransport {
+        async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(req);
+            Ok(Response {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: Bytes::from_static(br#"{"output":[]}"#),
+            })
+        }
+
+        async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+            Err(TransportError::Build("stream should not run".to_string()))
+        }
+    }
+
+    fn test_provider(stream_idle_timeout: Duration) -> Provider {
+        Provider {
+            name: "test".to_string(),
+            base_url: "https://example.com/v1".to_string(),
+            query_params: None,
+            headers: HeaderMap::new(),
+            retry: crate::provider::RetryConfig {
+                max_attempts: 0,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout,
+        }
+    }
+
     #[test]
     fn path_is_responses_compact() {
         assert_eq!(
             CompactClient::<DummyTransport, DummyAuth>::path(),
             "responses/compact"
         );
+    }
+
+    #[tokio::test]
+    async fn compact_uses_provider_stream_idle_timeout() -> Result<(), ApiError> {
+        let transport = RecordingTransport::default();
+        let requests = Arc::clone(&transport.requests);
+        let stream_idle_timeout = Duration::from_millis(1234);
+        let client = CompactClient::new(transport, test_provider(stream_idle_timeout), DummyAuth);
+        let input = CompactionInput {
+            model: "gpt-test",
+            input: &[],
+            instructions: "compact this",
+        };
+
+        let output = client.compact_input(&input, HeaderMap::new()).await?;
+        assert!(output.is_empty());
+
+        let requests = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timeout, Some(stream_idle_timeout));
+        assert_eq!(requests[0].compression, RequestCompression::None);
+
+        Ok(())
     }
 }

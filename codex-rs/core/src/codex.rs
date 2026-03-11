@@ -5541,17 +5541,17 @@ pub(crate) async fn run_turn(
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
 
     loop {
-        if mid_turn_follow_up_pending && sess.get_total_token_usage().await >= auto_compact_limit {
-            if run_auto_compact(
+        if mid_turn_follow_up_pending
+            && sess.get_total_token_usage().await >= auto_compact_limit
+            && run_auto_compact(
                 &sess,
                 &turn_context,
                 InitialContextInjection::BeforeLastUserMessage,
             )
             .await
             .is_err()
-            {
-                return None;
-            }
+        {
+            return None;
         }
 
         if let Some(session_start_source) = sess.take_pending_session_start_source().await {

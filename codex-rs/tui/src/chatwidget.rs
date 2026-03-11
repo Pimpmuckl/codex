@@ -89,6 +89,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::parse_command::ParsedCommand;
@@ -115,6 +116,7 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
+use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::ListCustomPromptsResponseEvent;
 use codex_protocol::protocol::ListSkillsResponseEvent;
 use codex_protocol::protocol::McpListToolsResponseEvent;
@@ -5019,7 +5021,25 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => self.on_agent_message("Context compacted".to_owned()),
+            EventMsg::ItemStarted(ItemStartedEvent {
+                item: TurnItem::ContextCompaction(_),
+                ..
+            }) => {
+                if !from_replay {
+                    self.bottom_pane.ensure_status_indicator();
+                    self.bottom_pane.set_interrupt_hint_visible(true);
+                    self.set_status_header(String::from("Compacting context"));
+                }
+            }
+            EventMsg::ContextCompacted(_) => {
+                self.on_agent_message("Context compacted".to_owned());
+                if !from_replay && self.agent_turn_running {
+                    self.bottom_pane.ensure_status_indicator();
+                    self.bottom_pane.set_interrupt_hint_visible(true);
+                    self.set_status_header(String::from("Working"));
+                }
+            }
+            EventMsg::ItemStarted(_) => {}
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,
@@ -5062,7 +5082,6 @@ impl ChatWidget {
                 }
             }
             EventMsg::RawResponseItem(_)
-            | EventMsg::ItemStarted(_)
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
