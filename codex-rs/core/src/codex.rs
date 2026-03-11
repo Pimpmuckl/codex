@@ -5529,6 +5529,7 @@ pub(crate) async fn run_turn(
     let mut last_agent_message: Option<String> = None;
     let mut stop_hook_active = false;
     let mut pending_stop_hook_message: Option<String> = None;
+    let mut mid_turn_follow_up_pending = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
@@ -5540,6 +5541,19 @@ pub(crate) async fn run_turn(
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
 
     loop {
+        if mid_turn_follow_up_pending && sess.get_total_token_usage().await >= auto_compact_limit {
+            if run_auto_compact(
+                &sess,
+                &turn_context,
+                InitialContextInjection::BeforeLastUserMessage,
+            )
+            .await
+            .is_err()
+            {
+                return None;
+            }
+        }
+
         if let Some(session_start_source) = sess.take_pending_session_start_source().await {
             let session_start_permission_mode = match turn_context.approval_policy.value() {
                 AskForApproval::Never => "bypassPermissions",
@@ -5657,6 +5671,7 @@ pub(crate) async fn run_turn(
                     needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
+                mid_turn_follow_up_pending = needs_follow_up;
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= auto_compact_limit;
 
@@ -5806,6 +5821,19 @@ pub(crate) async fn run_turn(
             Err(CodexErr::TurnAborted) => {
                 // Aborted turn is reported via a different event.
                 break;
+            }
+            Err(CodexErr::ContextWindowExceeded) if mid_turn_follow_up_pending => {
+                if run_auto_compact(
+                    &sess,
+                    &turn_context,
+                    InitialContextInjection::BeforeLastUserMessage,
+                )
+                .await
+                .is_err()
+                {
+                    return None;
+                }
+                continue;
             }
             Err(CodexErr::InvalidImageRequest()) => {
                 let mut state = sess.state.lock().await;

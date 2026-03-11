@@ -2351,6 +2351,89 @@ async fn snapshot_request_shape_remote_mid_turn_continuation_compaction() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_mid_turn_context_window_exceeded_after_tool_output_auto_compacts() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                config.model_auto_compact_token_limit = Some(5_000);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![
+            responses::sse(vec![
+                responses::ev_function_call("call-remote-overflow", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("r1", 80),
+            ]),
+            responses::sse_failed(
+                "resp-overflow",
+                "context_length_exceeded",
+                "Your input exceeds the context window of this model. Please adjust your input and try again.",
+            ),
+            responses::sse(vec![
+                responses::ev_assistant_message("m3", "REMOTE_RECOVERED_AFTER_COMPACT"),
+                responses::ev_completed_with_tokens("r3", 60),
+            ]),
+        ],
+    )
+    .await;
+
+    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        &summary_with_prefix("REMOTE_OVERFLOW_SUMMARY"),
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "TRIGGER_REMOTE_TOOL_OVERFLOW".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    assert_eq!(compact_mock.requests().len(), 1);
+    let requests = responses_mock.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected initial request, failed follow-up, and recovered post-compact request"
+    );
+
+    let failed_follow_up = &requests[1];
+    let function_call_output = failed_follow_up.function_call_output("call-remote-overflow");
+    assert!(
+        function_call_output
+            .get("output")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .contains(DUMMY_FUNCTION_NAME),
+        "failed follow-up should include the tool output that pushed the turn over the limit"
+    );
+
+    let recovered_follow_up_body = requests[2].body_json().to_string();
+    assert!(
+        recovered_follow_up_body.contains("\"type\":\"compaction\""),
+        "recovered follow-up should resume from compacted history"
+    );
+    assert!(
+        recovered_follow_up_body.contains("REMOTE_OVERFLOW_SUMMARY"),
+        "recovered follow-up should include the compaction summary"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_request_shape_remote_mid_turn_compaction_summary_only_reinjects_context()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
