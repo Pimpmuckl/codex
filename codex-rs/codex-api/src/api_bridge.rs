@@ -20,6 +20,16 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
+        ApiError::UsageLimitReached {
+            plan_type,
+            resets_at,
+        } => CodexErr::UsageLimitReached(UsageLimitReachedError {
+            plan_type: plan_type.as_deref().map(PlanType::from_raw_value),
+            resets_at: resets_at.and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0)),
+            rate_limits: None,
+            promo_message: None,
+            rate_limit_reached_type: None,
+        }),
         ApiError::Retryable { message, delay } => CodexErr::Stream(message, delay),
         ApiError::Stream(msg) => CodexErr::Stream(msg, None),
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
