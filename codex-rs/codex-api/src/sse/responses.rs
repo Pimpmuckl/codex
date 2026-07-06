@@ -395,6 +395,11 @@ pub fn process_responses_event(
                         response_error = ApiError::QuotaExceeded;
                     } else if is_usage_not_included(&error) {
                         response_error = ApiError::UsageNotIncluded;
+                    } else if is_usage_limit_reached(&error) {
+                        response_error = ApiError::UsageLimitReached {
+                            plan_type: error.plan_type.clone(),
+                            resets_at: error.resets_at,
+                        };
                     } else if is_cyber_policy_error(&error) {
                         let message = cyber_policy_message(error.message);
                         response_error = ApiError::CyberPolicy { message };
@@ -630,6 +635,11 @@ fn is_quota_exceeded_error(error: &Error) -> bool {
 
 fn is_usage_not_included(error: &Error) -> bool {
     error.code.as_deref() == Some("usage_not_included")
+}
+
+fn is_usage_limit_reached(error: &Error) -> bool {
+    error.r#type.as_deref() == Some("usage_limit_reached")
+        || error.code.as_deref() == Some("usage_limit_reached")
 }
 
 fn is_invalid_prompt_error(error: &Error) -> bool {

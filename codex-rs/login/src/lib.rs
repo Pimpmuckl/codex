@@ -1,3 +1,4 @@
+mod account;
 pub mod auth;
 pub mod auth_env_telemetry;
 pub mod token_data;
@@ -7,6 +8,11 @@ mod outbound_proxy;
 mod pkce;
 mod server;
 
+pub use account::AccountAuthScope;
+pub use account::AccountAuthStorage;
+pub use account::AccountId;
+pub use account::AccountProfile;
+pub use account::AccountStore;
 pub use codex_config::types::AuthCredentialsStoreMode;
 pub use codex_http_client::BuildCustomCaTransportError as BuildLoginHttpClientError;
 pub use device_code_auth::DeviceCode;
