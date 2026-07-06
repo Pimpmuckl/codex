@@ -5,8 +5,10 @@ use chrono::Duration;
 use chrono::Utc;
 use codex_app_server_protocol::AuthMode;
 use codex_core::AuthManager;
+use codex_core::ModelClient;
 use codex_core::ModelProviderInfo;
 use codex_core::NewThread;
+use codex_core::Prompt;
 use codex_core::ThreadManager;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthDotJson;
@@ -18,6 +20,10 @@ use codex_core::built_in_model_providers;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::token_data::IdTokenInfo;
 use codex_core::token_data::TokenData;
+use codex_otel::SessionTelemetry;
+use codex_protocol::ThreadId;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -28,6 +34,7 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_models_once_with_etag;
 use core_test_support::responses::mount_response_once;
+use core_test_support::responses::mount_response_sequence;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
@@ -39,9 +46,13 @@ use serde::Serialize;
 use serde_json::json;
 use std::ffi::OsString;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Respond;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -104,6 +115,308 @@ async fn scoped_account_routing_can_use_different_imported_accounts_without_root
     let root_after = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)?
         .context("root auth should exist")?;
     assert_eq!(root_after, root_auth);
+
+    Ok(())
+}
+
+#[serial_test::serial(openai_base_url)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_account_routing_fails_over_after_prestream_usage_limit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    let requests = mount_response_sequence(
+        &server,
+        vec![
+            ResponseTemplate::new(429)
+                .insert_header("x-codex-active-limit", "codex")
+                .insert_header("x-codex-primary-used-percent", "100.0")
+                .insert_header("x-codex-primary-window-minutes", "15")
+                .insert_header("x-codex-primary-reset-at", "1704067242")
+                .set_body_json(json!({
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "message": "limit reached",
+                        "resets_at": 1704067242
+                    }
+                })),
+            sse_response(sse(vec![
+                ev_response_created("resp2"),
+                ev_completed("resp2"),
+            ])),
+        ],
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    save_auth(
+        codex_home.path(),
+        &auth_dot_json(
+            "root-account",
+            "root@example.com",
+            "root-access",
+            "root-refresh",
+        )?,
+        AuthCredentialsStoreMode::File,
+    )?;
+    write_account_auth(
+        &codex_home,
+        "acct_first",
+        &auth_dot_json("account-a", "a@example.com", "access-a", "refresh-a")?,
+    )?;
+    let invalid_auth_path = codex_home.path().join("accounts/acct_second/auth.json");
+    let invalid_account_home = invalid_auth_path
+        .parent()
+        .context("invalid account auth path should have parent")?;
+    std::fs::create_dir_all(invalid_account_home)?;
+    std::fs::write(&invalid_auth_path, b"not json")?;
+    write_account_auth(
+        &codex_home,
+        "acct_third",
+        &auth_dot_json("account-c", "c@example.com", "access-c", "refresh-c")?,
+    )?;
+    write_account_index(
+        &codex_home,
+        &[("acct_first", 0), ("acct_second", 1), ("acct_third", 2)],
+    )?;
+
+    let codex = start_thread(&codex_home, &server).await?;
+    submit_turn(&codex).await?;
+
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        request_headers(&requests, "chatgpt-account-id")?,
+        vec!["account-a".to_string(), "account-c".to_string()]
+    );
+    assert_eq!(
+        request_headers(&requests, "authorization")?,
+        vec!["Bearer access-a".to_string(), "Bearer access-c".to_string()]
+    );
+    assert_eq!(requests[0].body_json(), requests[1].body_json());
+    assert_eq!(requests[1].header("x-codex-turn-state"), None);
+
+    Ok(())
+}
+
+#[serial_test::serial(openai_base_url)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_account_routing_fails_over_unary_compact_after_usage_limit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    type CompactHeaders = Arc<StdMutex<Vec<(Option<String>, Option<String>)>>>;
+
+    #[derive(Debug)]
+    struct CompactFailoverResponder {
+        calls: AtomicUsize,
+        headers: CompactHeaders,
+    }
+
+    impl Respond for CompactFailoverResponder {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let header = |name| {
+                request
+                    .headers
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .map(std::string::ToString::to_string)
+            };
+            self.headers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((header("chatgpt-account-id"), header("authorization")));
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(429).set_body_json(json!({
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "message": "limit reached",
+                        "resets_at": 1704067242
+                    }
+                })),
+                1 => ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(json!({
+                        "output": [{
+                            "type": "compaction",
+                            "encrypted_content": "summary"
+                        }]
+                    })),
+                call => panic!("unexpected compact request {call}"),
+            }
+        }
+    }
+
+    let server = MockServer::start().await;
+    let headers = Arc::new(StdMutex::new(Vec::new()));
+    Mock::given(method("POST"))
+        .and(path("/v1/responses/compact"))
+        .respond_with(CompactFailoverResponder {
+            calls: AtomicUsize::new(0),
+            headers: Arc::clone(&headers),
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let codex_home = TempDir::new()?;
+    save_auth(
+        codex_home.path(),
+        &auth_dot_json(
+            "root-account",
+            "root@example.com",
+            "root-access",
+            "root-refresh",
+        )?,
+        AuthCredentialsStoreMode::File,
+    )?;
+    write_account_auth(
+        &codex_home,
+        "acct_first",
+        &auth_dot_json("account-a", "a@example.com", "access-a", "refresh-a")?,
+    )?;
+    write_account_auth(
+        &codex_home,
+        "acct_second",
+        &auth_dot_json("account-b", "b@example.com", "access-b", "refresh-b")?,
+    )?;
+    write_account_index(&codex_home, &[("acct_first", 0), ("acct_second", 1)])?;
+
+    let auth_manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        false,
+        AuthCredentialsStoreMode::File,
+    );
+    let model_provider = ModelProviderInfo {
+        base_url: Some(format!("{}/v1", server.uri())),
+        ..built_in_model_providers()["openai"].clone()
+    };
+    let mut config = load_default_config_for_test(&codex_home).await;
+    config.model_provider = model_provider.clone();
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let model_verbosity = config.model_verbosity;
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let conversation_id = ThreadId::new();
+    let session_telemetry = SessionTelemetry::new(
+        conversation_id,
+        model.as_str(),
+        model_info.slug.as_str(),
+        None,
+        None,
+        None,
+        "test_originator".to_string(),
+        false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+    let client = ModelClient::new(
+        Some(auth_manager),
+        conversation_id,
+        model_provider,
+        SessionSource::Exec,
+        model_verbosity,
+        false,
+        false,
+        false,
+        None,
+    );
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: Some("user-message".to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "hello".to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    });
+
+    let compacted = client
+        .compact_conversation_history(&prompt, &model_info, &session_telemetry)
+        .await?;
+
+    assert_eq!(
+        compacted,
+        vec![ResponseItem::Compaction {
+            encrypted_content: "summary".to_string()
+        }]
+    );
+    assert_eq!(
+        headers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone(),
+        vec![
+            (
+                Some("account-a".to_string()),
+                Some("Bearer access-a".to_string())
+            ),
+            (
+                Some("account-b".to_string()),
+                Some("Bearer access-b".to_string())
+            )
+        ]
+    );
+
+    Ok(())
+}
+
+#[serial_test::serial(openai_base_url)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_account_routing_does_not_failover_after_streamed_usage_limit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    let requests = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp1"),
+            json!({
+                "type": "response.failed",
+                "response": {
+                    "id": "resp1",
+                    "status": "failed",
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "message": "limit reached",
+                        "resets_at": 1704067242
+                    }
+                }
+            }),
+        ]),
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    save_auth(
+        codex_home.path(),
+        &auth_dot_json(
+            "root-account",
+            "root@example.com",
+            "root-access",
+            "root-refresh",
+        )?,
+        AuthCredentialsStoreMode::File,
+    )?;
+    write_account_auth(
+        &codex_home,
+        "acct_first",
+        &auth_dot_json("account-a", "a@example.com", "access-a", "refresh-a")?,
+    )?;
+    write_account_auth(
+        &codex_home,
+        "acct_second",
+        &auth_dot_json("account-b", "b@example.com", "access-b", "refresh-b")?,
+    )?;
+    write_account_index(&codex_home, &[("acct_first", 0), ("acct_second", 1)])?;
+
+    let codex = start_thread(&codex_home, &server).await?;
+    submit_turn(&codex).await?;
+
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        request_headers(&requests, "chatgpt-account-id")?,
+        vec!["account-a".to_string()]
+    );
 
     Ok(())
 }

@@ -278,6 +278,11 @@ pub fn process_responses_event(
                         response_error = ApiError::QuotaExceeded;
                     } else if is_usage_not_included(&error) {
                         response_error = ApiError::UsageNotIncluded;
+                    } else if is_usage_limit_reached(&error) {
+                        response_error = ApiError::UsageLimitReached {
+                            plan_type: error.plan_type.clone(),
+                            resets_at: error.resets_at,
+                        };
                     } else if is_invalid_prompt_error(&error) {
                         let message = error
                             .message
@@ -464,6 +469,11 @@ fn is_quota_exceeded_error(error: &Error) -> bool {
 
 fn is_usage_not_included(error: &Error) -> bool {
     error.code.as_deref() == Some("usage_not_included")
+}
+
+fn is_usage_limit_reached(error: &Error) -> bool {
+    error.r#type.as_deref() == Some("usage_limit_reached")
+        || error.code.as_deref() == Some("usage_limit_reached")
 }
 
 fn is_invalid_prompt_error(error: &Error) -> bool {
@@ -738,6 +748,24 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         assert_matches!(events[0], Err(ApiError::QuotaExceeded));
+    }
+
+    #[tokio::test]
+    async fn usage_limit_reached_error_is_fatal() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_usage_limit","object":"response","created_at":1759771627,"status":"failed","background":false,"error":{"type":"usage_limit_reached","message":"limit reached","plan_type":"pro","resets_at":4102444800},"incomplete_details":null}}"#;
+
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert_matches!(
+            &events[0],
+            Err(ApiError::UsageLimitReached {
+                plan_type: Some(plan_type),
+                resets_at: Some(4102444800)
+            }) if plan_type == "pro"
+        );
     }
 
     #[tokio::test]

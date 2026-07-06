@@ -1263,6 +1263,23 @@ impl AuthManager {
         }
     }
 
+    pub(crate) fn provider_auth_scopes(&self) -> Vec<ProviderAuthScope> {
+        if !self
+            .auth_cached()
+            .as_ref()
+            .is_some_and(|auth| matches!(auth, CodexAuth::Chatgpt(_)))
+        {
+            return Vec::new();
+        }
+
+        self.accounts_from_index()
+            .into_iter()
+            .map(|selected_account| ProviderAuthScope {
+                selected_account: Some(selected_account),
+            })
+            .collect()
+    }
+
     pub(crate) async fn api_auth_for_scope(
         self: &Arc<Self>,
         scope: &ProviderAuthScope,
@@ -1358,20 +1375,24 @@ impl AuthManager {
     }
 
     fn selected_account_from_index(&self) -> Option<ProviderAuthAccount> {
+        self.accounts_from_index().into_iter().next()
+    }
+
+    fn accounts_from_index(&self) -> Vec<ProviderAuthAccount> {
         let index_path = self.accounts_dir().join(ACCOUNTS_INDEX_FILE);
         let data = match std::fs::read_to_string(index_path) {
             Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
             Err(err) => {
                 tracing::warn!("failed to read accounts index: {err}");
-                return None;
+                return Vec::new();
             }
         };
         let mut index: AccountIndex = match serde_json::from_str(&data) {
             Ok(index) => index,
             Err(err) => {
                 tracing::warn!("failed to parse accounts index: {err}");
-                return None;
+                return Vec::new();
             }
         };
         index
@@ -1389,7 +1410,7 @@ impl AuthManager {
                         auth_home,
                     })
             })
-            .next()
+            .collect()
     }
 
     fn account_home_from_index_auth(&self, auth: &AccountIndexAuth) -> Option<PathBuf> {

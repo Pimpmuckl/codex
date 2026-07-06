@@ -18,6 +18,11 @@ pub enum ApiError {
     QuotaExceeded,
     #[error("usage not included")]
     UsageNotIncluded,
+    #[error("usage limit reached")]
+    UsageLimitReached {
+        plan_type: Option<String>,
+        resets_at: Option<i64>,
+    },
     #[error("retryable error: {message}")]
     Retryable {
         message: String,
