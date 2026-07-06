@@ -3,6 +3,7 @@ use crate::api_bridge::auth_provider_from_auth;
 use crate::api_bridge::map_api_error;
 use crate::auth::AuthManager;
 use crate::auth::AuthMode;
+use crate::auth::ProviderAuthScope;
 use crate::config::Config;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
@@ -18,6 +19,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,10 +57,12 @@ enum CatalogMode {
 #[derive(Debug)]
 pub struct ModelsManager {
     remote_models: RwLock<Vec<ModelInfo>>,
+    scoped_remote_models: RwLock<HashMap<String, Vec<ModelInfo>>>,
     catalog_mode: CatalogMode,
     collaboration_modes_config: CollaborationModesConfig,
     auth_manager: Arc<AuthManager>,
     etag: RwLock<Option<String>>,
+    scoped_etags: RwLock<HashMap<String, Option<String>>>,
     cache_manager: ModelsCacheManager,
     provider: ModelProviderInfo,
 }
@@ -90,10 +94,12 @@ impl ModelsManager {
             });
         Self {
             remote_models: RwLock::new(remote_models),
+            scoped_remote_models: RwLock::new(HashMap::new()),
             catalog_mode,
             collaboration_modes_config,
             auth_manager,
             etag: RwLock::new(None),
+            scoped_etags: RwLock::new(HashMap::new()),
             cache_manager,
             provider: ModelProviderInfo::create_openai_provider(),
         }
@@ -103,10 +109,23 @@ impl ModelsManager {
     ///
     /// Returns model presets sorted by priority and filtered by auth mode and visibility.
     pub async fn list_models(&self, refresh_strategy: RefreshStrategy) -> Vec<ModelPreset> {
-        if let Err(err) = self.refresh_available_models(refresh_strategy).await {
+        let provider_auth_scope = self.auth_manager.default_provider_auth_scope();
+        self.list_models_for_scope(&provider_auth_scope, refresh_strategy)
+            .await
+    }
+
+    pub(crate) async fn list_models_for_scope(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+        refresh_strategy: RefreshStrategy,
+    ) -> Vec<ModelPreset> {
+        if let Err(err) = self
+            .refresh_available_models_for_scope(provider_auth_scope, refresh_strategy)
+            .await
+        {
             error!("failed to refresh available models: {err}");
         }
-        let remote_models = self.get_remote_models().await;
+        let remote_models = self.get_remote_models_for_scope(provider_auth_scope).await;
         self.build_available_models(remote_models)
     }
 
@@ -142,13 +161,27 @@ impl ModelsManager {
         model: &Option<String>,
         refresh_strategy: RefreshStrategy,
     ) -> String {
+        let provider_auth_scope = self.auth_manager.default_provider_auth_scope();
+        self.get_default_model_for_scope(model, &provider_auth_scope, refresh_strategy)
+            .await
+    }
+
+    pub(crate) async fn get_default_model_for_scope(
+        &self,
+        model: &Option<String>,
+        provider_auth_scope: &ProviderAuthScope,
+        refresh_strategy: RefreshStrategy,
+    ) -> String {
         if let Some(model) = model.as_ref() {
             return model.to_string();
         }
-        if let Err(err) = self.refresh_available_models(refresh_strategy).await {
+        if let Err(err) = self
+            .refresh_available_models_for_scope(provider_auth_scope, refresh_strategy)
+            .await
+        {
             error!("failed to refresh available models: {err}");
         }
-        let remote_models = self.get_remote_models().await;
+        let remote_models = self.get_remote_models_for_scope(provider_auth_scope).await;
         let available = self.build_available_models(remote_models);
         available
             .iter()
@@ -162,6 +195,16 @@ impl ModelsManager {
     /// Look up model metadata, applying remote overrides and config adjustments.
     pub async fn get_model_info(&self, model: &str, config: &Config) -> ModelInfo {
         let remote_models = self.get_remote_models().await;
+        Self::construct_model_info_from_candidates(model, &remote_models, config)
+    }
+
+    pub(crate) async fn get_model_info_for_scope(
+        &self,
+        model: &str,
+        provider_auth_scope: &ProviderAuthScope,
+        config: &Config,
+    ) -> ModelInfo {
+        let remote_models = self.get_remote_models_for_scope(provider_auth_scope).await;
         Self::construct_model_info_from_candidates(model, &remote_models, config)
     }
 
@@ -222,34 +265,54 @@ impl ModelsManager {
         model_info::with_config_overrides(model_info, config)
     }
 
-    /// Refresh models if the provided ETag differs from the cached ETag.
-    ///
-    /// Uses `Online` strategy to fetch latest models when ETags differ.
-    pub(crate) async fn refresh_if_new_etag(&self, etag: String) {
-        let current_etag = self.get_etag().await;
+    pub(crate) async fn refresh_if_new_etag_for_scope(
+        &self,
+        etag: String,
+        provider_auth_scope: &ProviderAuthScope,
+    ) {
+        let current_etag = self.get_etag_for_scope(provider_auth_scope).await;
         if current_etag.clone().is_some() && current_etag.as_deref() == Some(etag.as_str()) {
-            if let Err(err) = self.cache_manager.renew_cache_ttl().await {
+            if !provider_auth_scope.is_account_scoped()
+                && let Err(err) = self.cache_manager.renew_cache_ttl().await
+            {
                 error!("failed to renew cache TTL: {err}");
             }
             return;
         }
-        if let Err(err) = self.refresh_available_models(RefreshStrategy::Online).await {
+        if let Err(err) = self
+            .refresh_available_models_for_scope(provider_auth_scope, RefreshStrategy::Online)
+            .await
+        {
             error!("failed to refresh available models: {err}");
         }
     }
 
     /// Refresh available models according to the specified strategy.
+    #[cfg(test)]
     async fn refresh_available_models(&self, refresh_strategy: RefreshStrategy) -> CoreResult<()> {
+        let provider_auth_scope = self.auth_manager.default_provider_auth_scope();
+        self.refresh_available_models_for_scope(&provider_auth_scope, refresh_strategy)
+            .await
+    }
+
+    async fn refresh_available_models_for_scope(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+        refresh_strategy: RefreshStrategy,
+    ) -> CoreResult<()> {
         // don't override the custom model catalog if one was provided by the user
         if matches!(self.catalog_mode, CatalogMode::Custom) {
             return Ok(());
         }
+        let account_scoped = provider_auth_scope.is_account_scoped();
 
         if self.auth_manager.auth_mode() != Some(AuthMode::Chatgpt) {
-            if matches!(
-                refresh_strategy,
-                RefreshStrategy::Offline | RefreshStrategy::OnlineIfUncached
-            ) {
+            if !account_scoped
+                && matches!(
+                    refresh_strategy,
+                    RefreshStrategy::Offline | RefreshStrategy::OnlineIfUncached
+                )
+            {
                 self.try_load_cache().await;
             }
             return Ok(());
@@ -258,32 +321,49 @@ impl ModelsManager {
         match refresh_strategy {
             RefreshStrategy::Offline => {
                 // Only try to load from cache, never fetch
-                self.try_load_cache().await;
+                if !account_scoped {
+                    self.try_load_cache().await;
+                }
                 Ok(())
             }
             RefreshStrategy::OnlineIfUncached => {
                 // Try cache first, fall back to online if unavailable
-                if self.try_load_cache().await {
+                if account_scoped && self.has_remote_models_for_scope(provider_auth_scope).await {
+                    info!("models cache: using scoped models for OnlineIfUncached");
+                    return Ok(());
+                }
+                if !account_scoped && self.try_load_cache().await {
                     info!("models cache: using cached models for OnlineIfUncached");
                     return Ok(());
                 }
                 info!("models cache: cache miss, fetching remote models");
-                self.fetch_and_update_models().await
+                self.fetch_and_update_models(provider_auth_scope).await
             }
             RefreshStrategy::Online => {
                 // Always fetch from network
-                self.fetch_and_update_models().await
+                self.fetch_and_update_models(provider_auth_scope).await
             }
         }
     }
 
-    async fn fetch_and_update_models(&self) -> CoreResult<()> {
+    async fn fetch_and_update_models(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+    ) -> CoreResult<()> {
         let _timer =
             codex_otel::start_global_timer("codex.remote_models.fetch_update.duration_ms", &[]);
-        let auth = self.auth_manager.auth().await;
-        let auth_mode = self.auth_manager.auth_mode();
-        let api_provider = self.provider.to_api_provider(auth_mode)?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        let resolved_auth = self
+            .auth_manager
+            .api_auth_for_scope(provider_auth_scope)
+            .await;
+        if resolved_auth.effective_auth_mode != Some(AuthMode::Chatgpt) {
+            return Ok(());
+        }
+
+        let api_provider = self
+            .provider
+            .to_api_provider(resolved_auth.effective_auth_mode)?;
+        let api_auth = auth_provider_from_auth(resolved_auth.auth.clone(), &self.provider)?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let client = ModelsClient::new(transport, api_provider, api_auth);
 
@@ -296,11 +376,15 @@ impl ModelsManager {
         .map_err(|_| CodexErr::Timeout)?
         .map_err(map_api_error)?;
 
-        self.apply_remote_models(models.clone()).await;
-        *self.etag.write().await = etag.clone();
-        self.cache_manager
-            .persist_cache(&models, etag, client_version)
+        self.apply_remote_models_for_scope(provider_auth_scope, models.clone())
             .await;
+        self.set_etag_for_scope(provider_auth_scope, etag.clone())
+            .await;
+        if !provider_auth_scope.is_account_scoped() {
+            self.cache_manager
+                .persist_cache(&models, etag, client_version)
+                .await;
+        }
         Ok(())
     }
 
@@ -308,8 +392,56 @@ impl ModelsManager {
         self.etag.read().await.clone()
     }
 
+    async fn get_etag_for_scope(&self, provider_auth_scope: &ProviderAuthScope) -> Option<String> {
+        let Some(account_id) = provider_auth_scope.selected_account_id() else {
+            return self.get_etag().await;
+        };
+        self.scoped_etags
+            .read()
+            .await
+            .get(account_id)
+            .cloned()
+            .flatten()
+    }
+
+    async fn set_etag_for_scope(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+        etag: Option<String>,
+    ) {
+        if let Some(account_id) = provider_auth_scope.selected_account_id() {
+            self.scoped_etags
+                .write()
+                .await
+                .insert(account_id.to_string(), etag);
+        } else {
+            *self.etag.write().await = etag;
+        }
+    }
+
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
+        let existing_models = Self::merge_remote_models(models);
+        *self.remote_models.write().await = existing_models;
+    }
+
+    async fn apply_remote_models_for_scope(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+        models: Vec<ModelInfo>,
+    ) {
+        if let Some(account_id) = provider_auth_scope.selected_account_id() {
+            let existing_models = Self::merge_remote_models(models);
+            self.scoped_remote_models
+                .write()
+                .await
+                .insert(account_id.to_string(), existing_models);
+        } else {
+            self.apply_remote_models(models).await;
+        }
+    }
+
+    fn merge_remote_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
         let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
         for model in models {
             if let Some(existing_index) = existing_models
@@ -321,7 +453,7 @@ impl ModelsManager {
                 existing_models.push(model);
             }
         }
-        *self.remote_models.write().await = existing_models;
+        existing_models
     }
 
     fn load_remote_models_from_file() -> Result<Vec<ModelInfo>, std::io::Error> {
@@ -371,6 +503,38 @@ impl ModelsManager {
         self.remote_models.read().await.clone()
     }
 
+    async fn get_remote_models_for_scope(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+    ) -> Vec<ModelInfo> {
+        let Some(account_id) = provider_auth_scope.selected_account_id() else {
+            return self.get_remote_models().await;
+        };
+        if let Some(models) = self
+            .scoped_remote_models
+            .read()
+            .await
+            .get(account_id)
+            .cloned()
+        {
+            models
+        } else if matches!(self.catalog_mode, CatalogMode::Custom) {
+            self.get_remote_models().await
+        } else {
+            Self::load_remote_models_from_file().unwrap_or_default()
+        }
+    }
+
+    async fn has_remote_models_for_scope(&self, provider_auth_scope: &ProviderAuthScope) -> bool {
+        let Some(account_id) = provider_auth_scope.selected_account_id() else {
+            return false;
+        };
+        self.scoped_remote_models
+            .read()
+            .await
+            .contains_key(account_id)
+    }
+
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
         Ok(self.remote_models.try_read()?.clone())
     }
@@ -388,10 +552,12 @@ impl ModelsManager {
                 Self::load_remote_models_from_file()
                     .unwrap_or_else(|err| panic!("failed to load bundled models.json: {err}")),
             ),
+            scoped_remote_models: RwLock::new(HashMap::new()),
             catalog_mode: CatalogMode::Default,
             collaboration_modes_config: CollaborationModesConfig::default(),
             auth_manager,
             etag: RwLock::new(None),
+            scoped_etags: RwLock::new(HashMap::new()),
             cache_manager,
             provider,
         }

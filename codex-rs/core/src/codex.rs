@@ -17,6 +17,7 @@ use crate::analytics_client::AppInvocation;
 use crate::analytics_client::InvocationType;
 use crate::analytics_client::build_track_events_context;
 use crate::apps::render_apps_section;
+use crate::auth::ProviderAuthScope;
 use crate::commit_attribution::commit_message_trailer_instruction;
 use crate::compact;
 use crate::compact::InitialContextInjection;
@@ -438,6 +439,7 @@ impl Codex {
         };
 
         let config = Arc::new(config);
+        let provider_auth_scope = auth_manager.default_provider_auth_scope();
         let refresh_strategy = match session_source {
             SessionSource::SubAgent(_) => crate::models_manager::manager::RefreshStrategy::Offline,
             _ => crate::models_manager::manager::RefreshStrategy::OnlineIfUncached,
@@ -448,17 +450,21 @@ impl Codex {
                 crate::models_manager::manager::RefreshStrategy::Offline
             )
         {
-            let _ = models_manager.list_models(refresh_strategy).await;
+            let _ = models_manager
+                .list_models_for_scope(&provider_auth_scope, refresh_strategy)
+                .await;
         }
         let model = models_manager
-            .get_default_model(&config.model, refresh_strategy)
+            .get_default_model_for_scope(&config.model, &provider_auth_scope, refresh_strategy)
             .await;
 
         // Resolve base instructions for the session. Priority order:
         // 1. config.base_instructions override
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
-        let model_info = models_manager.get_model_info(model.as_str(), &config).await;
+        let model_info = models_manager
+            .get_model_info_for_scope(model.as_str(), &provider_auth_scope, &config)
+            .await;
         let base_instructions = config
             .base_instructions
             .clone()
@@ -538,6 +544,7 @@ impl Codex {
             session_configuration,
             config.clone(),
             auth_manager.clone(),
+            provider_auth_scope,
             models_manager.clone(),
             exec_policy,
             tx_event.clone(),
@@ -1251,6 +1258,7 @@ impl Session {
         mut session_configuration: SessionConfiguration,
         config: Arc<Config>,
         auth_manager: Arc<AuthManager>,
+        provider_auth_scope: ProviderAuthScope,
         models_manager: Arc<ModelsManager>,
         exec_policy: ExecPolicyManager,
         tx_event: Sender<Event>,
@@ -1634,8 +1642,9 @@ impl Session {
             network_proxy,
             network_approval: Arc::clone(&network_approval),
             state_db: state_db_ctx.clone(),
-            model_client: ModelClient::new(
+            model_client: ModelClient::new_with_provider_auth_scope(
                 Some(Arc::clone(&auth_manager)),
+                provider_auth_scope,
                 conversation_id,
                 session_configuration.provider.clone(),
                 session_configuration.session_source.clone(),
@@ -2292,8 +2301,9 @@ impl Session {
         let model_info = self
             .services
             .models_manager
-            .get_model_info(
+            .get_model_info_for_scope(
                 session_configuration.collaboration_mode.model(),
+                &self.services.model_client.provider_auth_scope(),
                 &per_turn_config,
             )
             .await;
@@ -7098,7 +7108,13 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::ModelsEtag(etag) => {
                 // Update internal state with latest models etag
-                sess.services.models_manager.refresh_if_new_etag(etag).await;
+                sess.services
+                    .models_manager
+                    .refresh_if_new_etag_for_scope(
+                        etag,
+                        &sess.services.model_client.provider_auth_scope(),
+                    )
+                    .await;
             }
             ResponseEvent::Completed {
                 response_id: _,

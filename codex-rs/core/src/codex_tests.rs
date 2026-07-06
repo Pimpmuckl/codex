@@ -1,5 +1,6 @@
 use super::*;
 use crate::CodexAuth;
+use crate::auth::ProviderAuthScope;
 use crate::config::ConfigBuilder;
 use crate::config::test_config;
 use crate::config_loader::ConfigLayerStack;
@@ -2084,6 +2085,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         session_configuration,
         Arc::clone(&config),
         auth_manager,
+        ProviderAuthScope::default(),
         models_manager,
         ExecPolicyManager::default(),
         tx_event,
