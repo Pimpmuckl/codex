@@ -1,7 +1,13 @@
+mod account;
 mod device_code_auth;
 mod pkce;
 mod server;
 
+pub use account::AccountAuthScope;
+pub use account::AccountAuthStorage;
+pub use account::AccountId;
+pub use account::AccountProfile;
+pub use account::AccountStore;
 pub use device_code_auth::DeviceCode;
 pub use device_code_auth::complete_device_code_login;
 pub use device_code_auth::request_device_code;

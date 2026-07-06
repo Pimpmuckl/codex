@@ -34,6 +34,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use supports_color::Stream;
 
+mod account_cmd;
 #[cfg(target_os = "macos")]
 mod app_cmd;
 #[cfg(target_os = "macos")]
@@ -42,6 +43,7 @@ mod mcp_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
+use crate::account_cmd::AccountCli;
 use crate::mcp_cmd::McpCli;
 
 use codex_core::config::Config;
@@ -95,6 +97,9 @@ enum Subcommand {
 
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
+
+    /// Manage ChatGPT accounts.
+    Account(AccountCli),
 
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
@@ -707,6 +712,13 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 root_config_overrides.clone(),
             );
             run_logout(logout_cli.config_overrides).await;
+        }
+        Some(Subcommand::Account(mut account_cli)) => {
+            prepend_config_flags(
+                &mut account_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            account_cmd::run_account_command(account_cli).await?;
         }
         Some(Subcommand::Completion(completion_cli)) => {
             print_completion(completion_cli);
