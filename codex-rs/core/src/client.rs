@@ -24,6 +24,7 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -94,6 +95,7 @@ use crate::config::Config;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
+use crate::error::UsageLimitReachedError;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
@@ -132,6 +134,7 @@ struct ModelClientState {
     beta_features_header: Option<String>,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
+    usage_limit_cooldowns: StdMutex<HashMap<UsageLimitCooldownKey, UsageLimitCooldown>>,
     provider_auth_scope: ProviderAuthScope,
 }
 
@@ -190,6 +193,7 @@ pub struct ModelClientSession {
     /// keep sending it unchanged between turn requests (e.g., for retries, incremental
     /// appends, or continuation requests), and must not send it between different turns.
     turn_state: Arc<OnceLock<String>>,
+    provider_auth_scope: ProviderAuthScope,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +208,22 @@ struct WebsocketSession {
     last_request: Option<ResponsesApiRequest>,
     last_response_rx: Option<oneshot::Receiver<LastResponse>>,
 }
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct UsageLimitCooldownKey {
+    account_id: String,
+    limit_id: String,
+    rate_limit_reached_type: &'static str,
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UsageLimitCooldown {
+    key: UsageLimitCooldownKey,
+    resets_at: Option<i64>,
+}
+
+const USAGE_LIMIT_COOLDOWN_FALLBACK_SECONDS: i64 = 5 * 60;
 
 enum WebsocketStreamOutcome {
     Stream(ResponseStream),
@@ -272,6 +292,7 @@ impl ModelClient {
                 beta_features_header,
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                usage_limit_cooldowns: StdMutex::new(HashMap::new()),
                 provider_auth_scope,
             }),
         }
@@ -286,6 +307,7 @@ impl ModelClient {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
             turn_state: Arc::new(OnceLock::new()),
+            provider_auth_scope: self.provider_auth_scope(),
         }
     }
 
@@ -322,13 +344,6 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
-        let client_setup = self.current_client_setup().await?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(session_telemetry);
-        let client =
-            ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
-
         let instructions = prompt.base_instructions.text.clone();
         let payload = ApiCompactionInput {
             model: &model_info.slug,
@@ -340,10 +355,40 @@ impl ModelClient {
         extra_headers.extend(build_conversation_headers(Some(
             self.state.conversation_id.to_string(),
         )));
-        client
-            .compact_input(&payload, extra_headers)
-            .await
-            .map_err(map_api_error)
+        let mut provider_auth_scope = self.provider_auth_scope();
+        let mut attempted_account_ids = HashSet::new();
+        loop {
+            let client_setup = self
+                .current_unary_client_setup(
+                    &mut provider_auth_scope,
+                    &mut attempted_account_ids,
+                    model_info,
+                )
+                .await?;
+            let transport = ReqwestTransport::new(build_reqwest_client());
+            let request_telemetry = Self::build_request_telemetry(session_telemetry);
+            let client =
+                ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+                    .with_telemetry(Some(request_telemetry));
+            match client
+                .compact_input(&payload, extra_headers.clone())
+                .await
+                .map_err(map_api_error)
+            {
+                Ok(items) => return Ok(items),
+                Err(CodexErr::UsageLimitReached(usage_limit))
+                    if self.retry_unary_after_usage_limit(
+                        &mut provider_auth_scope,
+                        &mut attempted_account_ids,
+                        model_info,
+                        &usage_limit,
+                    ) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// Builds memory summaries for each provided normalized raw memory.
@@ -363,13 +408,6 @@ impl ModelClient {
             return Ok(Vec::new());
         }
 
-        let client_setup = self.current_client_setup().await?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(session_telemetry);
-        let client =
-            ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
-
         let payload = ApiMemorySummarizeInput {
             model: model_info.slug.clone(),
             raw_memories,
@@ -379,10 +417,41 @@ impl ModelClient {
             }),
         };
 
-        client
-            .summarize_input(&payload, self.build_subagent_headers())
-            .await
-            .map_err(map_api_error)
+        let extra_headers = self.build_subagent_headers();
+        let mut provider_auth_scope = self.provider_auth_scope();
+        let mut attempted_account_ids = HashSet::new();
+        loop {
+            let client_setup = self
+                .current_unary_client_setup(
+                    &mut provider_auth_scope,
+                    &mut attempted_account_ids,
+                    model_info,
+                )
+                .await?;
+            let transport = ReqwestTransport::new(build_reqwest_client());
+            let request_telemetry = Self::build_request_telemetry(session_telemetry);
+            let client =
+                ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+                    .with_telemetry(Some(request_telemetry));
+            match client
+                .summarize_input(&payload, extra_headers.clone())
+                .await
+                .map_err(map_api_error)
+            {
+                Ok(items) => return Ok(items),
+                Err(CodexErr::UsageLimitReached(usage_limit))
+                    if self.retry_unary_after_usage_limit(
+                        &mut provider_auth_scope,
+                        &mut attempted_account_ids,
+                        model_info,
+                        &usage_limit,
+                    ) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     fn build_subagent_headers(&self) -> ApiHeaderMap {
@@ -437,17 +506,210 @@ impl ModelClient {
         self.provider_auth_scope().is_account_scoped()
     }
 
+    async fn current_unary_client_setup(
+        &self,
+        provider_auth_scope: &mut ProviderAuthScope,
+        attempted_account_ids: &mut HashSet<String>,
+        model_info: &ModelInfo,
+    ) -> Result<CurrentClientSetup> {
+        loop {
+            if provider_auth_scope
+                .selected_account_id()
+                .is_some_and(|account_id| self.is_usage_limit_cooled(account_id, model_info))
+                && self.advance_provider_auth_scope(
+                    provider_auth_scope,
+                    attempted_account_ids,
+                    model_info,
+                )
+            {
+                continue;
+            }
+
+            let client_setup = self.current_client_setup(provider_auth_scope).await?;
+            if !provider_auth_scope.is_account_scoped() || client_setup.auth.is_some() {
+                return Ok(client_setup);
+            }
+            if self.advance_provider_auth_scope(
+                provider_auth_scope,
+                attempted_account_ids,
+                model_info,
+            ) {
+                continue;
+            }
+            return Ok(client_setup);
+        }
+    }
+
+    fn retry_unary_after_usage_limit(
+        &self,
+        provider_auth_scope: &mut ProviderAuthScope,
+        attempted_account_ids: &mut HashSet<String>,
+        model_info: &ModelInfo,
+        usage_limit: &UsageLimitReachedError,
+    ) -> bool {
+        self.record_usage_limit_cooldown(provider_auth_scope, model_info, usage_limit);
+        self.advance_provider_auth_scope(provider_auth_scope, attempted_account_ids, model_info)
+    }
+
+    fn advance_provider_auth_scope(
+        &self,
+        provider_auth_scope: &mut ProviderAuthScope,
+        attempted_account_ids: &mut HashSet<String>,
+        model_info: &ModelInfo,
+    ) -> bool {
+        let Some(account_id) = provider_auth_scope
+            .selected_account_id()
+            .map(ToString::to_string)
+        else {
+            return false;
+        };
+        attempted_account_ids.insert(account_id);
+        let Some(next_scope) =
+            self.next_provider_auth_scope(provider_auth_scope, attempted_account_ids, model_info)
+        else {
+            return false;
+        };
+        *provider_auth_scope = next_scope;
+        true
+    }
+
+    fn next_provider_auth_scope(
+        &self,
+        current_scope: &ProviderAuthScope,
+        attempted_account_ids: &HashSet<String>,
+        model_info: &ModelInfo,
+    ) -> Option<ProviderAuthScope> {
+        let scopes = self
+            .state
+            .auth_manager
+            .as_ref()
+            .map(|manager| manager.provider_auth_scopes())
+            .unwrap_or_default();
+        let current_id = current_scope.selected_account_id();
+        let start = current_id
+            .and_then(|id| {
+                scopes
+                    .iter()
+                    .position(|scope| scope.selected_account_id() == Some(id))
+            })
+            .map_or(0, |index| index + 1);
+
+        for offset in 0..scopes.len() {
+            let scope = scopes[(start + offset) % scopes.len()].clone();
+            let Some(account_id) = scope.selected_account_id() else {
+                continue;
+            };
+            if current_id == Some(account_id) || attempted_account_ids.contains(account_id) {
+                continue;
+            }
+            if self.is_usage_limit_cooled(account_id, model_info) {
+                continue;
+            }
+            return Some(scope);
+        }
+
+        None
+    }
+
+    fn record_usage_limit_cooldown(
+        &self,
+        scope: &ProviderAuthScope,
+        model_info: &ModelInfo,
+        usage_limit: &UsageLimitReachedError,
+    ) {
+        let Some(account_id) = scope.selected_account_id() else {
+            return;
+        };
+        let rate_limits_missing = usage_limit.rate_limits.is_none();
+        let limit_id = usage_limit
+            .rate_limits
+            .as_ref()
+            .and_then(|snapshot| snapshot.limit_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or("codex")
+            .to_string();
+        let key = UsageLimitCooldownKey {
+            account_id: account_id.to_string(),
+            limit_id,
+            rate_limit_reached_type: "usage_limit_reached",
+            model: rate_limits_missing.then(|| model_info.slug.clone()),
+        };
+        let resets_at = usage_limit
+            .resets_at
+            .as_ref()
+            .map(chrono::DateTime::timestamp);
+        let resets_at = resets_at.or_else(|| {
+            let snapshot = usage_limit.rate_limits.as_ref()?;
+            let primary = snapshot.primary.as_ref();
+            let secondary = snapshot.secondary.as_ref();
+            primary
+                .filter(|window| window.used_percent >= 100.0)
+                .and_then(|window| window.resets_at)
+                .into_iter()
+                .chain(
+                    secondary
+                        .filter(|window| window.used_percent >= 100.0)
+                        .and_then(|window| window.resets_at),
+                )
+                .max()
+                .or_else(|| {
+                    primary
+                        .and_then(|window| window.resets_at)
+                        .into_iter()
+                        .chain(secondary.and_then(|window| window.resets_at))
+                        .max()
+                })
+        });
+        let resets_at = resets_at.or_else(|| {
+            Some(chrono::Utc::now().timestamp() + USAGE_LIMIT_COOLDOWN_FALLBACK_SECONDS)
+        });
+        let cooldown = UsageLimitCooldown {
+            key: key.clone(),
+            resets_at,
+        };
+        trace!(
+            account_id,
+            resets_at = ?cooldown.resets_at,
+            limit_id = %key.limit_id,
+            model = ?key.model,
+            "recorded usage-limit cooldown"
+        );
+        self.state
+            .usage_limit_cooldowns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, cooldown);
+    }
+
+    fn is_usage_limit_cooled(&self, account_id: &str, model_info: &ModelInfo) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        let mut cooldowns = self
+            .state
+            .usage_limit_cooldowns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cooldowns.retain(|_, cooldown| cooldown.resets_at.is_none_or(|reset| reset > now));
+        cooldowns.values().any(|cooldown| {
+            cooldown.key.account_id == account_id
+                && cooldown
+                    .key
+                    .model
+                    .as_deref()
+                    .is_none_or(|model| model == model_info.slug)
+        })
+    }
+
     /// Returns auth + provider configuration resolved from the current session auth state.
     ///
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
-    async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+    async fn current_client_setup(
+        &self,
+        provider_auth_scope: &ProviderAuthScope,
+    ) -> Result<CurrentClientSetup> {
         let resolved_auth = match self.state.auth_manager.as_ref() {
-            Some(manager) => {
-                manager
-                    .api_auth_for_scope(&self.provider_auth_scope())
-                    .await
-            }
+            Some(manager) => manager.api_auth_for_scope(provider_auth_scope).await,
             None => crate::auth::ResolvedProviderAuth {
                 auth: None,
                 auth_manager: None,
@@ -734,11 +996,15 @@ impl ModelClientSession {
             return Ok(());
         }
 
-        let client_setup = self.client.current_client_setup().await.map_err(|err| {
-            ApiError::Stream(format!(
-                "failed to build websocket prewarm client setup: {err}"
-            ))
-        })?;
+        let client_setup = self
+            .client
+            .current_client_setup(&self.provider_auth_scope)
+            .await
+            .map_err(|err| {
+                ApiError::Stream(format!(
+                    "failed to build websocket prewarm client setup: {err}"
+                ))
+            })?;
 
         let connection = self
             .client
@@ -806,13 +1072,99 @@ impl ModelClientSession {
         }
     }
 
+    fn skip_cooled_provider_auth_scope(
+        &mut self,
+        model_info: &ModelInfo,
+        attempted_account_ids: &mut HashSet<String>,
+    ) {
+        let Some(account_id) = self.provider_auth_scope.selected_account_id() else {
+            return;
+        };
+        if !self.client.is_usage_limit_cooled(account_id, model_info) {
+            return;
+        }
+
+        attempted_account_ids.insert(account_id.to_string());
+        if let Some(next_scope) = self.client.next_provider_auth_scope(
+            &self.provider_auth_scope,
+            attempted_account_ids,
+            model_info,
+        ) {
+            self.switch_provider_auth_scope(next_scope);
+        }
+    }
+
+    fn failover_after_usage_limit(
+        &mut self,
+        failed_scope: &ProviderAuthScope,
+        model_info: &ModelInfo,
+        usage_limit: &UsageLimitReachedError,
+        attempted_account_ids: &mut HashSet<String>,
+    ) -> bool {
+        let Some(account_id) = failed_scope.selected_account_id() else {
+            return false;
+        };
+        attempted_account_ids.insert(account_id.to_string());
+        self.client
+            .record_usage_limit_cooldown(failed_scope, model_info, usage_limit);
+        let Some(next_scope) =
+            self.client
+                .next_provider_auth_scope(failed_scope, attempted_account_ids, model_info)
+        else {
+            return false;
+        };
+        trace!(
+            failed_account_id = account_id,
+            next_account_id = ?next_scope.selected_account_id(),
+            "failing over after pre-stream usage limit"
+        );
+        self.switch_provider_auth_scope(next_scope);
+        true
+    }
+
+    fn skip_unavailable_account_scope(
+        &mut self,
+        request_scope: &ProviderAuthScope,
+        client_setup: &CurrentClientSetup,
+        model_info: &ModelInfo,
+        attempted_account_ids: &mut HashSet<String>,
+    ) -> bool {
+        if !request_scope.is_account_scoped() || client_setup.auth.is_some() {
+            return false;
+        }
+        let Some(account_id) = request_scope.selected_account_id() else {
+            return false;
+        };
+
+        attempted_account_ids.insert(account_id.to_string());
+        let Some(next_scope) =
+            self.client
+                .next_provider_auth_scope(request_scope, attempted_account_ids, model_info)
+        else {
+            return false;
+        };
+        trace!(
+            unavailable_account_id = account_id,
+            next_account_id = ?next_scope.selected_account_id(),
+            "skipping unavailable imported account"
+        );
+        self.switch_provider_auth_scope(next_scope);
+        true
+    }
+
+    fn switch_provider_auth_scope(&mut self, provider_auth_scope: ProviderAuthScope) {
+        self.provider_auth_scope = provider_auth_scope;
+        self.websocket_session = WebsocketSession::default();
+        self.turn_state = Arc::new(OnceLock::new());
+    }
+
     /// Streams a turn via the OpenAI Responses API.
     ///
     /// Handles SSE fixtures, reasoning summaries, verbosity, and the
     /// `text` controls used for output schemas.
     #[allow(clippy::too_many_arguments)]
     async fn stream_responses_api(
-        &self,
+        &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
@@ -833,8 +1185,20 @@ impl ModelClientSession {
         }
 
         let mut auth_recovery = None;
+        let mut attempted_account_ids = HashSet::new();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            self.skip_cooled_provider_auth_scope(model_info, &mut attempted_account_ids);
+            let request_scope = self.provider_auth_scope.clone();
+            let client_setup = self.client.current_client_setup(&request_scope).await?;
+            if self.skip_unavailable_account_scope(
+                &request_scope,
+                &client_setup,
+                model_info,
+                &mut attempted_account_ids,
+            ) {
+                auth_recovery = None;
+                continue;
+            }
             if auth_recovery.is_none() {
                 auth_recovery = client_setup
                     .auth_manager
@@ -874,7 +1238,22 @@ impl ModelClientSession {
                     handle_unauthorized(unauthorized_transport, &mut auth_recovery).await?;
                     continue;
                 }
-                Err(err) => return Err(map_api_error(err)),
+                Err(err) => {
+                    let err = map_api_error(err);
+                    if let CodexErr::UsageLimitReached(usage_limit) = err {
+                        if self.failover_after_usage_limit(
+                            &request_scope,
+                            model_info,
+                            &usage_limit,
+                            &mut attempted_account_ids,
+                        ) {
+                            auth_recovery = None;
+                            continue;
+                        }
+                        return Err(CodexErr::UsageLimitReached(usage_limit));
+                    }
+                    return Err(err);
+                }
             }
         }
     }
@@ -894,7 +1273,10 @@ impl ModelClientSession {
     ) -> Result<WebsocketStreamOutcome> {
         let mut auth_recovery = None;
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let client_setup = self
+                .client
+                .current_client_setup(&self.provider_auth_scope)
+                .await?;
             if auth_recovery.is_none() {
                 auth_recovery = client_setup
                     .auth_manager
