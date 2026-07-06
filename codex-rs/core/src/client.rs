@@ -85,6 +85,7 @@ use tracing::warn;
 
 use crate::AuthManager;
 use crate::auth::CodexAuth;
+use crate::auth::ProviderAuthScope;
 use crate::auth::RefreshTokenError;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -131,6 +132,7 @@ struct ModelClientState {
     beta_features_header: Option<String>,
     disable_websockets: AtomicBool,
     cached_websocket_session: StdMutex<WebsocketSession>,
+    provider_auth_scope: ProviderAuthScope,
 }
 
 /// Resolved API client setup for a single request attempt.
@@ -139,6 +141,7 @@ struct ModelClientState {
 /// share the same auth/provider setup flow.
 struct CurrentClientSetup {
     auth: Option<CodexAuth>,
+    auth_manager: Option<Arc<AuthManager>>,
     api_provider: codex_api::Provider,
     api_auth: CoreAuthProvider,
 }
@@ -224,6 +227,38 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
     ) -> Self {
+        let provider_auth_scope = auth_manager
+            .as_ref()
+            .map_or_else(ProviderAuthScope::default, |manager| {
+                manager.default_provider_auth_scope()
+            });
+        Self::new_with_provider_auth_scope(
+            auth_manager,
+            provider_auth_scope,
+            conversation_id,
+            provider,
+            session_source,
+            model_verbosity,
+            responses_websockets_enabled_by_feature,
+            enable_request_compression,
+            include_timing_metrics,
+            beta_features_header,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_provider_auth_scope(
+        auth_manager: Option<Arc<AuthManager>>,
+        provider_auth_scope: ProviderAuthScope,
+        conversation_id: ThreadId,
+        provider: ModelProviderInfo,
+        session_source: SessionSource,
+        model_verbosity: Option<VerbosityConfig>,
+        responses_websockets_enabled_by_feature: bool,
+        enable_request_compression: bool,
+        include_timing_metrics: bool,
+        beta_features_header: Option<String>,
+    ) -> Self {
         Self {
             state: Arc::new(ModelClientState {
                 auth_manager,
@@ -237,6 +272,7 @@ impl ModelClient {
                 beta_features_header,
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                provider_auth_scope,
             }),
         }
     }
@@ -385,6 +421,7 @@ impl ModelClient {
     pub fn responses_websocket_enabled(&self, model_info: &ModelInfo) -> bool {
         if !self.state.provider.supports_websockets
             || self.state.disable_websockets.load(Ordering::Relaxed)
+            || self.uses_account_scoped_auth()
         {
             return false;
         }
@@ -392,22 +429,44 @@ impl ModelClient {
         self.state.responses_websockets_enabled_by_feature || model_info.prefer_websockets
     }
 
+    pub(crate) fn provider_auth_scope(&self) -> ProviderAuthScope {
+        self.state.provider_auth_scope.clone()
+    }
+
+    fn uses_account_scoped_auth(&self) -> bool {
+        self.provider_auth_scope().is_account_scoped()
+    }
+
     /// Returns auth + provider configuration resolved from the current session auth state.
     ///
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
     async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
-        let auth = match self.state.auth_manager.as_ref() {
-            Some(manager) => manager.auth().await,
-            None => None,
+        let resolved_auth = match self.state.auth_manager.as_ref() {
+            Some(manager) => {
+                manager
+                    .api_auth_for_scope(&self.provider_auth_scope())
+                    .await
+            }
+            None => crate::auth::ResolvedProviderAuth {
+                auth: None,
+                auth_manager: None,
+                selected_account_id: None,
+                effective_auth_mode: None,
+            },
         };
         let api_provider = self
             .state
             .provider
-            .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.state.provider)?;
+            .to_api_provider(resolved_auth.effective_auth_mode)?;
+        trace!(
+            selected_account_id = ?resolved_auth.selected_account_id,
+            "resolved provider auth"
+        );
+        let api_auth = auth_provider_from_auth(resolved_auth.auth.clone(), &self.state.provider)?;
         Ok(CurrentClientSetup {
-            auth,
+            auth: resolved_auth.auth,
+            auth_manager: resolved_auth.auth_manager,
             api_provider,
             api_auth,
         })
@@ -665,6 +724,9 @@ impl ModelClientSession {
         session_telemetry: &SessionTelemetry,
         model_info: &ModelInfo,
     ) -> std::result::Result<(), ApiError> {
+        if self.client.uses_account_scoped_auth() {
+            return Ok(());
+        }
         if !self.client.responses_websocket_enabled(model_info) {
             return Ok(());
         }
@@ -770,12 +832,15 @@ impl ModelClientSession {
             return Ok(stream);
         }
 
-        let auth_manager = self.client.state.auth_manager.clone();
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(super::auth::AuthManager::unauthorized_recovery);
+        let mut auth_recovery = None;
         loop {
             let client_setup = self.client.current_client_setup().await?;
+            if auth_recovery.is_none() {
+                auth_recovery = client_setup
+                    .auth_manager
+                    .as_ref()
+                    .map(super::auth::AuthManager::unauthorized_recovery);
+            }
             let transport = ReqwestTransport::new(build_reqwest_client());
             let (request_telemetry, sse_telemetry) =
                 Self::build_streaming_telemetry(session_telemetry);
@@ -827,13 +892,15 @@ impl ModelClientSession {
         turn_metadata_header: Option<&str>,
         warmup: bool,
     ) -> Result<WebsocketStreamOutcome> {
-        let auth_manager = self.client.state.auth_manager.clone();
-
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(super::auth::AuthManager::unauthorized_recovery);
+        let mut auth_recovery = None;
         loop {
             let client_setup = self.client.current_client_setup().await?;
+            if auth_recovery.is_none() {
+                auth_recovery = client_setup
+                    .auth_manager
+                    .as_ref()
+                    .map(super::auth::AuthManager::unauthorized_recovery);
+            }
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
 
             let options = self.build_responses_options(turn_metadata_header, compression);
@@ -929,6 +996,9 @@ impl ModelClientSession {
         service_tier: Option<ServiceTier>,
         turn_metadata_header: Option<&str>,
     ) -> Result<()> {
+        if self.client.uses_account_scoped_auth() {
+            return Ok(());
+        }
         if !self.client.responses_websocket_enabled(model_info) {
             return Ok(());
         }

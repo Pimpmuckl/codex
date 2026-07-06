@@ -9,6 +9,7 @@ use serde::Serialize;
 use serial_test::serial;
 use std::env;
 use std::fmt::Debug;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -372,6 +373,60 @@ impl ChatgptAuth {
 
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
 pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
+const ACCOUNTS_DIR: &str = "accounts";
+const ACCOUNTS_INDEX_FILE: &str = "index.json";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProviderAuthScope {
+    selected_account: Option<ProviderAuthAccount>,
+}
+
+impl ProviderAuthScope {
+    pub(crate) fn is_account_scoped(&self) -> bool {
+        self.selected_account.is_some()
+    }
+
+    pub(crate) fn selected_account_id(&self) -> Option<&str> {
+        self.selected_account
+            .as_ref()
+            .map(|account| account.id.as_str())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProviderAuthAccount {
+    id: String,
+    auth_home: PathBuf,
+}
+
+pub(crate) struct ResolvedProviderAuth {
+    pub(crate) auth: Option<CodexAuth>,
+    pub(crate) auth_manager: Option<Arc<AuthManager>>,
+    pub(crate) selected_account_id: Option<String>,
+    pub(crate) effective_auth_mode: Option<AuthMode>,
+}
+
+#[derive(Deserialize)]
+struct AccountIndex {
+    #[serde(default)]
+    accounts: Vec<AccountIndexEntry>,
+}
+
+#[derive(Deserialize)]
+struct AccountIndexEntry {
+    id: String,
+    #[serde(default = "default_account_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    priority: u32,
+    auth: AccountIndexAuth,
+}
+
+#[derive(Deserialize)]
+struct AccountIndexAuth {
+    scope: String,
+    path: String,
+}
 
 pub fn read_openai_api_key_from_env() -> Option<String> {
     env::var(OPENAI_API_KEY_ENV_VAR)
@@ -552,6 +607,10 @@ fn logout_all_stores(
     let removed_ephemeral = logout(codex_home, AuthCredentialsStoreMode::Ephemeral)?;
     let removed_managed = logout(codex_home, auth_credentials_store_mode)?;
     Ok(removed_ephemeral || removed_managed)
+}
+
+fn default_account_enabled() -> bool {
+    true
 }
 
 fn load_auth(
@@ -1188,6 +1247,180 @@ impl AuthManager {
 
     pub fn unauthorized_recovery(self: &Arc<Self>) -> UnauthorizedRecovery {
         UnauthorizedRecovery::new(Arc::clone(self))
+    }
+
+    pub(crate) fn default_provider_auth_scope(&self) -> ProviderAuthScope {
+        if !self
+            .auth_cached()
+            .as_ref()
+            .is_some_and(|auth| matches!(auth, CodexAuth::Chatgpt(_)))
+        {
+            return ProviderAuthScope::default();
+        }
+
+        ProviderAuthScope {
+            selected_account: self.selected_account_from_index(),
+        }
+    }
+
+    pub(crate) async fn api_auth_for_scope(
+        self: &Arc<Self>,
+        scope: &ProviderAuthScope,
+    ) -> ResolvedProviderAuth {
+        if let Some(selected_account) = scope.selected_account.clone() {
+            if !self
+                .auth_cached()
+                .as_ref()
+                .is_some_and(|auth| matches!(auth, CodexAuth::Chatgpt(_)))
+            {
+                let auth = self.auth().await;
+                let effective_auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
+                return ResolvedProviderAuth {
+                    auth,
+                    auth_manager: Some(Arc::clone(self)),
+                    selected_account_id: None,
+                    effective_auth_mode,
+                };
+            }
+
+            let ProviderAuthAccount {
+                id: selected_account_id,
+                auth_home,
+            } = selected_account;
+            let account_manager = Self::shared(
+                auth_home,
+                self.enable_codex_api_key_env,
+                AuthCredentialsStoreMode::File,
+            );
+            let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
+            account_manager.set_forced_chatgpt_workspace_id(forced_chatgpt_workspace_id.clone());
+            if let Some(expected_account_id) = forced_chatgpt_workspace_id.as_ref() {
+                let cached_auth = account_manager.auth_cached();
+                let actual_account_id = cached_auth
+                    .as_ref()
+                    .and_then(|auth| auth.get_token_data().ok())
+                    .and_then(|tokens| tokens.id_token.chatgpt_account_id);
+                if actual_account_id.as_deref() != Some(expected_account_id.as_str()) {
+                    tracing::warn!(
+                        selected_account_id,
+                        expected_account_id,
+                        actual_account_id,
+                        "ignoring selected account because it violates forced workspace"
+                    );
+                    return ResolvedProviderAuth {
+                        auth: None,
+                        auth_manager: None,
+                        selected_account_id: None,
+                        effective_auth_mode: None,
+                    };
+                }
+            }
+            let auth = account_manager.auth().await;
+            if let (Some(expected_account_id), Some(auth)) =
+                (forced_chatgpt_workspace_id, auth.as_ref())
+            {
+                let actual_account_id = auth
+                    .get_token_data()
+                    .ok()
+                    .and_then(|tokens| tokens.id_token.chatgpt_account_id);
+                if actual_account_id.as_deref() != Some(expected_account_id.as_str()) {
+                    tracing::warn!(
+                        selected_account_id,
+                        expected_account_id,
+                        actual_account_id,
+                        "ignoring selected account because it violates forced workspace"
+                    );
+                    return ResolvedProviderAuth {
+                        auth: None,
+                        auth_manager: None,
+                        selected_account_id: None,
+                        effective_auth_mode: None,
+                    };
+                }
+            }
+            let effective_auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
+            return ResolvedProviderAuth {
+                auth,
+                auth_manager: Some(account_manager),
+                selected_account_id: Some(selected_account_id),
+                effective_auth_mode,
+            };
+        }
+
+        let auth = self.auth().await;
+        let effective_auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
+        ResolvedProviderAuth {
+            auth,
+            auth_manager: Some(Arc::clone(self)),
+            selected_account_id: None,
+            effective_auth_mode,
+        }
+    }
+
+    fn selected_account_from_index(&self) -> Option<ProviderAuthAccount> {
+        let index_path = self.accounts_dir().join(ACCOUNTS_INDEX_FILE);
+        let data = match std::fs::read_to_string(index_path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) => {
+                tracing::warn!("failed to read accounts index: {err}");
+                return None;
+            }
+        };
+        let mut index: AccountIndex = match serde_json::from_str(&data) {
+            Ok(index) => index,
+            Err(err) => {
+                tracing::warn!("failed to parse accounts index: {err}");
+                return None;
+            }
+        };
+        index
+            .accounts
+            .sort_by_key(|account| (account.priority, account.id.clone()));
+        index
+            .accounts
+            .into_iter()
+            .filter(|account| account.enabled)
+            .filter_map(|account| {
+                self.account_home_from_index_auth(&account.auth)
+                    .filter(|home| home.join("auth.json").is_file())
+                    .map(|auth_home| ProviderAuthAccount {
+                        id: account.id,
+                        auth_home,
+                    })
+            })
+            .next()
+    }
+
+    fn account_home_from_index_auth(&self, auth: &AccountIndexAuth) -> Option<PathBuf> {
+        if auth.scope != "file" {
+            tracing::warn!(scope = %auth.scope, "ignoring unsupported account auth scope");
+            return None;
+        }
+        let path = Path::new(&auth.path);
+        if path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                )
+            })
+        {
+            tracing::warn!("ignoring invalid account auth path");
+            return None;
+        }
+        let auth_path = self.codex_home.join(path);
+        match auth_path.file_name().and_then(|name| name.to_str()) {
+            Some("auth.json") => auth_path.parent().map(Path::to_path_buf),
+            _ => {
+                tracing::warn!("ignoring account auth path that does not target auth.json");
+                None
+            }
+        }
+    }
+
+    fn accounts_dir(&self) -> PathBuf {
+        self.codex_home.join(ACCOUNTS_DIR)
     }
 
     /// Attempt to refresh the token by first performing a guarded reload. Auth
