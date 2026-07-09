@@ -221,6 +221,73 @@ async fn activate_imported_account_selects_requested_account() {
     );
 }
 
+#[tokio::test]
+async fn logout_clears_imported_accounts_that_startup_would_select() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let manager = test_auth_manager(codex_home.path()).await;
+    assert_eq!(manager.active_account_id(), Some(first.id.clone()));
+
+    assert!(manager.logout().await.expect("logout"));
+
+    assert_eq!(manager.active_account_id(), None);
+    assert!(manager.auth_cached().is_none());
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load root auth"),
+        None
+    );
+    assert_eq!(
+        load_auth_dot_json(
+            &store.account_home(&first.id),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load first account auth"),
+        None
+    );
+    assert_eq!(
+        load_auth_dot_json(
+            &store.account_home(&second.id),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load second account auth"),
+        None
+    );
+    assert_eq!(
+        store.candidates().expect("candidates"),
+        vec![
+            AccountCandidate {
+                id: first.id.clone(),
+                display_label: "first".to_string(),
+                priority: first.priority,
+                enabled: false,
+                usage_limit_resets_at: None,
+                blocked: false,
+            },
+            AccountCandidate {
+                id: second.id.clone(),
+                display_label: "second".to_string(),
+                priority: second.priority,
+                enabled: false,
+                usage_limit_resets_at: None,
+                blocked: false,
+            },
+        ]
+    );
+    let restarted = test_auth_manager(codex_home.path()).await;
+    assert_eq!(restarted.active_account_id(), None);
+    assert_eq!(restarted.auth_mode(), None);
+}
+
 async fn test_auth_manager(codex_home: &std::path::Path) -> std::sync::Arc<AuthManager> {
     test_auth_manager_with_forced_workspace(codex_home, Vec::new()).await
 }

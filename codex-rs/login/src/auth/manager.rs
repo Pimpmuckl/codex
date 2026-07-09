@@ -2758,14 +2758,10 @@ impl AuthManager {
     /// reloads the in‑memory auth cache so callers immediately observe the
     /// unauthenticated state.
     pub async fn logout(&self) -> std::io::Result<bool> {
-        let auth_home = self.active_auth_home();
-        let removed = logout_all_stores(
-            &auth_home,
-            self.active_auth_credentials_store_mode(),
-            self.active_keyring_backend_kind(),
-        )?;
+        let removed = self.logout_all_managed_auth()?;
         // Always reload to clear any cached auth (even if file absent).
         self.clear_external_auth();
+        self.clear_active_imported_account();
         self.reload().await;
         Ok(removed)
     }
@@ -2779,16 +2775,39 @@ impl AuthManager {
         {
             tracing::warn!("failed to revoke auth tokens during logout: {err}");
         }
-        let auth_home = self.active_auth_home();
-        let result = logout_all_stores(
-            &auth_home,
-            self.active_auth_credentials_store_mode(),
-            self.active_keyring_backend_kind(),
-        )?;
+        let result = self.logout_all_managed_auth()?;
         // Always reload to clear any cached auth (even if file absent).
         self.clear_external_auth();
+        self.clear_active_imported_account();
         self.reload().await;
         Ok(result)
+    }
+
+    fn logout_all_managed_auth(&self) -> std::io::Result<bool> {
+        let mut removed = logout_all_stores(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            self.keyring_backend_kind,
+        )?;
+        let account_store = AccountStore::new(self.codex_home.clone());
+        for (_account, account_home) in account_store.enabled_file_account_profiles()? {
+            removed |= logout_all_stores(
+                &account_home,
+                AuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::default(),
+            )?;
+        }
+        removed |= account_store.disable_all()?;
+        Ok(removed)
+    }
+
+    fn clear_active_imported_account(&self) {
+        if let Ok(mut active_account_id) = self.active_account_id.write() {
+            *active_account_id = None;
+        }
+        if let Ok(mut active_auth_home) = self.active_auth_home.write() {
+            *active_auth_home = self.codex_home.clone();
+        }
     }
 
     /// Returns the precise kind of credentials backing the current authentication.

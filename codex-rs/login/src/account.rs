@@ -191,6 +191,21 @@ impl AccountStore {
         Ok(true)
     }
 
+    pub(crate) fn disable_all(&self) -> std::io::Result<bool> {
+        let mut index = self.load_index()?;
+        let mut changed = false;
+        for account in &mut index.accounts {
+            if account.enabled {
+                account.enabled = false;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_index(&index)?;
+        }
+        Ok(changed)
+    }
+
     pub fn enabled_file_accounts(&self) -> std::io::Result<Vec<(AccountId, PathBuf)>> {
         Ok(self
             .enabled_file_account_profiles()?

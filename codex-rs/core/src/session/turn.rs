@@ -1197,6 +1197,7 @@ async fn run_sampling_request(
                         .switch_to_next_imported_account(&usage_limit_account_attempts)
                         .await
                     {
+                        client_session.reset_websocket_session();
                         if original_input.is_none() {
                             original_input = Some(prompt.input);
                         }
