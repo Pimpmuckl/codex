@@ -65,6 +65,44 @@ fn import_current_uses_email_label_when_label_is_omitted() {
 }
 
 #[test]
+fn import_current_reenables_existing_account_profile() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    assert!(store.disable_all().expect("disable accounts"));
+    save_root_test_auth(codex_home.path(), "account-a");
+
+    let profile = store
+        .import_current(
+            Some("first again".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("re-import account");
+
+    assert_eq!(
+        store.candidates().expect("candidates"),
+        vec![AccountCandidate {
+            id: profile.id.clone(),
+            display_label: "first again".to_string(),
+            priority: first.priority,
+            enabled: true,
+            usage_limit_resets_at: None,
+            blocked: false,
+        }]
+    );
+    assert!(
+        load_auth_dot_json(
+            &store.account_home(&profile.id),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load reimported auth")
+        .is_some()
+    );
+}
+
+#[test]
 fn candidates_include_usage_limit_blocked_state() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());

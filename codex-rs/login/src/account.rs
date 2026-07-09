@@ -126,12 +126,11 @@ impl AccountStore {
         let priority = existing
             .map(|profile| profile.priority)
             .unwrap_or_else(|| next_priority(&index.accounts));
-        let enabled = existing.map(|profile| profile.enabled).unwrap_or(true);
         let usage_limit_resets_at = existing.and_then(|profile| profile.usage_limit_resets_at);
         let profile = AccountProfile {
             id: account_id,
             label,
-            enabled,
+            enabled: true,
             priority,
             usage_limit_resets_at,
             auth,
