@@ -6,7 +6,9 @@ use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
 use std::fmt;
+use std::io;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::AuthDotJson;
@@ -240,7 +242,6 @@ impl AccountStore {
     fn save_index(&self, index: &AccountIndex) -> std::io::Result<()> {
         let accounts_dir = self.accounts_dir();
         std::fs::create_dir_all(&accounts_dir)?;
-        let path = self.index_path();
         let temp_path = accounts_dir.join("index.json.tmp");
         let json = serde_json::to_vec_pretty(index).map_err(std::io::Error::other)?;
         {
@@ -248,7 +249,49 @@ impl AccountStore {
             file.write_all(&json)?;
             file.flush()?;
         }
-        std::fs::rename(temp_path, path)
+        replace_file(&temp_path, &self.index_path())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+#[cfg(windows)]
+fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let from: Vec<u16> = from
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain(iter::once(0)).collect();
+
+    let replaced = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
