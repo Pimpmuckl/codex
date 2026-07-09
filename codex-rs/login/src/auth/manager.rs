@@ -39,8 +39,11 @@ use super::agent_identity::require_agent_identity_authapi_base_url;
 use super::agent_identity::verified_record_from_jwt;
 use super::external_bearer::BearerTokenRefresher;
 use super::revoke::revoke_auth_tokens;
+use crate::account::AccountCandidate;
 use crate::account::AccountId;
+use crate::account::AccountProfile;
 use crate::account::AccountStore;
+use crate::account::account_id_for_auth;
 use crate::auth::AuthHeaders;
 pub use crate::auth::agent_identity::AgentIdentityAuth;
 pub use crate::auth::agent_identity::AgentIdentityAuthError;
@@ -1838,35 +1841,90 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
     agent_identity_authapi_base_url(/*chatgpt_base_url*/ None).ok()
 }
 
-async fn load_first_imported_account_auth(
+async fn load_initial_imported_account_auth(
     codex_home: &Path,
+    root_auth: Option<&CodexAuth>,
     forced_chatgpt_workspace_id: Option<&[String]>,
     chatgpt_base_url: Option<&str>,
     agent_identity_authapi_base_url: Option<&str>,
     auth_route_config: Option<&AuthRouteConfig>,
 ) -> Option<(AccountId, PathBuf, CodexAuth)> {
-    for (account_id, account_home) in AccountStore::new(codex_home.to_path_buf())
-        .enabled_file_accounts()
-        .unwrap_or_default()
+    let accounts = AccountStore::new(codex_home.to_path_buf())
+        .enabled_file_account_profiles()
+        .unwrap_or_default();
+
+    if let Some(root_account_id) = root_auth
+        .and_then(CodexAuth::get_current_auth_json)
+        .and_then(|auth| account_id_for_auth(&auth).ok())
     {
-        let auth = load_auth(
-            &account_home,
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            forced_chatgpt_workspace_id,
-            chatgpt_base_url,
-            AuthKeyringBackendKind::default(),
-            agent_identity_authapi_base_url,
-            auth_route_config,
-        )
-        .await
-        .ok()
-        .flatten();
-        if let Some(auth) = auth.filter(CodexAuth::is_chatgpt_auth) {
-            return Some((account_id, account_home, auth));
+        for (account, account_home) in &accounts {
+            if account.id != root_account_id {
+                continue;
+            }
+            if let Some(auth) = load_imported_account_auth(
+                account_home,
+                forced_chatgpt_workspace_id,
+                chatgpt_base_url,
+                agent_identity_authapi_base_url,
+                auth_route_config,
+            )
+            .await
+            {
+                return Some((account.id.clone(), account_home.clone(), auth));
+            }
         }
     }
+
+    let now = Utc::now().timestamp();
+    for blocked in [false, true] {
+        for (account, account_home) in &accounts {
+            if imported_account_blocked(account, now) != blocked {
+                continue;
+            }
+            if let Some(auth) = load_imported_account_auth(
+                account_home,
+                forced_chatgpt_workspace_id,
+                chatgpt_base_url,
+                agent_identity_authapi_base_url,
+                auth_route_config,
+            )
+            .await
+            {
+                return Some((account.id.clone(), account_home.clone(), auth));
+            }
+        }
+    }
+
     None
+}
+
+fn imported_account_blocked(account: &AccountProfile, now: i64) -> bool {
+    account
+        .usage_limit_resets_at
+        .is_some_and(|resets_at| resets_at > now)
+}
+
+async fn load_imported_account_auth(
+    account_home: &Path,
+    forced_chatgpt_workspace_id: Option<&[String]>,
+    chatgpt_base_url: Option<&str>,
+    agent_identity_authapi_base_url: Option<&str>,
+    auth_route_config: Option<&AuthRouteConfig>,
+) -> Option<CodexAuth> {
+    load_auth(
+        account_home,
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        forced_chatgpt_workspace_id,
+        chatgpt_base_url,
+        AuthKeyringBackendKind::default(),
+        agent_identity_authapi_base_url,
+        auth_route_config,
+    )
+    .await
+    .ok()
+    .flatten()
+    .filter(CodexAuth::is_chatgpt_auth)
 }
 
 impl AuthManager {
@@ -1910,8 +1968,9 @@ impl AuthManager {
         };
         let (active_account_id, active_auth_home, managed_auth) = if should_prefer_imported_accounts
         {
-            match load_first_imported_account_auth(
+            match load_initial_imported_account_auth(
                 &codex_home,
+                root_auth.as_ref(),
                 forced_chatgpt_workspace_id.as_deref(),
                 chatgpt_base_url.as_deref(),
                 agent_identity_authapi_base_url.as_deref(),
@@ -2351,12 +2410,57 @@ impl AuthManager {
             .is_ok_and(|accounts| !accounts.is_empty())
     }
 
+    pub fn account_candidates(&self) -> std::io::Result<Vec<AccountCandidate>> {
+        AccountStore::new(self.codex_home.clone()).candidates()
+    }
+
+    pub async fn activate_imported_account(&self, account_id: &AccountId) -> std::io::Result<()> {
+        let (account, account_home) = AccountStore::new(self.codex_home.clone())
+            .enabled_file_account_profiles()?
+            .into_iter()
+            .find(|(account, _)| &account.id == account_id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("imported account {account_id} is not enabled or does not exist"),
+                )
+            })?;
+
+        let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
+        let auth = load_imported_account_auth(
+            &account_home,
+            forced_chatgpt_workspace_id.as_deref(),
+            self.chatgpt_base_url.as_deref(),
+            self.agent_identity_authapi_base_url.as_deref(),
+            self.auth_route_config.as_ref(),
+        )
+        .await
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("imported account {account_id} does not contain usable ChatGPT auth"),
+            )
+        })?;
+
+        self.set_active_imported_account(account.id, account_home, auth);
+        Ok(())
+    }
+
+    pub fn record_imported_account_usage_limit_resets_at(
+        &self,
+        account_id: &AccountId,
+        resets_at: i64,
+    ) -> std::io::Result<bool> {
+        AccountStore::new(self.codex_home.clone())
+            .record_usage_limit_resets_at(account_id, resets_at)
+    }
+
     pub async fn switch_to_next_imported_account(
         &self,
         attempted_account_ids: &HashSet<String>,
     ) -> bool {
         let accounts = AccountStore::new(self.codex_home.clone())
-            .enabled_file_accounts()
+            .enabled_file_account_profiles()
             .unwrap_or_default();
         let active_account_id = self.active_account_id();
         if active_account_id.is_some() && accounts.len() < 2 {
@@ -2369,49 +2473,53 @@ impl AuthManager {
             .and_then(|current| {
                 accounts
                     .iter()
-                    .position(|(account_id, _)| account_id.as_str() == current)
+                    .position(|(account, _)| account.id.as_str() == current)
             })
             .map_or(0, |index| index + 1);
 
-        for offset in 0..accounts.len() {
-            let (account_id, account_home) = accounts[(start + offset) % accounts.len()].clone();
-            if current_id.as_deref() == Some(account_id.as_str())
-                || attempted_account_ids.contains(account_id.as_str())
-            {
-                continue;
+        let now = Utc::now().timestamp();
+        for blocked in [false, true] {
+            for offset in 0..accounts.len() {
+                let (account, account_home) = &accounts[(start + offset) % accounts.len()];
+                if current_id.as_deref() == Some(account.id.as_str())
+                    || attempted_account_ids.contains(account.id.as_str())
+                    || imported_account_blocked(account, now) != blocked
+                {
+                    continue;
+                }
+                let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
+                let Some(auth) = load_imported_account_auth(
+                    account_home,
+                    forced_chatgpt_workspace_id.as_deref(),
+                    self.chatgpt_base_url.as_deref(),
+                    self.agent_identity_authapi_base_url.as_deref(),
+                    self.auth_route_config.as_ref(),
+                )
+                .await
+                else {
+                    continue;
+                };
+                self.set_active_imported_account(account.id.clone(), account_home.clone(), auth);
+                return true;
             }
-            let Some(auth) = self.load_imported_account_auth(&account_home).await else {
-                continue;
-            };
-            if let Ok(mut active_account_id) = self.active_account_id.write() {
-                *active_account_id = Some(account_id);
-            }
-            if let Ok(mut active_auth_home) = self.active_auth_home.write() {
-                *active_auth_home = account_home;
-            }
-            self.set_cached_auth(Some(auth));
-            return true;
         }
 
         false
     }
 
-    async fn load_imported_account_auth(&self, account_home: &Path) -> Option<CodexAuth> {
-        let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
-        load_auth(
-            account_home,
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            forced_chatgpt_workspace_id.as_deref(),
-            self.chatgpt_base_url.as_deref(),
-            AuthKeyringBackendKind::default(),
-            self.agent_identity_authapi_base_url.as_deref(),
-            self.auth_route_config.as_ref(),
-        )
-        .await
-        .ok()
-        .flatten()
-        .filter(CodexAuth::is_chatgpt_auth)
+    fn set_active_imported_account(
+        &self,
+        account_id: AccountId,
+        account_home: PathBuf,
+        auth: CodexAuth,
+    ) {
+        if let Ok(mut active_account_id) = self.active_account_id.write() {
+            *active_account_id = Some(account_id);
+        }
+        if let Ok(mut active_auth_home) = self.active_auth_home.write() {
+            *active_auth_home = account_home;
+        }
+        self.set_cached_auth(Some(auth));
     }
 
     pub async fn set_external_auth(

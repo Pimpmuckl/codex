@@ -1,3 +1,4 @@
+use chrono::Utc;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_protocol::auth::AuthMode;
 use serde::Deserialize;
@@ -40,7 +41,19 @@ pub struct AccountProfile {
     pub enabled: bool,
     #[serde(default)]
     pub priority: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit_resets_at: Option<i64>,
     pub auth: AccountAuthStorage,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountCandidate {
+    pub id: AccountId,
+    pub display_label: String,
+    pub priority: u32,
+    pub enabled: bool,
+    pub usage_limit_resets_at: Option<i64>,
+    pub blocked: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -104,23 +117,21 @@ impl AccountStore {
             scope: AccountAuthScope::File,
             path: auth_path_for_id(&account_id),
         };
-        let priority = index
+        let existing = index
             .accounts
             .iter()
-            .find(|profile| profile.id == account_id)
+            .find(|profile| profile.id == account_id);
+        let priority = existing
             .map(|profile| profile.priority)
             .unwrap_or_else(|| next_priority(&index.accounts));
-        let enabled = index
-            .accounts
-            .iter()
-            .find(|profile| profile.id == account_id)
-            .map(|profile| profile.enabled)
-            .unwrap_or(true);
+        let enabled = existing.map(|profile| profile.enabled).unwrap_or(true);
+        let usage_limit_resets_at = existing.and_then(|profile| profile.usage_limit_resets_at);
         let profile = AccountProfile {
             id: account_id,
             label,
             enabled,
             priority,
+            usage_limit_resets_at,
             auth,
         };
 
@@ -137,7 +148,58 @@ impl AccountStore {
         Ok(accounts)
     }
 
+    pub fn candidates(&self) -> std::io::Result<Vec<AccountCandidate>> {
+        self.candidates_at(Utc::now().timestamp())
+    }
+
+    pub(crate) fn candidates_at(&self, now: i64) -> std::io::Result<Vec<AccountCandidate>> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .map(|profile| AccountCandidate {
+                blocked: profile
+                    .usage_limit_resets_at
+                    .is_some_and(|resets_at| resets_at > now),
+                id: profile.id,
+                display_label: profile.label,
+                priority: profile.priority,
+                enabled: profile.enabled,
+                usage_limit_resets_at: profile.usage_limit_resets_at,
+            })
+            .collect())
+    }
+
+    pub fn record_usage_limit_resets_at(
+        &self,
+        account_id: &AccountId,
+        resets_at: i64,
+    ) -> std::io::Result<bool> {
+        let mut index = self.load_index()?;
+        let Some(account) = index
+            .accounts
+            .iter_mut()
+            .find(|account| &account.id == account_id)
+        else {
+            return Ok(false);
+        };
+
+        account.usage_limit_resets_at = Some(resets_at);
+        sort_profiles(&mut index.accounts);
+        self.save_index(&index)?;
+        Ok(true)
+    }
+
     pub fn enabled_file_accounts(&self) -> std::io::Result<Vec<(AccountId, PathBuf)>> {
+        Ok(self
+            .enabled_file_account_profiles()?
+            .into_iter()
+            .map(|(account, home)| (account.id, home))
+            .collect())
+    }
+
+    pub(crate) fn enabled_file_account_profiles(
+        &self,
+    ) -> std::io::Result<Vec<(AccountProfile, PathBuf)>> {
         Ok(self
             .list()?
             .into_iter()
@@ -145,9 +207,7 @@ impl AccountStore {
             .filter_map(|account| match account.auth.scope {
                 AccountAuthScope::File => {
                     let home = self.account_home(&account.id);
-                    home.join("auth.json")
-                        .is_file()
-                        .then_some((account.id, home))
+                    home.join("auth.json").is_file().then_some((account, home))
                 }
             })
             .collect())
@@ -218,7 +278,7 @@ fn account_label_for_auth(
         .to_string())
 }
 
-fn account_id_for_auth(auth: &AuthDotJson) -> std::io::Result<AccountId> {
+pub(crate) fn account_id_for_auth(auth: &AuthDotJson) -> std::io::Result<AccountId> {
     let tokens = auth.tokens.as_ref().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

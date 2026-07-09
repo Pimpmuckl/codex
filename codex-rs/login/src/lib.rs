@@ -11,6 +11,7 @@ mod success_page;
 
 pub use account::AccountAuthScope;
 pub use account::AccountAuthStorage;
+pub use account::AccountCandidate;
 pub use account::AccountId;
 pub use account::AccountProfile;
 pub use account::AccountStore;

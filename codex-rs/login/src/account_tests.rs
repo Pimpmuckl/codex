@@ -64,23 +64,82 @@ fn import_current_uses_email_label_when_label_is_omitted() {
     assert_eq!(profile.label, "a@example.com");
 }
 
+#[test]
+fn candidates_include_usage_limit_blocked_state() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+
+    assert!(
+        store
+            .record_usage_limit_resets_at(&first.id, /*resets_at*/ 2_000)
+            .expect("record reset")
+    );
+
+    assert_eq!(
+        store.candidates_at(/*now*/ 1_000).expect("candidates"),
+        vec![
+            AccountCandidate {
+                id: first.id,
+                display_label: "first".to_string(),
+                priority: first.priority,
+                enabled: true,
+                usage_limit_resets_at: Some(2_000),
+                blocked: true,
+            },
+            AccountCandidate {
+                id: second.id,
+                display_label: "second".to_string(),
+                priority: second.priority,
+                enabled: true,
+                usage_limit_resets_at: None,
+                blocked: false,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn startup_prefers_imported_account_matching_root_chatgpt_auth() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let _first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    assert_eq!(manager.active_account_id(), Some(second.id));
+}
+
+#[tokio::test]
+async fn startup_keeps_root_api_key_auth_over_imported_accounts() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    import_test_account(&store, codex_home.path(), "first", "account-a");
+    save_auth(
+        codex_home.path(),
+        &api_key_auth(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("save api key auth");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    assert_eq!(manager.active_account_id(), None);
+    assert_eq!(manager.auth_mode(), Some(AuthMode::ApiKey));
+}
+
 #[tokio::test]
 async fn switch_to_next_imported_account_skips_attempted_local_account_ids() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());
     let first = import_test_account(&store, codex_home.path(), "first", "account-a");
     let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    save_root_test_auth(codex_home.path(), "account-a");
 
-    let manager = AuthManager::shared(
-        codex_home.path().to_path_buf(),
-        /*enable_codex_api_key_env*/ false,
-        AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
-        /*chatgpt_base_url*/ None,
-        AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
-    )
-    .await;
+    let manager = test_auth_manager(codex_home.path()).await;
     assert_eq!(manager.active_account_id(), Some(first.id.clone()));
 
     let attempted = HashSet::from([first.id.to_string()]);
@@ -92,12 +151,77 @@ async fn switch_to_next_imported_account_skips_attempted_local_account_ids() {
     assert_eq!(manager.active_account_id(), Some(second.id));
 }
 
+#[tokio::test]
+async fn switch_to_next_imported_account_prefers_unblocked_accounts() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    let third = import_test_account(&store, codex_home.path(), "third", "account-c");
+    save_root_test_auth(codex_home.path(), "account-a");
+    store
+        .record_usage_limit_resets_at(&second.id, Utc::now().timestamp() + 60)
+        .expect("record reset");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    let attempted = HashSet::from([first.id.to_string()]);
+    assert!(manager.switch_to_next_imported_account(&attempted).await);
+    assert_eq!(manager.active_account_id(), Some(third.id));
+}
+
+#[tokio::test]
+async fn activate_imported_account_selects_requested_account() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let manager = test_auth_manager(codex_home.path()).await;
+    assert_eq!(manager.active_account_id(), Some(first.id));
+
+    manager
+        .activate_imported_account(&second.id)
+        .await
+        .expect("activate account");
+
+    assert_eq!(manager.active_account_id(), Some(second.id));
+    assert_eq!(
+        manager.auth_cached().and_then(|auth| auth.get_account_id()),
+        Some("account-b".to_string())
+    );
+}
+
+async fn test_auth_manager(codex_home: &std::path::Path) -> std::sync::Arc<AuthManager> {
+    AuthManager::shared(
+        codex_home.to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+    )
+    .await
+}
+
 fn import_test_account(
     store: &AccountStore,
     codex_home: &std::path::Path,
     label: &str,
     account_id: &str,
 ) -> AccountProfile {
+    save_root_test_auth(codex_home, account_id);
+    store
+        .import_current(
+            Some(label.to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import account")
+}
+
+fn save_root_test_auth(codex_home: &std::path::Path, account_id: &str) {
     save_auth(
         codex_home,
         &test_auth(
@@ -109,13 +233,6 @@ fn import_test_account(
         AuthKeyringBackendKind::default(),
     )
     .expect("save root auth");
-    store
-        .import_current(
-            Some(label.to_string()),
-            AuthCredentialsStoreMode::File,
-            AuthKeyringBackendKind::default(),
-        )
-        .expect("import account")
 }
 
 fn test_auth(account_id: &str, user_id: &str, email: &str) -> AuthDotJson {
@@ -135,6 +252,18 @@ fn test_auth(account_id: &str, user_id: &str, email: &str) -> AuthDotJson {
             account_id: Some(account_id.to_string()),
         }),
         last_refresh: Some(Utc::now()),
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    }
+}
+
+fn api_key_auth() -> AuthDotJson {
+    AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
+        openai_api_key: Some("test-api-key".to_string()),
+        tokens: None,
+        last_refresh: None,
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,

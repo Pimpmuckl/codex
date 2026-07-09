@@ -1421,8 +1421,7 @@ impl ModelClientSession {
             let client_setup = self.client.current_client_setup().await?;
             let request_account_id = auth_manager
                 .as_ref()
-                .and_then(|manager| manager.active_account_id())
-                .map(|account_id| account_id.to_string());
+                .and_then(|manager| manager.active_account_id());
             let transport = self
                 .client
                 .build_responses_transport(&client_setup.api_provider, RESPONSES_ENDPOINT)?;
@@ -1515,8 +1514,19 @@ impl ModelClientSession {
                     match err {
                         CodexErr::UsageLimitReached(usage_limit) => {
                             if let Some(manager) = auth_manager.as_ref() {
-                                if let Some(account_id) = request_account_id {
-                                    attempted_account_ids.insert(account_id);
+                                if let Some(account_id) = request_account_id.as_ref() {
+                                    if let Some(resets_at) = usage_limit.resets_at.as_ref()
+                                        && let Err(err) = manager
+                                            .record_imported_account_usage_limit_resets_at(
+                                                account_id,
+                                                resets_at.timestamp(),
+                                            )
+                                    {
+                                        tracing::warn!(
+                                            "failed to record account usage limit reset: {err}"
+                                        );
+                                    }
+                                    attempted_account_ids.insert(account_id.to_string());
                                 }
                                 if manager
                                     .switch_to_next_imported_account(&attempted_account_ids)
