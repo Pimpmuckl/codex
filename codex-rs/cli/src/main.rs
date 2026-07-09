@@ -2934,6 +2934,18 @@ mod tests {
     }
 
     #[test]
+    fn account_add_parses() {
+        let cli = MultitoolCli::try_parse_from(["codex", "account", "add"]).expect("parse");
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Account(AccountCli {
+                subcommand: crate::account_cmd::AccountSubcommand::Add,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
     fn update_parses_as_update_subcommand() {
         let cli = MultitoolCli::try_parse_from(["codex", "update"]).expect("parse");
         assert!(matches!(cli.subcommand, Some(Subcommand::Update)));

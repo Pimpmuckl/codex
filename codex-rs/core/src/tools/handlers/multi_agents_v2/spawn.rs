@@ -9,6 +9,7 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use crate::tools::handlers::multi_agents_v2::spawn_cwd::apply_cwd_override;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
 
@@ -91,6 +92,7 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    let environments = apply_cwd_override(&mut config, turn.as_ref(), args.cwd.as_deref());
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -123,7 +125,7 @@ async fn handle_spawn_agent(
                     fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
-                    environments: Some(turn.environments.to_selections()),
+                    environments: Some(environments),
                 },
             ),
     )
@@ -184,6 +186,7 @@ struct SpawnAgentArgs {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
+    cwd: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }

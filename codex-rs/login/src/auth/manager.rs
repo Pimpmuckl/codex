@@ -1900,13 +1900,13 @@ impl AuthManager {
         .flatten();
         let should_prefer_imported_accounts = match root_auth.as_ref() {
             Some(CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_)) | None => true,
-                Some(
-                    CodexAuth::ApiKey(_)
-                    | CodexAuth::Headers(_)
-                    | CodexAuth::AgentIdentity(_)
-                    | CodexAuth::PersonalAccessToken(_)
-                    | CodexAuth::BedrockApiKey(_),
-                ) => false,
+            Some(
+                CodexAuth::ApiKey(_)
+                | CodexAuth::Headers(_)
+                | CodexAuth::AgentIdentity(_)
+                | CodexAuth::PersonalAccessToken(_)
+                | CodexAuth::BedrockApiKey(_),
+            ) => false,
         };
         let (active_account_id, active_auth_home, managed_auth) = if should_prefer_imported_accounts
         {

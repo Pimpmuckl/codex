@@ -57,6 +57,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
@@ -955,6 +956,77 @@ async fn multi_agent_v2_full_history_fork_accepts_explicit_service_tier() {
     assert_eq!(
         snapshot.service_tier,
         Some(ServiceTier::Fast.request_value().to_string())
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_resolves_cwd_against_parent() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        task_name: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let expected_cwd = config.cwd.join("child-workspace");
+    set_turn_config(&mut turn, config);
+    let expected_cwd_uri = PathUri::from_abs_path(&expected_cwd);
+    let expected_environments = turn
+        .environments
+        .to_selections()
+        .into_iter()
+        .map(|mut environment| {
+            environment.cwd = expected_cwd_uri.clone();
+            environment
+        })
+        .collect::<Vec<_>>();
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "cwd_child",
+                "cwd": "child-workspace",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("multi-agent v2 spawn should accept cwd");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_thread_id = manager
+        .captured_ops()
+        .into_iter()
+        .map(|(thread_id, _)| thread_id)
+        .find(|thread_id| *thread_id != root.thread_id)
+        .expect("spawned agent should receive an op");
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(result.task_name, "/root/cwd_child");
+    assert_eq!(snapshot.cwd(), &expected_cwd);
+    assert_eq!(
+        snapshot.environment_selections(),
+        expected_environments.as_slice()
     );
 }
 

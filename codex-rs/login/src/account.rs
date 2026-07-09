@@ -73,18 +73,10 @@ impl AccountStore {
 
     pub fn import_current(
         &self,
-        label: impl Into<String>,
+        label: Option<String>,
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> std::io::Result<AccountProfile> {
-        let label = label.into().trim().to_string();
-        if label.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "account label cannot be empty",
-            ));
-        }
-
         let auth =
             load_auth_dot_json(&self.codex_home, root_store_mode, root_keyring_backend_kind)?
                 .ok_or_else(|| {
@@ -98,6 +90,7 @@ impl AccountStore {
         }
 
         let account_id = account_id_for_auth(&auth)?;
+        let label = account_label_for_auth(&auth, label, &account_id)?;
         let account_home = self.account_home(&account_id);
         save_auth(
             &account_home,
@@ -199,6 +192,32 @@ impl AccountStore {
     }
 }
 
+fn account_label_for_auth(
+    auth: &AuthDotJson,
+    label: Option<String>,
+    account_id: &AccountId,
+) -> std::io::Result<String> {
+    if let Some(label) = label {
+        let label = label.trim().to_string();
+        if label.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "account label cannot be empty",
+            ));
+        }
+        return Ok(label);
+    }
+
+    Ok(auth
+        .tokens
+        .as_ref()
+        .and_then(|tokens| tokens.id_token.email.as_deref())
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .unwrap_or_else(|| account_id.as_str())
+        .to_string())
+}
+
 fn account_id_for_auth(auth: &AuthDotJson) -> std::io::Result<AccountId> {
     let tokens = auth.tokens.as_ref().ok_or_else(|| {
         std::io::Error::new(
@@ -247,6 +266,7 @@ fn is_managed_chatgpt_auth(auth: &AuthDotJson) -> bool {
         Some(AuthMode::Chatgpt) => true,
         Some(
             AuthMode::ApiKey
+            | AuthMode::Headers
             | AuthMode::ChatgptAuthTokens
             | AuthMode::AgentIdentity
             | AuthMode::PersonalAccessToken

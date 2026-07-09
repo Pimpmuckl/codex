@@ -39,6 +39,7 @@ mod list_agents;
 mod message_tool;
 mod send_message;
 mod spawn;
+mod spawn_cwd;
 pub(crate) mod wait;
 
 pub(crate) async fn emit_sub_agent_activity(

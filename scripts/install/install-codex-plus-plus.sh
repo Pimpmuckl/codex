@@ -4,10 +4,12 @@ set -eu
 target_exe=
 shim_dir="${HOME:-.}/.local/bin"
 install=0
+remove=0
 
 usage() {
   cat <<'EOF'
 Usage: install-codex-plus-plus.sh --target-exe PATH [--shim-dir DIR] [--install]
+       install-codex-plus-plus.sh [--shim-dir DIR] --remove
 EOF
 }
 
@@ -36,6 +38,10 @@ while [ "$#" -gt 0 ]; do
       install=1
       shift
       ;;
+    --remove)
+      remove=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -48,15 +54,26 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+shim_dir=$(abs_path "$shim_dir")
+shim_path="$shim_dir/codex"
+
+if [ "$remove" -eq 1 ]; then
+  if [ -f "$shim_path" ]; then
+    rm -f "$shim_path"
+    echo "==> Removed shim at $shim_path"
+  else
+    echo "==> No shim found at $shim_path"
+  fi
+  exit 0
+fi
+
 if [ -z "$target_exe" ]; then
-  echo "--target-exe is required" >&2
+  echo "--target-exe is required unless --remove is set" >&2
   usage >&2
   exit 2
 fi
 
 target_path=$(abs_path "$target_exe")
-shim_dir=$(abs_path "$shim_dir")
-shim_path="$shim_dir/codex"
 active_codex=$(command -v codex 2>/dev/null || printf 'not found on PATH')
 
 echo "==> Codex++ shim"

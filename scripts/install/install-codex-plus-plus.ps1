@@ -1,10 +1,10 @@
 param(
-    [Parameter(Mandatory = $true)]
     [string]$TargetExe,
 
     [string]$ShimDir = (Join-Path $env:LOCALAPPDATA "Programs\CodexPlusPlus\bin"),
 
     [switch]$Install,
+    [switch]$Remove,
     [switch]$AddToUserPath
 )
 
@@ -35,9 +35,25 @@ function Move-ToPathFront {
     (@($Entry) + $segments) -join ";"
 }
 
-$targetPath = Resolve-FullPath -Path $TargetExe
 $ShimDir = Resolve-FullPath -Path $ShimDir
 $shimPath = Join-Path $ShimDir "codex.ps1"
+
+if ($Remove) {
+    if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+        Remove-Item -LiteralPath $shimPath
+        Write-Host "==> Removed shim at $shimPath"
+    } else {
+        Write-Host "==> No shim found at $shimPath"
+    }
+    exit 0
+}
+
+if ([string]::IsNullOrWhiteSpace($TargetExe)) {
+    Write-Error "-TargetExe is required unless -Remove is set."
+    exit 2
+}
+
+$targetPath = Resolve-FullPath -Path $TargetExe
 $activeCodex = Get-Command codex -ErrorAction SilentlyContinue
 $activePath = if ($activeCodex) { $activeCodex.Source } else { "not found on PATH" }
 

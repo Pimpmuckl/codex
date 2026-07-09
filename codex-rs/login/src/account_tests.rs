@@ -25,7 +25,7 @@ fn import_current_copies_chatgpt_auth_into_account_home() {
     let store = AccountStore::new(codex_home.path().to_path_buf());
     let profile = store
         .import_current(
-            "work",
+            Some("work".to_string()),
             AuthCredentialsStoreMode::File,
             AuthKeyringBackendKind::default(),
         )
@@ -39,6 +39,29 @@ fn import_current_copies_chatgpt_auth_into_account_home() {
     )
     .expect("load account auth");
     assert_eq!(imported_auth, Some(root_auth));
+}
+
+#[test]
+fn import_current_uses_email_label_when_label_is_omitted() {
+    let codex_home = tempdir().expect("tempdir");
+    save_auth(
+        codex_home.path(),
+        &test_auth("account-a", "user-a", "a@example.com"),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("save root auth");
+
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let profile = store
+        .import_current(
+            None,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import account");
+
+    assert_eq!(profile.label, "a@example.com");
 }
 
 #[tokio::test]
@@ -88,7 +111,7 @@ fn import_test_account(
     .expect("save root auth");
     store
         .import_current(
-            label,
+            Some(label.to_string()),
             AuthCredentialsStoreMode::File,
             AuthKeyringBackendKind::default(),
         )
