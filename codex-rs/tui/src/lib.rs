@@ -83,6 +83,8 @@ use uuid::Uuid;
 
 pub(crate) use codex_app_server_client::legacy_core;
 
+#[allow(dead_code)]
+pub(crate) mod account_picker;
 mod additional_dirs;
 mod app;
 mod app_backtrack;
