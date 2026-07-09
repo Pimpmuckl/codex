@@ -1853,12 +1853,13 @@ async fn load_initial_imported_account_auth(
         .enabled_file_account_profiles()
         .unwrap_or_default();
 
+    let now = Utc::now().timestamp();
     if let Some(root_account_id) = root_auth
         .and_then(CodexAuth::get_current_auth_json)
         .and_then(|auth| account_id_for_auth(&auth).ok())
     {
         for (account, account_home) in &accounts {
-            if account.id != root_account_id {
+            if account.id != root_account_id || imported_account_blocked(account, now) {
                 continue;
             }
             if let Some(auth) = load_imported_account_auth(
@@ -1875,7 +1876,6 @@ async fn load_initial_imported_account_auth(
         }
     }
 
-    let now = Utc::now().timestamp();
     for blocked in [false, true] {
         for (account, account_home) in &accounts {
             if imported_account_blocked(account, now) != blocked {

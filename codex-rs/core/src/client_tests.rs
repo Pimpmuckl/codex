@@ -21,6 +21,7 @@ use codex_api::ResponseEvent;
 use codex_api::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
@@ -317,6 +318,64 @@ fn write_chatgpt_auth_json(codex_home: &std::path::Path) {
         serde_json::to_string_pretty(&auth_json).expect("serialize auth.json"),
     )
     .expect("write auth.json");
+}
+
+fn write_api_key_auth_json(codex_home: &std::path::Path) {
+    let auth_json = json!({
+        "OPENAI_API_KEY": "sk-test-key"
+    });
+    std::fs::write(
+        codex_home.join("auth.json"),
+        serde_json::to_string_pretty(&auth_json).expect("serialize auth.json"),
+    )
+    .expect("write auth.json");
+}
+
+#[tokio::test]
+async fn responses_websocket_enabled_ignores_inactive_imported_accounts() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth_json(codex_home.path());
+    AccountStore::new(codex_home.path().to_path_buf())
+        .import_current(
+            Some("test".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import account");
+    write_api_key_auth_json(codex_home.path());
+    let auth_manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+    )
+    .await;
+    assert_eq!(auth_manager.active_account_id(), None);
+
+    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    provider.supports_websockets = true;
+    let client = ModelClient::new(
+        Some(auth_manager),
+        AgentIdentityAuthPolicy::JwtOnly,
+        ThreadId::new(),
+        provider,
+        SessionSource::Cli,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    assert!(client.responses_websocket_enabled());
+    Ok(())
 }
 
 async fn chatgpt_auth_manager(

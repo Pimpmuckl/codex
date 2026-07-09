@@ -113,6 +113,21 @@ async fn startup_prefers_imported_account_matching_root_chatgpt_auth() {
 }
 
 #[tokio::test]
+async fn startup_prefers_unblocked_account_over_blocked_root_match() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .record_usage_limit_resets_at(&second.id, Utc::now().timestamp() + 60)
+        .expect("record reset");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    assert_eq!(manager.active_account_id(), Some(first.id));
+}
+
+#[tokio::test]
 async fn startup_keeps_root_api_key_auth_over_imported_accounts() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());

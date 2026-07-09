@@ -936,7 +936,7 @@ impl ModelClient {
                 .provider
                 .auth_manager()
                 .as_ref()
-                .is_some_and(|manager| manager.has_imported_accounts())
+                .is_some_and(|manager| manager.active_account_id().is_some())
         {
             return false;
         }
