@@ -1925,6 +1925,24 @@ async fn load_imported_account_auth(
     .ok()
     .flatten()
     .filter(CodexAuth::is_chatgpt_auth)
+    .filter(|auth| chatgpt_auth_workspace_allowed(auth, forced_chatgpt_workspace_id))
+}
+
+fn chatgpt_auth_workspace_allowed(
+    auth: &CodexAuth,
+    expected_workspace_ids: Option<&[String]>,
+) -> bool {
+    if expected_workspace_ids.is_none() {
+        return true;
+    }
+    let Ok(token_data) = auth.get_token_data() else {
+        return false;
+    };
+    crate::server::ensure_workspace_allowed(
+        expected_workspace_ids,
+        token_data.id_token.raw_jwt.as_str(),
+    )
+    .is_ok()
 }
 
 impl AuthManager {

@@ -128,6 +128,20 @@ async fn startup_prefers_unblocked_account_over_blocked_root_match() {
 }
 
 #[tokio::test]
+async fn startup_skips_imported_accounts_outside_forced_workspace() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let _first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    save_root_test_auth(codex_home.path(), "account-a");
+
+    let manager =
+        test_auth_manager_with_forced_workspace(codex_home.path(), vec!["account-b"]).await;
+
+    assert_eq!(manager.active_account_id(), Some(second.id));
+}
+
+#[tokio::test]
 async fn startup_keeps_root_api_key_auth_over_imported_accounts() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());
@@ -208,11 +222,28 @@ async fn activate_imported_account_selects_requested_account() {
 }
 
 async fn test_auth_manager(codex_home: &std::path::Path) -> std::sync::Arc<AuthManager> {
+    test_auth_manager_with_forced_workspace(codex_home, Vec::new()).await
+}
+
+async fn test_auth_manager_with_forced_workspace(
+    codex_home: &std::path::Path,
+    forced_workspace_ids: Vec<&str>,
+) -> std::sync::Arc<AuthManager> {
+    let forced_chatgpt_workspace_id = if forced_workspace_ids.is_empty() {
+        None
+    } else {
+        Some(
+            forced_workspace_ids
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )
+    };
     AuthManager::shared(
         codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
+        forced_chatgpt_workspace_id,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
         /*auth_route_config*/ None,
