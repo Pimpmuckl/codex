@@ -190,6 +190,43 @@ impl AccountStore {
         Ok(true)
     }
 
+    pub fn apply_imported_account_to_root_auth(
+        &self,
+        account_id: &AccountId,
+        root_store_mode: AuthCredentialsStoreMode,
+        root_keyring_backend_kind: AuthKeyringBackendKind,
+    ) -> std::io::Result<AccountProfile> {
+        let (profile, account_home) = self
+            .enabled_file_account_profiles()?
+            .into_iter()
+            .find(|(profile, _)| &profile.id == account_id)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("imported account {account_id} is not enabled or does not exist"),
+                )
+            })?;
+        let auth = load_auth_dot_json(
+            &account_home,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("imported account {account_id} is missing auth.json"),
+            )
+        })?;
+
+        save_auth(
+            &self.codex_home,
+            &auth,
+            root_store_mode,
+            root_keyring_backend_kind,
+        )?;
+        Ok(profile)
+    }
+
     pub(crate) fn disable_all(&self) -> std::io::Result<bool> {
         let mut index = self.load_index()?;
         let mut changed = false;

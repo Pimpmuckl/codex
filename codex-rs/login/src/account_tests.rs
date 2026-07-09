@@ -138,6 +138,35 @@ fn candidates_include_usage_limit_blocked_state() {
     );
 }
 
+#[test]
+fn apply_imported_account_to_root_auth_switches_root_auth() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let _second = import_test_account(&store, codex_home.path(), "second", "account-b");
+
+    let selected = store
+        .apply_imported_account_to_root_auth(
+            &first.id,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("select imported account");
+
+    let root_auth = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("load root auth")
+    .expect("root auth");
+    assert_eq!(selected, first);
+    assert_eq!(
+        root_auth.tokens.and_then(|tokens| tokens.account_id),
+        Some("account-a".to_string())
+    );
+}
+
 #[tokio::test]
 async fn startup_prefers_imported_account_matching_root_chatgpt_auth() {
     let codex_home = tempdir().expect("tempdir");
