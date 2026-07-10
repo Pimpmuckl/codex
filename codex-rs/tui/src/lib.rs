@@ -247,6 +247,7 @@ async fn start_embedded_app_server(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    initial_account_id: Option<String>,
 ) -> color_eyre::Result<InProcessAppServerClient> {
     start_embedded_app_server_with(
         arg0_paths,
@@ -259,7 +260,15 @@ async fn start_embedded_app_server(
         log_db,
         state_db,
         environment_manager,
-        InProcessAppServerClient::start,
+        initial_account_id,
+        |args, initial_account_id| async move {
+            match initial_account_id {
+                Some(account_id) => {
+                    InProcessAppServerClient::start_with_initial_account(args, account_id).await
+                }
+                None => InProcessAppServerClient::start(args).await,
+            }
+        },
     )
     .await
 }
@@ -276,6 +285,10 @@ impl AppServerTarget {
         matches!(self, Self::Remote { .. })
     }
 
+    fn supports_startup_account_picker(&self) -> bool {
+        matches!(self, Self::Embedded)
+    }
+
     fn thread_params_mode(&self) -> ThreadParamsMode {
         if self.uses_remote_workspace() {
             ThreadParamsMode::Remote
@@ -285,9 +298,9 @@ impl AppServerTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum StartupAccountSelection {
-    Continue,
+    Continue { selected_account_id: Option<String> },
     Exit,
 }
 
@@ -468,6 +481,7 @@ async fn start_app_server(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    initial_account_id: Option<String>,
 ) -> color_eyre::Result<AppServerClient> {
     match target {
         AppServerTarget::Embedded => start_embedded_app_server(
@@ -481,6 +495,7 @@ async fn start_app_server(
             log_db,
             state_db,
             environment_manager,
+            initial_account_id,
         )
         .await
         .map(AppServerClient::InProcess),
@@ -508,6 +523,7 @@ pub(crate) async fn start_app_server_for_picker(
         /*log_db*/ None,
         state_db,
         environment_manager,
+        /*initial_account_id*/ None,
     )
     .await?;
     Ok(AppServerSession::new(
@@ -542,10 +558,11 @@ async fn start_embedded_app_server_with<F, Fut>(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    initial_account_id: Option<String>,
     start_client: F,
 ) -> color_eyre::Result<InProcessAppServerClient>
 where
-    F: FnOnce(InProcessClientStartArgs) -> Fut,
+    F: FnOnce(InProcessClientStartArgs, Option<String>) -> Fut,
     Fut: Future<Output = std::io::Result<InProcessAppServerClient>>,
 {
     let config_warnings = config
@@ -558,28 +575,31 @@ where
             range: None,
         })
         .collect();
-    let client = start_client(InProcessClientStartArgs {
-        arg0_paths,
-        config: Arc::new(config),
-        cli_overrides: cli_kv_overrides,
-        loader_overrides,
-        strict_config,
-        cloud_config_bundle,
-        feedback,
-        log_db,
-        state_db,
-        environment_manager,
-        config_warnings,
-        session_source: serde_json::from_value(serde_json::json!("cli"))
-            .unwrap_or_else(|err| panic!("cli session source should deserialize: {err}")),
-        enable_codex_api_key_env: false,
-        client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        experimental_api: true,
-        mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(),
-        channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-    })
+    let client = start_client(
+        InProcessClientStartArgs {
+            arg0_paths,
+            config: Arc::new(config),
+            cli_overrides: cli_kv_overrides,
+            loader_overrides,
+            strict_config,
+            cloud_config_bundle,
+            feedback,
+            log_db,
+            state_db,
+            environment_manager,
+            config_warnings,
+            session_source: serde_json::from_value(serde_json::json!("cli"))
+                .unwrap_or_else(|err| panic!("cli session source should deserialize: {err}")),
+            enable_codex_api_key_env: false,
+            client_name: "codex-tui".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        },
+        initial_account_id,
+    )
     .await
     .wrap_err("failed to start embedded app server")?;
     Ok(client)
@@ -596,13 +616,15 @@ async fn shutdown_app_server_if_present(app_server: Option<AppServerSession>) {
 async fn maybe_run_startup_account_picker(
     tui: &mut Tui,
     config: &Config,
-    uses_remote_workspace: bool,
+    app_server_target: &AppServerTarget,
 ) -> color_eyre::Result<StartupAccountSelection> {
-    if uses_remote_workspace
+    if !app_server_target.supports_startup_account_picker()
         || !config.model_provider.requires_openai_auth
         || !root_auth_allows_imported_account_picker(config)
     {
-        return Ok(StartupAccountSelection::Continue);
+        return Ok(StartupAccountSelection::Continue {
+            selected_account_id: None,
+        });
     }
 
     let store = AccountStore::new(config.codex_home.to_path_buf());
@@ -618,10 +640,12 @@ async fn maybe_run_startup_account_picker(
         .filter(|candidate| candidate.enabled && selectable_homes.contains_key(&candidate.id))
         .collect();
     if candidates.is_empty() {
-        return Ok(StartupAccountSelection::Continue);
+        return Ok(StartupAccountSelection::Continue {
+            selected_account_id: None,
+        });
     }
 
-    let usage = account_usage::load(config, &selectable_accounts).await;
+    let usage = account_usage::load(config, &selectable_accounts, &store).await;
     let current_account_id = store
         .current_root_account_id(
             config.cli_auth_credentials_store_mode,
@@ -659,7 +683,9 @@ async fn maybe_run_startup_account_picker(
         )?;
     }
 
-    Ok(StartupAccountSelection::Continue)
+    Ok(StartupAccountSelection::Continue {
+        selected_account_id: Some(selected_id),
+    })
 }
 
 fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
@@ -701,16 +727,24 @@ fn account_picker_candidate(
     account_picker::AccountPickerCandidate {
         id: candidate.id.to_string(),
         email: candidate.display_label.clone(),
+        primary_window_label: crate::chatwidget::limit_label_for_window(
+            usage.and_then(|usage| usage.primary_window_minutes),
+            /*is_secondary*/ false,
+        ),
+        five_hour_reset: usage
+            .and_then(|usage| usage.five_hour_reset_at)
+            .and_then(format_reset_timestamp),
+        five_hour_usage_left_percent: usage.and_then(|usage| usage.five_hour_remaining_percent),
+        five_hour_exhausted: usage.is_some_and(|usage| usage.five_hour_exhausted),
         weekly_reset: usage
             .and_then(|usage| usage.weekly_reset_at)
-            .or_else(|| {
-                candidate
-                    .blocked
-                    .then_some(candidate.usage_limit_resets_at)
-                    .flatten()
-            })
             .and_then(format_reset_timestamp),
-        usage_left_percent: usage.and_then(|usage| usage.weekly_remaining_percent),
+        weekly_usage_left_percent: usage.and_then(|usage| usage.weekly_remaining_percent),
+        weekly_exhausted: usage.is_some_and(|usage| usage.weekly_exhausted),
+        blocked_until: (usage.is_none() && candidate.blocked)
+            .then_some(candidate.usage_limit_resets_at)
+            .flatten()
+            .and_then(format_reset_timestamp),
         blocked: candidate.blocked,
         in_use,
         is_current,
@@ -720,7 +754,7 @@ fn account_picker_candidate(
 
 fn format_reset_timestamp(timestamp: i64) -> Option<String> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, /*nsecs*/ 0)
-        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|timestamp| timestamp.format("%b %d %H:%MZ").to_string())
 }
 
 fn session_target_from_app_server_thread(
@@ -1474,20 +1508,26 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
 
-    if maybe_run_startup_account_picker(&mut tui, &initial_config, uses_remote_workspace).await?
-        == StartupAccountSelection::Exit
-    {
-        terminal_restore_guard.restore_silently();
-        session_log::log_session_end();
-        let _ = tui.terminal.clear();
-        return Ok(AppExitInfo {
-            token_usage: crate::token_usage::TokenUsage::default(),
-            thread_id: None,
-            resume_hint: None,
-            update_action: None,
-            exit_reason: ExitReason::UserRequested,
-        });
-    }
+    let initial_account_id =
+        match maybe_run_startup_account_picker(&mut tui, &initial_config, &app_server_target)
+            .await?
+        {
+            StartupAccountSelection::Continue {
+                selected_account_id,
+            } => selected_account_id,
+            StartupAccountSelection::Exit => {
+                terminal_restore_guard.restore_silently();
+                session_log::log_session_end();
+                let _ = tui.terminal.clear();
+                return Ok(AppExitInfo {
+                    token_usage: crate::token_usage::TokenUsage::default(),
+                    thread_id: None,
+                    resume_hint: None,
+                    update_action: None,
+                    exit_reason: ExitReason::UserRequested,
+                });
+            }
+        };
 
     let app_server_session = match start_app_server(
         &app_server_target,
@@ -1501,6 +1541,7 @@ async fn run_ratatui_app(
         log_db.clone(),
         state_db.clone(),
         environment_manager.clone(),
+        initial_account_id.clone(),
     )
     .await
     {
@@ -1881,6 +1922,7 @@ async fn run_ratatui_app(
             log_db.clone(),
             state_db.clone(),
             environment_manager.clone(),
+            initial_account_id,
         )
         .await
         {
@@ -2285,6 +2327,7 @@ mod tests {
             /*log_db*/ None,
             state_db,
             Arc::new(EnvironmentManager::default_for_tests()),
+            /*initial_account_id*/ None,
         )
         .await
     }
@@ -2437,6 +2480,7 @@ mod tests {
             }
         );
         assert!(!target.uses_remote_workspace());
+        assert!(!target.supports_startup_account_picker());
         assert_eq!(target.thread_params_mode(), ThreadParamsMode::Embedded);
         Ok(())
     }
@@ -2459,6 +2503,7 @@ mod tests {
             }
         );
         assert!(target.uses_remote_workspace());
+        assert!(!target.supports_startup_account_picker());
         assert_eq!(target.thread_params_mode(), ThreadParamsMode::Remote);
         Ok(())
     }
@@ -2474,6 +2519,7 @@ mod tests {
         );
 
         assert_eq!(target, AppServerTarget::Embedded);
+        assert!(target.supports_startup_account_picker());
         Ok(())
     }
 
@@ -3027,7 +3073,11 @@ mod tests {
             /*log_db*/ None,
             /*state_db*/ None,
             Arc::new(EnvironmentManager::default_for_tests()),
-            |_args| async { Err(std::io::Error::other("boom")) },
+            Some("acct_selected".to_string()),
+            |_args, initial_account_id| async move {
+                assert_eq!(initial_account_id.as_deref(), Some("acct_selected"));
+                Err(std::io::Error::other("boom"))
+            },
         )
         .await;
         let err = match result {

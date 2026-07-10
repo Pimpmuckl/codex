@@ -30,8 +30,14 @@ const STARTUP_AUTO_PICK_AFTER: Duration = Duration::from_secs(15);
 pub(crate) struct AccountPickerCandidate {
     pub(crate) id: String,
     pub(crate) email: String,
+    pub(crate) primary_window_label: String,
+    pub(crate) five_hour_reset: Option<String>,
+    pub(crate) five_hour_usage_left_percent: Option<u8>,
+    pub(crate) five_hour_exhausted: bool,
     pub(crate) weekly_reset: Option<String>,
-    pub(crate) usage_left_percent: Option<u8>,
+    pub(crate) weekly_usage_left_percent: Option<u8>,
+    pub(crate) weekly_exhausted: bool,
+    pub(crate) blocked_until: Option<String>,
     pub(crate) blocked: bool,
     pub(crate) in_use: bool,
     pub(crate) is_current: bool,
@@ -134,12 +140,20 @@ pub(crate) fn recommended_candidate_index(candidates: &[AccountPickerCandidate])
         .iter()
         .enumerate()
         .max_by_key(|(index, candidate)| {
+            let usage_left_percent = [
+                candidate.five_hour_usage_left_percent,
+                candidate.weekly_usage_left_percent,
+            ]
+            .into_iter()
+            .flatten()
+            .min();
+            let has_usage_remaining = !candidate.five_hour_exhausted && !candidate.weekly_exhausted;
             (
-                !candidate.blocked,
+                !candidate.blocked && has_usage_remaining,
                 !candidate.in_use,
-                candidate.usage_left_percent.is_some(),
+                usage_left_percent.is_some(),
                 !candidate.is_current,
-                candidate.usage_left_percent.unwrap_or_default(),
+                usage_left_percent.unwrap_or_default(),
                 Reverse(*index),
             )
         })
@@ -192,12 +206,25 @@ fn selection_params(
 
 fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
     let in_use = if candidate.in_use { "    In use" } else { "" };
+    let blocked_until = candidate
+        .blocked_until
+        .as_ref()
+        .map_or_else(String::new, |reset| {
+            format!("    Unavailable until {reset}")
+        });
     SelectionItem {
         name: candidate.email.clone(),
         description: Some(format!(
-            "Weekly Reset: {}    Usage left: {}{in_use}",
-            candidate.weekly_reset.as_deref().unwrap_or("unknown"),
-            usage_left(candidate.usage_left_percent)
+            "{} {}    Weekly {}{blocked_until}{in_use}",
+            candidate.primary_window_label,
+            usage_window(
+                candidate.five_hour_usage_left_percent,
+                candidate.five_hour_reset.as_deref(),
+            ),
+            usage_window(
+                candidate.weekly_usage_left_percent,
+                candidate.weekly_reset.as_deref(),
+            ),
         )),
         is_default: candidate.is_default,
         dismiss_on_select: true,
@@ -206,8 +233,13 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
     }
 }
 
-fn usage_left(percent: Option<u8>) -> String {
-    percent.map_or_else(|| "unknown".to_string(), |percent| format!("{percent}%"))
+fn usage_window(percent: Option<u8>, reset: Option<&str>) -> String {
+    match (percent, reset) {
+        (Some(percent), Some(reset)) => format!("{percent}% ({reset})"),
+        (Some(percent), None) => format!("{percent}%"),
+        (None, Some(reset)) => format!("unknown ({reset})"),
+        (None, None) => "unknown".to_string(),
+    }
 }
 
 fn draw_view(tui: &mut Tui, view: &ListSelectionView) -> Result<()> {

@@ -6,6 +6,7 @@ use codex_backend_client::Client as BackendClient;
 use codex_backend_client::RateLimitsWithResetCredits;
 use codex_backend_client::RequestError;
 use codex_login::AccountId;
+use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
@@ -20,13 +21,31 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AccountUsage {
+    pub(crate) primary_window_minutes: Option<i64>,
+    pub(crate) five_hour_reset_at: Option<i64>,
+    pub(crate) five_hour_remaining_percent: Option<u8>,
+    pub(crate) five_hour_exhausted: bool,
     pub(crate) weekly_reset_at: Option<i64>,
     pub(crate) weekly_remaining_percent: Option<u8>,
+    pub(crate) weekly_exhausted: bool,
+}
+
+impl AccountUsage {
+    fn exhausted_until(self) -> Option<i64> {
+        [
+            self.five_hour_reset_at.filter(|_| self.five_hour_exhausted),
+            self.weekly_reset_at.filter(|_| self.weekly_exhausted),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
 }
 
 pub(crate) async fn load(
     config: &Config,
     accounts: &[(AccountId, PathBuf)],
+    store: &AccountStore,
 ) -> HashMap<AccountId, AccountUsage> {
     let mut tasks = JoinSet::new();
     for (account_id, account_home) in accounts {
@@ -50,6 +69,15 @@ pub(crate) async fn load(
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok((account_id, Ok(account_usage))) => {
+                if let Some(resets_at) = account_usage.exhausted_until()
+                    && let Err(err) = store.record_usage_limit_resets_at(&account_id, resets_at)
+                {
+                    tracing::warn!(
+                        %account_id,
+                        %err,
+                        "failed to persist imported account usage limit reset"
+                    );
+                }
                 usage.insert(account_id, account_usage);
             }
             Ok((account_id, Err(err))) => {
@@ -119,14 +147,37 @@ fn account_usage(response: &RateLimitsWithResetCredits) -> AccountUsage {
 }
 
 fn account_usage_from_snapshot(snapshot: &RateLimitSnapshot) -> AccountUsage {
-    let Some(weekly) = snapshot.secondary.as_ref() else {
-        return AccountUsage::default();
-    };
+    let remaining_percent =
+        |used_percent: f64| (100.0 - used_percent).clamp(0.0, 100.0).round() as u8;
     AccountUsage {
-        weekly_reset_at: weekly.resets_at,
-        weekly_remaining_percent: Some(
-            (100.0 - weekly.used_percent).clamp(0.0, 100.0).round() as u8
-        ),
+        primary_window_minutes: snapshot
+            .primary
+            .as_ref()
+            .and_then(|window| window.window_minutes),
+        five_hour_reset_at: snapshot
+            .primary
+            .as_ref()
+            .and_then(|window| window.resets_at),
+        five_hour_remaining_percent: snapshot
+            .primary
+            .as_ref()
+            .map(|window| remaining_percent(window.used_percent)),
+        five_hour_exhausted: snapshot
+            .primary
+            .as_ref()
+            .is_some_and(|window| window.used_percent >= 100.0),
+        weekly_reset_at: snapshot
+            .secondary
+            .as_ref()
+            .and_then(|window| window.resets_at),
+        weekly_remaining_percent: snapshot
+            .secondary
+            .as_ref()
+            .map(|window| remaining_percent(window.used_percent)),
+        weekly_exhausted: snapshot
+            .secondary
+            .as_ref()
+            .is_some_and(|window| window.used_percent >= 100.0),
     }
 }
 

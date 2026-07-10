@@ -350,7 +350,27 @@ impl InProcessClientHandle {
 /// This function sends `initialize` followed by `initialized` before returning
 /// the handle, so callers receive a ready-to-use runtime. If initialize fails,
 /// the runtime is shut down and an `InvalidData` error is returned.
-pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+pub async fn start(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+    start_inner(args, InitialAccount::Automatic).await
+}
+
+/// Starts an in-process app-server with an explicitly selected imported account.
+pub async fn start_with_initial_account(
+    args: InProcessStartArgs,
+    account_id: String,
+) -> IoResult<InProcessClientHandle> {
+    start_inner(args, InitialAccount::Selected(account_id)).await
+}
+
+enum InitialAccount {
+    Automatic,
+    Selected(String),
+}
+
+async fn start_inner(
+    mut args: InProcessStartArgs,
+    initial_account: InitialAccount,
+) -> IoResult<InProcessClientHandle> {
     if let Ok(Some(err)) = check_execpolicy_for_warnings(&args.config.config_layer_stack).await {
         let (path, range) = crate::exec_policy_warning_location(&err);
         args.config_warnings.push(ConfigWarningNotification {
@@ -361,7 +381,7 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
         });
     }
     let initialize = args.initialize.clone();
-    let client = start_uninitialized(args).await?;
+    let client = start_uninitialized(args, initial_account).await?;
 
     let initialize_response = client
         .request(ClientRequest::Initialize {
@@ -381,17 +401,44 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
     Ok(client)
 }
 
-async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+async fn start_uninitialized(
+    mut args: InProcessStartArgs,
+    initial_account: InitialAccount,
+) -> IoResult<InProcessClientHandle> {
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
+    let auth_manager =
+        AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env).await;
+    if let InitialAccount::Selected(selected_account_id) = initial_account {
+        let activation_result = match auth_manager.account_candidates() {
+            Ok(candidates) => match candidates
+                .into_iter()
+                .find(|candidate| candidate.id.as_str() == selected_account_id)
+            {
+                Some(candidate) => auth_manager.activate_imported_account(&candidate.id).await,
+                None => Err(IoError::new(
+                    ErrorKind::NotFound,
+                    format!("selected account {selected_account_id} is unavailable"),
+                )),
+            },
+            Err(err) => Err(err),
+        };
+        if let Err(err) = activation_result {
+            warn!(account_id = %selected_account_id, error = %err, "failed to activate selected account");
+            args.config_warnings.push(ConfigWarningNotification {
+                summary: "Selected account is unavailable; using automatic account selection."
+                    .to_string(),
+                details: Some(err.to_string()),
+                path: None,
+                range: None,
+            });
+        }
+    }
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
-        let auth_manager =
-            AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
-                .await;
         let analytics_events_client =
             analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
         let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(
@@ -770,10 +817,10 @@ mod tests {
         }
     }
 
-    async fn start_test_client_with_capacity(
+    async fn build_test_start_args(
         session_source: SessionSource,
         channel_capacity: usize,
-    ) -> InProcessClientHandle {
+    ) -> (TempDir, InProcessStartArgs) {
         let codex_home = TempDir::new().expect("temp dir");
         let config = Arc::new(build_test_config(codex_home.path()).await);
         let state_db = codex_rollout::state_db::try_init(config.as_ref())
@@ -804,6 +851,14 @@ mod tests {
             },
             channel_capacity,
         };
+        (codex_home, args)
+    }
+
+    async fn start_test_client_with_capacity(
+        session_source: SessionSource,
+        channel_capacity: usize,
+    ) -> InProcessClientHandle {
+        let (codex_home, args) = build_test_start_args(session_source, channel_capacity).await;
         let mut client = start(args).await.expect("in-process runtime should start");
         client._test_codex_home = Some(codex_home);
         client
@@ -826,6 +881,31 @@ mod tests {
             .expect("request should succeed");
         assert!(response.is_object());
 
+        let _parsed: ConfigRequirementsReadResponse =
+            serde_json::from_value(response).expect("response should match v2 schema");
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn unavailable_selected_account_falls_back_without_aborting_startup() {
+        let (codex_home, args) =
+            build_test_start_args(SessionSource::Cli, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await;
+        let mut client = start_with_initial_account(args, "missing-account".to_string())
+            .await
+            .expect("in-process runtime should fall back to automatic account selection");
+        client._test_codex_home = Some(codex_home);
+
+        let response = client
+            .request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(5),
+                params: None,
+            })
+            .await
+            .expect("request transport should work")
+            .expect("request should succeed");
         let _parsed: ConfigRequirementsReadResponse =
             serde_json::from_value(response).expect("response should match v2 schema");
         client
