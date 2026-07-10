@@ -72,6 +72,7 @@ pub use session_archive_commands::SessionArchiveAction;
 pub use session_archive_commands::SessionArchiveCommandOptions;
 pub use session_archive_commands::run_session_archive_command;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
@@ -634,7 +635,7 @@ async fn maybe_run_startup_account_picker(
         .collect::<Vec<_>>();
     let selectable_homes: HashMap<AccountId, PathBuf> =
         selectable_accounts.iter().cloned().collect();
-    let candidates: Vec<AccountCandidate> = store
+    let mut candidates: Vec<AccountCandidate> = store
         .candidates()?
         .into_iter()
         .filter(|candidate| candidate.enabled && selectable_homes.contains_key(&candidate.id))
@@ -646,6 +647,18 @@ async fn maybe_run_startup_account_picker(
     }
 
     let usage = account_usage::load(config, &selectable_accounts, &store).await;
+    let mut login_required = HashSet::new();
+    for (account_id, attempted_auth) in &usage.login_required {
+        if store.record_login_required_if_auth_matches(account_id, attempted_auth)? {
+            login_required.insert(account_id.clone());
+        }
+    }
+    candidates.retain(|candidate| !login_required.contains(&candidate.id));
+    if candidates.is_empty() {
+        return Ok(StartupAccountSelection::Continue {
+            selected_account_id: None,
+        });
+    }
     let current_account_id = store
         .current_root_account_id(
             config.cli_auth_credentials_store_mode,
@@ -658,7 +671,7 @@ async fn maybe_run_startup_account_picker(
         .map(|candidate| {
             account_picker_candidate(
                 candidate,
-                usage.get(&candidate.id),
+                usage.usage.get(&candidate.id),
                 store.account_in_use(&candidate.id).unwrap_or(false),
                 current_account_id.as_ref() == Some(&candidate.id),
             )

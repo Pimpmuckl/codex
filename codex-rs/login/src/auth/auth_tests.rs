@@ -788,6 +788,7 @@ async fn missing_auth_json_returns_none() {
     let auth = CodexAuth::from_auth_storage(
         dir.path(),
         AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
         /*auth_route_config*/ None,
@@ -1722,6 +1723,70 @@ async fn enforce_login_restrictions_logs_out_for_workspace_mismatch() {
     assert!(
         !codex_home.path().join("auth.json").exists(),
         "auth.json should be removed on mismatch"
+    );
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn enforce_login_restrictions_resolves_marker_to_allowed_imported_account() {
+    let codex_home = tempdir().unwrap();
+    let _access_token_guard = remove_access_token_env_var();
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_DISALLOWED.to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed disallowed auth");
+    let disallowed = store
+        .import_current(
+            Some("disallowed".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import disallowed account");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed allowed auth");
+    store
+        .import_current(
+            Some("allowed".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import allowed account");
+    store
+        .apply_imported_account_to_root_auth(
+            &disallowed.id,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("select disallowed marker");
+    let candidates_before = store.candidates().expect("account candidates");
+    let config = build_config(
+        codex_home.path(),
+        /*forced_login_method*/ None,
+        Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
+    )
+    .await;
+
+    super::enforce_login_restrictions(&config)
+        .await
+        .expect("allowed imported account should satisfy workspace restriction");
+
+    assert!(codex_home.path().join("auth.json").exists());
+    assert_eq!(
+        store.candidates().expect("account candidates"),
+        candidates_before
     );
 }
 

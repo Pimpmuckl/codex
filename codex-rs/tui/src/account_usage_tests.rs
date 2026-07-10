@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::auth::RefreshTokenFailedError;
 use codex_protocol::protocol::RateLimitWindow;
 
 #[test]
@@ -86,4 +87,14 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
             weekly_exhausted: false,
         }
     );
+}
+
+#[test]
+fn reused_refresh_token_marks_imported_account_as_login_required() {
+    let error = anyhow!(RefreshTokenFailedError::new(
+        RefreshTokenFailedReason::Exhausted,
+        "refresh token already used",
+    ));
+
+    assert!(login_required(&error));
 }

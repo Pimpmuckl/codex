@@ -370,13 +370,17 @@ async fn build_report(
                 reachability_check,
             ) = tokio::join!(
                 async { run_sync_check("config", progress.clone(), || config_check(config)) },
-                async { run_sync_check("auth", progress.clone(), || auth_check(config)) },
+                async {
+                    run_sync_check("auth", progress.clone(), || {
+                        auth_check(config, auth_manager.as_ref())
+                    })
+                },
                 async { run_sync_check("updates", progress.clone(), || updates_check(config)) },
                 async { run_sync_check("network", progress.clone(), network_check) },
                 run_async_check(
                     "websocket",
                     progress.clone(),
-                    websocket_reachability_check(config, Some(auth_manager)),
+                    websocket_reachability_check(config, Some(Arc::clone(&auth_manager))),
                 ),
                 run_async_check("MCP", progress.clone(), mcp_check(config)),
                 async {
@@ -1172,7 +1176,7 @@ fn config_toml_details(config: &Config, details: &mut Vec<String>) {
     }
 }
 
-fn auth_check(config: &Config) -> DoctorCheck {
+fn auth_check(config: &Config, auth_manager: &AuthManager) -> DoctorCheck {
     let mut details = Vec::new();
     let auth_path = config.codex_home.join("auth.json");
     details.push(format!(
@@ -1218,7 +1222,19 @@ fn auth_check(config: &Config) -> DoctorCheck {
                 "stored agent identity: {}",
                 auth.agent_identity.is_some()
             ));
-            let auth_issues = stored_auth_issues(&auth, env_var_present);
+            let imported_auth_is_usable = auth_manager.active_account_id().is_some()
+                && auth_manager
+                    .auth_cached()
+                    .and_then(|auth| auth.get_token_data().ok())
+                    .is_some_and(|tokens| {
+                        !tokens.access_token.trim().is_empty()
+                            && !tokens.refresh_token.trim().is_empty()
+                    });
+            let auth_issues = if imported_auth_is_usable {
+                Vec::new()
+            } else {
+                stored_auth_issues(&auth, env_var_present)
+            };
             details.extend(
                 auth_issues
                     .iter()

@@ -1,5 +1,6 @@
 use super::*;
 use crate::AuthManager;
+use crate::CodexAuth;
 use crate::token_data::IdTokenInfo;
 use crate::token_data::TokenData;
 use base64::Engine;
@@ -8,10 +9,12 @@ use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::Barrier;
 use tempfile::tempdir;
 
 #[test]
-fn import_current_copies_chatgpt_auth_into_account_home() {
+fn import_current_keeps_refresh_token_only_in_account_home() {
     let codex_home = tempdir().expect("tempdir");
     let root_auth = test_auth("account-a", "user-a", "a@example.com");
     save_auth(
@@ -39,6 +42,17 @@ fn import_current_copies_chatgpt_auth_into_account_home() {
     )
     .expect("load account auth");
     assert_eq!(imported_auth, Some(root_auth));
+    let root_auth = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("load root auth")
+    .expect("root account marker");
+    assert_eq!(
+        root_auth.tokens.expect("root tokens").refresh_token,
+        String::new()
+    );
 }
 
 #[test]
@@ -69,8 +83,10 @@ fn import_current_reenables_existing_account_profile() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());
     let first = import_test_account(&store, codex_home.path(), "first", "account-a");
-    assert!(store.disable_all().expect("disable accounts"));
-    save_root_test_auth(codex_home.path(), "account-a");
+    {
+        let _index_guard = store.acquire_index_lock().expect("lock account index");
+        assert!(store.disable_all_unlocked().expect("disable accounts"));
+    }
 
     let profile = store
         .import_current(
@@ -99,6 +115,119 @@ fn import_current_reenables_existing_account_profile() {
         )
         .expect("load reimported auth")
         .is_some()
+    );
+}
+
+#[test]
+fn import_current_preserves_login_required_for_root_marker() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let imported = import_test_account(&store, codex_home.path(), "first", "account-a");
+    assert!(
+        store
+            .record_login_required(&imported.id)
+            .expect("record login required")
+    );
+
+    let profile = store
+        .import_current(
+            Some("still stale".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("re-import root marker");
+
+    assert!(profile.login_required);
+    assert!(
+        store
+            .enabled_file_account_profiles()
+            .expect("eligible accounts")
+            .is_empty()
+    );
+}
+
+#[test]
+fn concurrent_login_required_updates_are_preserved() {
+    let codex_home = tempdir().expect("tempdir");
+    let profiles: Vec<_> = (0..16)
+        .map(|index| {
+            import_test_account(
+                &AccountStore::new(codex_home.path().to_path_buf()),
+                codex_home.path(),
+                &format!("account {index}"),
+                &format!("account-{index}"),
+            )
+        })
+        .collect();
+    let barrier = Arc::new(Barrier::new(profiles.len()));
+    let handles: Vec<_> = profiles
+        .iter()
+        .map(|profile| {
+            let account_id = profile.id.clone();
+            let codex_home = codex_home.path().to_path_buf();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                AccountStore::new(codex_home).record_login_required(&account_id)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        assert!(handle.join().expect("update thread").expect("update"));
+    }
+    assert!(
+        AccountStore::new(codex_home.path().to_path_buf())
+            .list()
+            .expect("accounts")
+            .iter()
+            .all(|profile| profile.login_required)
+    );
+}
+
+#[test]
+fn login_requirement_is_not_recorded_after_account_auth_is_replaced() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let profile = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let account_home = store.account_home(&profile.id);
+    let attempted_auth = load_auth_dot_json(
+        &account_home,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("load attempted auth")
+    .expect("attempted auth");
+    let replacement_auth = test_auth("account-a", "replacement-user", "replacement@example.com");
+    save_auth(
+        &account_home,
+        &replacement_auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("replace account auth");
+
+    assert!(
+        !store
+            .record_login_required_if_auth_matches(&profile.id, &attempted_auth)
+            .expect("compare account auth")
+    );
+    assert!(
+        store
+            .list()
+            .expect("accounts")
+            .iter()
+            .find(|account| account.id == profile.id)
+            .is_some_and(|account| !account.login_required)
+    );
+    assert_eq!(
+        load_auth_dot_json(
+            &account_home,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load replacement auth"),
+        Some(replacement_auth)
     );
 }
 
@@ -177,10 +306,9 @@ fn apply_imported_account_to_root_auth_switches_root_auth() {
     .expect("load root auth")
     .expect("root auth");
     assert_eq!(selected, first);
-    assert_eq!(
-        root_auth.tokens.and_then(|tokens| tokens.account_id),
-        Some("account-a".to_string())
-    );
+    let tokens = root_auth.tokens.expect("root tokens");
+    assert_eq!(tokens.account_id, Some("account-a".to_string()));
+    assert_eq!(tokens.refresh_token, String::new());
 }
 
 #[tokio::test]
@@ -193,6 +321,79 @@ async fn startup_prefers_imported_account_matching_root_chatgpt_auth() {
     let manager = test_auth_manager(codex_home.path()).await;
 
     assert_eq!(manager.active_account_id(), Some(second.id));
+}
+
+#[tokio::test]
+async fn startup_does_not_use_root_account_marker_when_index_is_malformed() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let account = import_test_account(&store, codex_home.path(), "first", "account-a");
+    std::fs::write(codex_home.path().join("accounts/index.json"), "{")
+        .expect("write malformed account index");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    assert_eq!(manager.active_account_id(), None);
+    assert_eq!(manager.auth_cached(), None);
+    assert!(manager.logout().await.expect("logout"));
+    assert!(!codex_home.path().join("auth.json").exists());
+    assert!(!store.account_home(&account.id).join("auth.json").exists());
+}
+
+#[tokio::test]
+async fn live_manager_adopts_imported_account_when_root_becomes_a_marker() {
+    let codex_home = tempdir().expect("tempdir");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let manager = test_auth_manager(codex_home.path()).await;
+    assert_eq!(manager.active_account_id(), None);
+
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let imported = store
+        .import_current(
+            Some("first".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import account");
+
+    assert!(manager.reload().await);
+    assert_eq!(manager.active_account_id(), Some(imported.id));
+    assert_eq!(
+        manager.auth_cached().and_then(|auth| auth.get_account_id()),
+        Some("account-a".to_string())
+    );
+}
+
+#[tokio::test]
+async fn guarded_reload_does_not_commit_a_different_imported_account_source() {
+    let codex_home = tempdir().expect("tempdir");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let live_manager = test_auth_manager(codex_home.path()).await;
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let account_a = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let _account_b = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .apply_imported_account_to_root_auth(
+            &account_a.id,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("select first account");
+    let lease_owner = test_auth_manager(codex_home.path()).await;
+    assert_eq!(lease_owner.active_account_id(), Some(account_a.id));
+
+    live_manager
+        .refresh_token()
+        .await
+        .expect_err("alternate imported account should fail guarded reload");
+
+    assert_eq!(live_manager.active_account_id(), None);
+    assert_eq!(
+        live_manager
+            .auth_cached()
+            .and_then(|auth| auth.get_account_id()),
+        Some("account-a".to_string())
+    );
 }
 
 #[tokio::test]
@@ -255,6 +456,150 @@ async fn startup_keeps_root_api_key_auth_over_imported_accounts() {
 
     assert_eq!(manager.active_account_id(), None);
     assert_eq!(manager.auth_mode(), Some(AuthMode::ApiKey));
+}
+
+#[tokio::test]
+async fn startup_keeps_fresh_root_login_when_imported_profile_requires_login() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let imported = import_test_account(&store, codex_home.path(), "first", "account-a");
+    store
+        .record_login_required(&imported.id)
+        .expect("record login requirement");
+    let fresh_auth = test_auth("account-a", "user-account-a", "account-a@example.com");
+    save_auth(
+        codex_home.path(),
+        &fresh_auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("save fresh root auth");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    assert_eq!(manager.active_account_id(), None);
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("fresh root auth")
+            .get_token_data()
+            .expect("fresh root tokens"),
+        fresh_auth.tokens.expect("expected root tokens")
+    );
+}
+
+#[tokio::test]
+async fn startup_keeps_fresh_root_login_when_another_imported_account_is_available() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let _healthy = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let reauthenticated = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .record_login_required(&reauthenticated.id)
+        .expect("record login requirement");
+    let fresh_auth = test_auth("account-b", "fresh-user-b", "fresh-b@example.com");
+    save_auth(
+        codex_home.path(),
+        &fresh_auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("save fresh root auth");
+
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    assert_eq!(manager.active_account_id(), None);
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("fresh root auth")
+            .get_token_data()
+            .expect("fresh root tokens"),
+        fresh_auth.tokens.expect("expected root tokens")
+    );
+}
+
+#[tokio::test]
+async fn startup_honors_forced_workspace_over_fresh_root_reauthentication() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let forced = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let reauthenticated = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .record_login_required(&reauthenticated.id)
+        .expect("record login requirement");
+    save_auth(
+        codex_home.path(),
+        &test_auth("account-b", "fresh-user-b", "fresh-b@example.com"),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("save fresh root auth");
+
+    let manager =
+        test_auth_manager_with_forced_workspace(codex_home.path(), vec!["account-a"]).await;
+
+    assert_eq!(manager.active_account_id(), Some(forced.id));
+    assert_eq!(
+        manager
+            .auth_cached()
+            .expect("forced imported auth")
+            .get_account_id(),
+        Some("account-a".to_string())
+    );
+}
+
+#[tokio::test]
+async fn startup_rejects_disallowed_root_reauthentication_without_forced_account() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let reauthenticated = import_test_account(&store, codex_home.path(), "first", "account-a");
+    store
+        .record_login_required(&reauthenticated.id)
+        .expect("record login requirement");
+    save_auth(
+        codex_home.path(),
+        &test_auth("account-a", "fresh-user-a", "fresh-a@example.com"),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("save fresh root auth");
+
+    let manager =
+        test_auth_manager_with_forced_workspace(codex_home.path(), vec!["account-b"]).await;
+
+    assert_eq!(manager.active_account_id(), None);
+    assert_eq!(manager.auth_cached(), None);
+}
+
+#[tokio::test]
+async fn direct_marker_auth_resolution_honors_forced_workspace() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let _second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .apply_imported_account_to_root_auth(
+            &first.id,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("select first account");
+    let forced_workspaces = vec!["account-b".to_string()];
+
+    let auth = CodexAuth::from_auth_storage(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        Some(&forced_workspaces),
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+    )
+    .await
+    .expect("load marker auth")
+    .expect("matching imported auth");
+
+    assert_eq!(auth.get_account_id(), Some("account-b".to_string()));
 }
 
 #[tokio::test]
@@ -350,6 +695,9 @@ async fn logout_clears_imported_accounts_that_startup_would_select() {
     let store = AccountStore::new(codex_home.path().to_path_buf());
     let first = import_test_account(&store, codex_home.path(), "first", "account-a");
     let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .record_login_required(&second.id)
+        .expect("record login requirement");
     save_root_test_auth(codex_home.path(), "account-a");
     let manager = test_auth_manager(codex_home.path()).await;
     assert_eq!(manager.active_account_id(), Some(first.id.clone()));

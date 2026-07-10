@@ -8,9 +8,12 @@ use codex_backend_client::RequestError;
 use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
 use codex_login::refresh_auth_from_storage;
+use codex_protocol::auth::RefreshTokenFailedError;
+use codex_protocol::auth::RefreshTokenFailedReason;
 use codex_protocol::protocol::RateLimitSnapshot;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -42,11 +45,31 @@ impl AccountUsage {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct AccountUsageLoad {
+    pub(crate) usage: HashMap<AccountId, AccountUsage>,
+    pub(crate) login_required: HashMap<AccountId, AuthDotJson>,
+}
+
+struct AccountUsageFetchError {
+    error: anyhow::Error,
+    attempted_auth: Option<AuthDotJson>,
+}
+
+impl AccountUsageFetchError {
+    fn new(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            attempted_auth: None,
+        }
+    }
+}
+
 pub(crate) async fn load(
     config: &Config,
     accounts: &[(AccountId, PathBuf)],
     store: &AccountStore,
-) -> HashMap<AccountId, AccountUsage> {
+) -> AccountUsageLoad {
     let mut tasks = JoinSet::new();
     for (account_id, account_home) in accounts {
         let account_id = account_id.clone();
@@ -59,13 +82,13 @@ pub(crate) async fn load(
                 fetch(account_home, chatgpt_base_url, auth_route_config),
             )
             .await
-            .map_err(|_| anyhow!("rate-limit request timed out"))
+            .map_err(|_| AccountUsageFetchError::new(anyhow!("rate-limit request timed out")))
             .and_then(std::convert::identity);
             (account_id, result)
         });
     }
 
-    let mut usage = HashMap::new();
+    let mut loaded = AccountUsageLoad::default();
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok((account_id, Ok(account_usage))) => {
@@ -78,46 +101,69 @@ pub(crate) async fn load(
                         "failed to persist imported account usage limit reset"
                     );
                 }
-                usage.insert(account_id, account_usage);
+                loaded.usage.insert(account_id, account_usage);
             }
             Ok((account_id, Err(err))) => {
-                tracing::warn!(%account_id, %err, "failed to load imported account usage");
+                if login_required(&err.error)
+                    && let Some(attempted_auth) = err.attempted_auth
+                {
+                    loaded
+                        .login_required
+                        .insert(account_id.clone(), attempted_auth);
+                }
+                tracing::warn!(%account_id, %err.error, "failed to load imported account usage");
             }
             Err(err) => tracing::warn!(%err, "imported account usage task failed"),
         }
     }
-    usage
+    loaded
 }
 
 async fn fetch(
     account_home: PathBuf,
     chatgpt_base_url: String,
     auth_route_config: Option<codex_login::AuthRouteConfig>,
-) -> Result<AccountUsage> {
+) -> std::result::Result<AccountUsage, AccountUsageFetchError> {
     let auth = CodexAuth::from_auth_storage(
         &account_home,
         AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
         Some(&chatgpt_base_url),
         AuthKeyringBackendKind::default(),
         auth_route_config.as_ref(),
     )
-    .await?
-    .context("imported account is not authenticated")?;
+    .await
+    .map_err(AccountUsageFetchError::new)?
+    .context("imported account is not authenticated")
+    .map_err(AccountUsageFetchError::new)?;
 
     match fetch_with_auth(&auth, &chatgpt_base_url).await {
         Err(err) if is_unauthorized(&err) => {
-            let auth = refresh_auth_from_storage(
+            let auth = match refresh_auth_from_storage(
                 &account_home,
                 AuthCredentialsStoreMode::File,
                 Some(&chatgpt_base_url),
                 AuthKeyringBackendKind::default(),
                 auth_route_config.as_ref(),
             )
-            .await?
-            .context("imported account is not authenticated")?;
-            fetch_with_auth(&auth, &chatgpt_base_url).await
+            .await
+            {
+                Ok(auth) => auth,
+                Err(err) => {
+                    let attempted_auth = err.attempted_auth().cloned();
+                    return Err(AccountUsageFetchError {
+                        error: err.into(),
+                        attempted_auth,
+                    });
+                }
+            }
+            .context("imported account is not authenticated")
+            .map_err(AccountUsageFetchError::new)?;
+            fetch_with_auth(&auth, &chatgpt_base_url)
+                .await
+                .map_err(AccountUsageFetchError::new)
         }
-        result => result,
+        result => result.map_err(AccountUsageFetchError::new),
     }
 }
 
@@ -133,6 +179,21 @@ fn is_unauthorized(err: &anyhow::Error) -> bool {
         source
             .downcast_ref::<RequestError>()
             .is_some_and(RequestError::is_unauthorized)
+    })
+}
+
+fn login_required(err: &anyhow::Error) -> bool {
+    err.chain().any(|source| {
+        source
+            .downcast_ref::<RefreshTokenFailedError>()
+            .is_some_and(|error| {
+                matches!(
+                    error.reason,
+                    RefreshTokenFailedReason::Expired
+                        | RefreshTokenFailedReason::Exhausted
+                        | RefreshTokenFailedReason::Revoked
+                )
+            })
     })
 }
 
