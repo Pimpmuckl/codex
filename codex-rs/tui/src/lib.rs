@@ -43,10 +43,14 @@ use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
+use codex_login::AccountCandidate;
+use codex_login::AccountId;
+use codex_login::AccountStore;
 use codex_login::AuthConfig;
 use codex_login::default_client::originator;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::enforce_login_restrictions;
+use codex_login::load_auth_dot_json;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AltScreenMode;
@@ -67,6 +71,7 @@ pub use session_archive_commands::DeleteConfirmation;
 pub use session_archive_commands::SessionArchiveAction;
 pub use session_archive_commands::SessionArchiveCommandOptions;
 pub use session_archive_commands::run_session_archive_command;
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
@@ -83,6 +88,8 @@ use uuid::Uuid;
 
 pub(crate) use codex_app_server_client::legacy_core;
 
+pub(crate) mod account_picker;
+mod account_usage;
 mod additional_dirs;
 mod app;
 mod app_backtrack;
@@ -276,6 +283,12 @@ impl AppServerTarget {
             ThreadParamsMode::Embedded
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupAccountSelection {
+    Continue,
+    Exit,
 }
 
 async fn init_state_db_for_app_server_target(
@@ -578,6 +591,136 @@ async fn shutdown_app_server_if_present(app_server: Option<AppServerSession>) {
     {
         warn!(%err, "Failed to shut down temporary embedded app server");
     }
+}
+
+async fn maybe_run_startup_account_picker(
+    tui: &mut Tui,
+    config: &Config,
+    uses_remote_workspace: bool,
+) -> color_eyre::Result<StartupAccountSelection> {
+    if uses_remote_workspace
+        || !config.model_provider.requires_openai_auth
+        || !root_auth_allows_imported_account_picker(config)
+    {
+        return Ok(StartupAccountSelection::Continue);
+    }
+
+    let store = AccountStore::new(config.codex_home.to_path_buf());
+    let selectable_accounts = store
+        .enabled_file_accounts()?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let selectable_homes: HashMap<AccountId, PathBuf> =
+        selectable_accounts.iter().cloned().collect();
+    let candidates: Vec<AccountCandidate> = store
+        .candidates()?
+        .into_iter()
+        .filter(|candidate| candidate.enabled && selectable_homes.contains_key(&candidate.id))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(StartupAccountSelection::Continue);
+    }
+
+    let usage = account_usage::load(config, &selectable_accounts).await;
+    let current_account_id = store
+        .current_root_account_id(
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+        )
+        .ok()
+        .flatten();
+    let mut picker_candidates: Vec<_> = candidates
+        .iter()
+        .map(|candidate| {
+            account_picker_candidate(
+                candidate,
+                usage.get(&candidate.id),
+                store.account_in_use(&candidate.id).unwrap_or(false),
+                current_account_id.as_ref() == Some(&candidate.id),
+            )
+        })
+        .collect();
+    let default_idx = account_picker::recommended_candidate_index(&picker_candidates);
+    picker_candidates[default_idx].is_default = true;
+    let Some(selected_id) =
+        account_picker::run_startup_account_picker(tui, picker_candidates).await?
+    else {
+        return Ok(StartupAccountSelection::Exit);
+    };
+
+    if let Some(candidate) = candidates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == selected_id)
+    {
+        store.apply_imported_account_to_root_auth(
+            &candidate.id,
+            config.cli_auth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+        )?;
+    }
+
+    Ok(StartupAccountSelection::Continue)
+}
+
+fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
+    match load_auth_dot_json(
+        config.codex_home.as_path(),
+        config.cli_auth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
+    ) {
+        Ok(Some(auth)) => match auth.auth_mode {
+            Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens) => true,
+            Some(
+                AuthMode::ApiKey
+                | AuthMode::Headers
+                | AuthMode::AgentIdentity
+                | AuthMode::PersonalAccessToken
+                | AuthMode::BedrockApiKey,
+            ) => false,
+            None => {
+                auth.openai_api_key.is_none()
+                    && auth.personal_access_token.is_none()
+                    && auth.bedrock_api_key.is_none()
+                    && auth.agent_identity.is_none()
+            }
+        },
+        Ok(None) => true,
+        Err(err) => {
+            warn!(%err, "Skipping startup account picker because root auth could not be read");
+            false
+        }
+    }
+}
+
+fn account_picker_candidate(
+    candidate: &AccountCandidate,
+    usage: Option<&account_usage::AccountUsage>,
+    in_use: bool,
+    is_current: bool,
+) -> account_picker::AccountPickerCandidate {
+    account_picker::AccountPickerCandidate {
+        id: candidate.id.to_string(),
+        email: candidate.display_label.clone(),
+        weekly_reset: usage
+            .and_then(|usage| usage.weekly_reset_at)
+            .or_else(|| {
+                candidate
+                    .blocked
+                    .then_some(candidate.usage_limit_resets_at)
+                    .flatten()
+            })
+            .and_then(format_reset_timestamp),
+        usage_left_percent: usage.and_then(|usage| usage.weekly_remaining_percent),
+        blocked: candidate.blocked,
+        in_use,
+        is_current,
+        is_default: false,
+    }
+}
+
+fn format_reset_timestamp(timestamp: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, /*nsecs*/ 0)
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M UTC").to_string())
 }
 
 fn session_target_from_app_server_thread(
@@ -1330,6 +1473,21 @@ async fn run_ratatui_app(
 
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
+
+    if maybe_run_startup_account_picker(&mut tui, &initial_config, uses_remote_workspace).await?
+        == StartupAccountSelection::Exit
+    {
+        terminal_restore_guard.restore_silently();
+        session_log::log_session_end();
+        let _ = tui.terminal.clear();
+        return Ok(AppExitInfo {
+            token_usage: crate::token_usage::TokenUsage::default(),
+            thread_id: None,
+            resume_hint: None,
+            update_action: None,
+            exit_reason: ExitReason::UserRequested,
+        });
+    }
 
     let app_server_session = match start_app_server(
         &app_server_target,
