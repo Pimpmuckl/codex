@@ -24,6 +24,7 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -930,6 +931,12 @@ impl ModelClient {
     pub fn responses_websocket_enabled(&self) -> bool {
         if !self.state.provider.info().supports_websockets
             || self.state.disable_websockets.load(Ordering::Relaxed)
+            || self
+                .state
+                .provider
+                .auth_manager()
+                .as_ref()
+                .is_some_and(|manager| manager.active_account_id().is_some())
         {
             return false;
         }
@@ -1117,7 +1124,7 @@ impl ModelClientSession {
         Arc::clone(&self.turn_state)
     }
 
-    fn reset_websocket_session(&mut self) {
+    pub(crate) fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
         self.websocket_session.last_response_rx = None;
@@ -1409,8 +1416,12 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let mut attempted_account_ids = HashSet::new();
         loop {
             let client_setup = self.client.current_client_setup().await?;
+            let request_account_id = auth_manager
+                .as_ref()
+                .and_then(|manager| manager.active_account_id());
             let transport = self
                 .client
                 .build_responses_transport(&client_setup.api_provider, RESPONSES_ENDPOINT)?;
@@ -1500,7 +1511,36 @@ impl ModelClientSession {
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
-                    return Err(err);
+                    match err {
+                        CodexErr::UsageLimitReached(usage_limit) => {
+                            if let Some(manager) = auth_manager.as_ref() {
+                                if let Some(account_id) = request_account_id.as_ref() {
+                                    if let Some(resets_at) = usage_limit.resets_at.as_ref()
+                                        && let Err(err) = manager
+                                            .record_imported_account_usage_limit_resets_at(
+                                                account_id,
+                                                resets_at.timestamp(),
+                                            )
+                                    {
+                                        tracing::warn!(
+                                            "failed to record account usage limit reset: {err}"
+                                        );
+                                    }
+                                    attempted_account_ids.insert(account_id.to_string());
+                                }
+                                if manager
+                                    .switch_to_next_imported_account(&attempted_account_ids)
+                                    .await
+                                {
+                                    auth_recovery = Some(manager.unauthorized_recovery());
+                                    pending_retry = PendingUnauthorizedRetry::default();
+                                    continue;
+                                }
+                            }
+                            return Err(CodexErr::UsageLimitReached(usage_limit));
+                        }
+                        err => return Err(err),
+                    }
                 }
             }
         }
