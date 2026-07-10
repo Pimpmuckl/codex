@@ -4,10 +4,13 @@ use base64::Engine;
 use chrono::Duration;
 use chrono::Utc;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AccountProfile;
+use codex_login::AccountStore;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CLIENT_ID_OVERRIDE_ENV_VAR;
+use codex_login::CodexAuth;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::RefreshTokenError;
 use codex_login::load_auth_dot_json;
@@ -21,6 +24,7 @@ use pretty_assertions::assert_eq;
 use serde::Serialize;
 use serde_json::json;
 use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use wiremock::Mock;
@@ -841,6 +845,300 @@ async fn refresh_token_does_not_retry_after_bad_request_reused_failure() -> Resu
 
 #[serial_test::serial(auth_env)]
 #[tokio::test]
+async fn reused_refresh_token_fails_over_to_another_imported_account() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "refresh_token_reused"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let _env_guard = EnvGuard::set(
+        REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+        format!("{}/oauth/token", server.uri()),
+    );
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let stale_auth = account_auth("stale-account", "stale-access", "stale-refresh");
+    let stale_profile = import_account(&store, codex_home.path(), "stale", &stale_auth)?;
+
+    let healthy_auth = account_auth("healthy-account", "healthy-access", "healthy-refresh");
+    let healthy_profile = import_account(&store, codex_home.path(), "healthy", &healthy_auth)?;
+
+    // Match the startup picker behavior that made the stale imported account active.
+    save_auth(
+        codex_home.path(),
+        &stale_auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let auth_manager = shared_auth_manager(codex_home.path()).await;
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(stale_profile.id.clone())
+    );
+
+    auth_manager
+        .refresh_token()
+        .await
+        .context("reused imported account should fail over")?;
+
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(healthy_profile.id.clone())
+    );
+    let profiles = store.list()?;
+    assert!(
+        profiles
+            .iter()
+            .find(|profile| profile.id == stale_profile.id)
+            .is_some_and(|profile| profile.login_required)
+    );
+    assert!(
+        profiles
+            .iter()
+            .find(|profile| profile.id == healthy_profile.id)
+            .is_some_and(|profile| !profile.login_required)
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[serial_test::serial(auth_env)]
+#[tokio::test]
+async fn reused_refresh_token_without_fallback_requires_login_instead_of_retrying() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "refresh_token_reused"
+            }
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let _env_guard = EnvGuard::set(
+        REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+        format!("{}/oauth/token", server.uri()),
+    );
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let stale_auth = account_auth("stale-account", "stale-access", "stale-refresh");
+    let stale_profile = import_account(&store, codex_home.path(), "stale", &stale_auth)?;
+
+    let auth_manager = shared_auth_manager(codex_home.path()).await;
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(stale_profile.id.clone())
+    );
+
+    let error = auth_manager
+        .refresh_token()
+        .await
+        .expect_err("terminal imported refresh should require login");
+
+    assert_eq!(auth_manager.active_account_id(), None);
+    assert_eq!(auth_manager.auth_cached(), None);
+    assert_eq!(error.failed_reason(), Some(RefreshTokenFailedReason::Other));
+    assert_eq!(
+        error.to_string(),
+        "This account needs you to sign in again. Run `codex account add` to continue."
+    );
+    assert!(
+        store
+            .list()?
+            .iter()
+            .find(|profile| profile.id == stale_profile.id)
+            .is_some_and(|profile| profile.login_required)
+    );
+    assert!(!auth_manager.reload().await);
+    assert_eq!(auth_manager.auth_cached(), None);
+    assert_eq!(
+        CodexAuth::from_auth_storage(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+        )
+        .await?,
+        None
+    );
+
+    let mut proactively_stale_auth = stale_auth.clone();
+    proactively_stale_auth
+        .tokens
+        .as_mut()
+        .expect("stale tokens")
+        .access_token = access_token_with_expiration(Utc::now() + Duration::minutes(4));
+    proactively_stale_auth.last_refresh = Some(Utc::now());
+    save_auth(
+        codex_home.path(),
+        &proactively_stale_auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let reimported = store.import_current(
+        Some("stale".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    assert!(!reimported.login_required);
+    assert_eq!(
+        CodexAuth::from_auth_storage(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+        )
+        .await?
+        .and_then(|auth| auth.get_account_id()),
+        Some("stale-account".to_string())
+    );
+    let proactive_manager = shared_auth_manager(codex_home.path()).await;
+    assert_eq!(proactive_manager.auth().await, None);
+    assert_eq!(proactive_manager.active_account_id(), None);
+    server.verify().await;
+    Ok(())
+}
+
+#[serial_test::serial(auth_env)]
+#[tokio::test]
+async fn concurrent_auth_managers_refresh_a_rotating_token_once() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(100))
+                .set_body_json(json!({
+                    "access_token": "new-access-token",
+                    "refresh_token": "new-refresh-token"
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let ctx = RefreshTokenTestContext::new(&server).await?;
+    let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: Some(build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN)),
+        last_refresh: Some(Utc::now() - Duration::days(1)),
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    };
+    ctx.write_auth(&initial_auth).await?;
+    let second_manager = shared_auth_manager(ctx.codex_home.path()).await;
+
+    let (first, second) = tokio::join!(
+        ctx.auth_manager.refresh_token(),
+        second_manager.refresh_token()
+    );
+    first.context("first manager should refresh")?;
+    second.context("second manager should adopt the refreshed auth")?;
+
+    let expected_tokens = TokenData {
+        access_token: "new-access-token".to_string(),
+        refresh_token: "new-refresh-token".to_string(),
+        ..build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN)
+    };
+    assert_eq!(
+        ctx.auth_manager
+            .auth_cached()
+            .context("first manager should cache auth")?
+            .get_token_data()?,
+        expected_tokens
+    );
+    assert_eq!(
+        second_manager
+            .auth_cached()
+            .context("second manager should cache auth")?
+            .get_token_data()?,
+        expected_tokens
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn refresh_token_does_not_create_a_lock_for_api_key_auth() -> Result<()> {
+    let temp = TempDir::new()?;
+    let missing_home = temp.path().join("missing");
+    let auth_manager = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::from_api_key("sk-test"),
+        missing_home.clone(),
+    );
+
+    auth_manager.refresh_token().await?;
+
+    assert!(!missing_home.exists());
+    Ok(())
+}
+
+#[serial_test::serial(auth_env)]
+#[tokio::test]
+async fn concurrent_managers_attempt_a_terminal_imported_refresh_once() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": {
+                "code": "refresh_token_reused"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let _env_guard = EnvGuard::set(
+        REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+        format!("{}/oauth/token", server.uri()),
+    );
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let stale_auth = account_auth("stale-account", "stale-access", "stale-refresh");
+    let stale_profile = import_account(&store, codex_home.path(), "stale", &stale_auth)?;
+    let first = shared_auth_manager(codex_home.path()).await;
+    let second = shared_auth_manager(codex_home.path()).await;
+
+    let (first_result, second_result) = tokio::join!(first.refresh_token(), second.refresh_token());
+
+    assert!(first_result.is_err());
+    assert!(second_result.is_err());
+    assert!(
+        store
+            .list()?
+            .iter()
+            .find(|profile| profile.id == stale_profile.id)
+            .is_some_and(|profile| profile.login_required)
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[serial_test::serial(auth_env)]
+#[tokio::test]
 async fn refresh_token_reloads_changed_auth_after_permanent_failure() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1213,16 +1511,7 @@ impl RefreshTokenTestContext {
         let endpoint = format!("{}/oauth/token", server.uri());
         let env_guard = EnvGuard::set(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, endpoint);
 
-        let auth_manager = AuthManager::shared(
-            codex_home.path().to_path_buf(),
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            /*forced_chatgpt_workspace_id*/ None,
-            /*chatgpt_base_url*/ None,
-            AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
-        )
-        .await;
+        let auth_manager = shared_auth_manager(codex_home.path()).await;
 
         Ok(Self {
             codex_home,
@@ -1251,6 +1540,19 @@ impl RefreshTokenTestContext {
         self.auth_manager.reload().await;
         Ok(())
     }
+}
+
+async fn shared_auth_manager(codex_home: &Path) -> Arc<AuthManager> {
+    AuthManager::shared(
+        codex_home.to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+    )
+    .await
 }
 
 struct EnvGuard {
@@ -1324,4 +1626,40 @@ fn build_tokens(access_token: &str, refresh_token: &str) -> TokenData {
         refresh_token: refresh_token.to_string(),
         account_id: Some("account-id".to_string()),
     }
+}
+
+fn account_auth(account_id: &str, access_token: &str, refresh_token: &str) -> AuthDotJson {
+    AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: Some(TokenData {
+            account_id: Some(account_id.to_string()),
+            ..build_tokens(access_token, refresh_token)
+        }),
+        last_refresh: Some(Utc::now() - Duration::days(1)),
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+    }
+}
+
+fn import_account(
+    store: &AccountStore,
+    codex_home: &std::path::Path,
+    label: &str,
+    auth: &AuthDotJson,
+) -> Result<AccountProfile> {
+    save_auth(
+        codex_home,
+        auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    store
+        .import_current(
+            Some(label.to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .context("import account")
 }

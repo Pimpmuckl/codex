@@ -240,6 +240,7 @@ c2ln",
     CodexAuth::from_auth_storage(
         codex_home,
         AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
         /*auth_route_config*/ None,

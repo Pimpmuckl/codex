@@ -19,6 +19,7 @@ use crate::save_auth;
 
 const ACCOUNTS_DIR: &str = "accounts";
 const INDEX_FILE: &str = "index.json";
+const INDEX_LOCK_FILE: &str = "index.lock";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -42,6 +43,8 @@ pub struct AccountProfile {
     pub label: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub login_required: bool,
     #[serde(default)]
     pub priority: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,12 +74,12 @@ pub enum AccountAuthScope {
     File,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AccountStore {
     codex_home: PathBuf,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct AccountIndex {
     #[serde(default)]
     accounts: Vec<AccountProfile>,
@@ -93,21 +96,63 @@ impl AccountStore {
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> std::io::Result<AccountProfile> {
-        let auth =
+        let _root_refresh_guard = AccountLease::acquire_auth_refresh(&self.codex_home)?;
+        let root_auth =
             load_auth_dot_json(&self.codex_home, root_store_mode, root_keyring_backend_kind)?
                 .ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "not logged in")
                 })?;
+        let mut auth = root_auth.clone();
+        let imported_from_root_marker = is_root_account_marker(&auth);
+        let source_account_id = account_id_for_auth(&auth)?;
+        let account_home = self.account_home(&source_account_id);
+        let _account_refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
+        if imported_from_root_marker {
+            auth = load_auth_dot_json(
+                &account_home,
+                AuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::default(),
+            )?
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "current imported account is missing auth.json",
+                )
+            })?;
+        }
         if !is_managed_chatgpt_auth(&auth) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "current auth is not a ChatGPT login",
             ));
         }
+        if auth
+            .tokens
+            .as_ref()
+            .is_none_or(|tokens| tokens.refresh_token.trim().is_empty())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "current ChatGPT login is missing a refresh token",
+            ));
+        }
 
         let account_id = account_id_for_auth(&auth)?;
+        if account_id != source_account_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "root account marker does not match imported account auth",
+            ));
+        }
         let label = account_label_for_auth(&auth, label, &account_id)?;
-        let account_home = self.account_home(&account_id);
+        let _index_guard = self.acquire_index_lock()?;
+        let previous_account_auth = load_auth_dot_json(
+            &account_home,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?;
+        let mut index = self.load_index()?;
+        let previous_index = index.clone();
         save_auth(
             &account_home,
             &auth,
@@ -115,8 +160,7 @@ impl AccountStore {
             AuthKeyringBackendKind::default(),
         )?;
 
-        let mut index = self.load_index()?;
-        let auth = AccountAuthStorage {
+        let auth_storage = AccountAuthStorage {
             scope: AccountAuthScope::File,
             path: auth_path_for_id(&account_id),
         };
@@ -132,15 +176,56 @@ impl AccountStore {
             id: account_id,
             label,
             enabled: true,
+            login_required: imported_from_root_marker
+                && existing.is_some_and(|profile| profile.login_required),
             priority,
             usage_limit_resets_at,
-            auth,
+            auth: auth_storage,
         };
 
         index.accounts.retain(|existing| existing.id != profile.id);
         index.accounts.push(profile.clone());
         sort_profiles(&mut index.accounts);
-        self.save_index(&index)?;
+        if let Err(err) = self.save_index(&index) {
+            return match restore_file_auth(&account_home, previous_account_auth.as_ref()) {
+                Ok(()) => Err(err),
+                Err(rollback_err) => Err(std::io::Error::other(format!(
+                    "failed to update imported account index: {err}; failed to restore account auth: {rollback_err}"
+                ))),
+            };
+        }
+        if let Err(err) = save_root_account_marker(
+            &self.codex_home,
+            &auth,
+            root_store_mode,
+            root_keyring_backend_kind,
+        ) {
+            let mut rollback_errors = Vec::new();
+            if let Err(rollback_err) = self.save_index(&previous_index) {
+                rollback_errors.push(format!("restore account index: {rollback_err}"));
+            }
+            if let Err(rollback_err) =
+                restore_file_auth(&account_home, previous_account_auth.as_ref())
+            {
+                rollback_errors.push(format!("restore account auth: {rollback_err}"));
+            }
+            if let Err(rollback_err) = save_auth(
+                &self.codex_home,
+                &root_auth,
+                root_store_mode,
+                root_keyring_backend_kind,
+            ) {
+                rollback_errors.push(format!("restore root auth: {rollback_err}"));
+            }
+            return if rollback_errors.is_empty() {
+                Err(err)
+            } else {
+                Err(std::io::Error::other(format!(
+                    "failed to save imported account marker: {err}; rollback failed: {}",
+                    rollback_errors.join("; ")
+                )))
+            };
+        }
         Ok(profile)
     }
 
@@ -176,6 +261,7 @@ impl AccountStore {
         account_id: &AccountId,
         resets_at: i64,
     ) -> std::io::Result<bool> {
+        let _index_guard = self.acquire_index_lock()?;
         let mut index = self.load_index()?;
         let Some(account) = index
             .accounts
@@ -191,12 +277,58 @@ impl AccountStore {
         Ok(true)
     }
 
+    pub fn record_login_required(&self, account_id: &AccountId) -> std::io::Result<bool> {
+        let _index_guard = self.acquire_index_lock()?;
+        self.record_login_required_unlocked(account_id)
+    }
+
+    pub fn record_login_required_if_auth_matches(
+        &self,
+        account_id: &AccountId,
+        expected_auth: &AuthDotJson,
+    ) -> std::io::Result<bool> {
+        let account_home = self.account_home(account_id);
+        let _refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
+        let current_auth = load_auth_dot_json(
+            &account_home,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?;
+        if current_auth.as_ref() != Some(expected_auth) {
+            return Ok(false);
+        }
+        let _index_guard = self.acquire_index_lock()?;
+        self.record_login_required_unlocked(account_id)
+    }
+
+    fn record_login_required_unlocked(&self, account_id: &AccountId) -> std::io::Result<bool> {
+        let mut index = self.load_index()?;
+        let Some(account) = index
+            .accounts
+            .iter_mut()
+            .find(|account| &account.id == account_id)
+        else {
+            return Ok(false);
+        };
+        if account.login_required {
+            return Ok(true);
+        }
+
+        account.login_required = true;
+        self.save_index(&index)?;
+        Ok(true)
+    }
+
     pub fn apply_imported_account_to_root_auth(
         &self,
         account_id: &AccountId,
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> std::io::Result<AccountProfile> {
+        let account_home = self.account_home(account_id);
+        let _root_refresh_guard = AccountLease::acquire_auth_refresh(&self.codex_home)?;
+        let _account_refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
+        let _index_guard = self.acquire_index_lock()?;
         let (profile, account_home) = self
             .enabled_file_account_profiles()?
             .into_iter()
@@ -219,7 +351,7 @@ impl AccountStore {
             )
         })?;
 
-        save_auth(
+        save_root_account_marker(
             &self.codex_home,
             &auth,
             root_store_mode,
@@ -228,7 +360,7 @@ impl AccountStore {
         Ok(profile)
     }
 
-    pub(crate) fn disable_all(&self) -> std::io::Result<bool> {
+    pub(crate) fn disable_all_unlocked(&self) -> std::io::Result<bool> {
         let mut index = self.load_index()?;
         let mut changed = false;
         for account in &mut index.accounts {
@@ -281,9 +413,16 @@ impl AccountStore {
         &self,
     ) -> std::io::Result<Vec<(AccountProfile, PathBuf)>> {
         Ok(self
+            .file_account_profiles()?
+            .into_iter()
+            .filter(|(account, _)| account.enabled && !account.login_required)
+            .collect())
+    }
+
+    pub(crate) fn file_account_profiles(&self) -> std::io::Result<Vec<(AccountProfile, PathBuf)>> {
+        Ok(self
             .list()?
             .into_iter()
-            .filter(|account| account.enabled)
             .filter_map(|account| match account.auth.scope {
                 AccountAuthScope::File => {
                     let home = self.account_home(&account.id);
@@ -291,6 +430,23 @@ impl AccountStore {
                 }
             })
             .collect())
+    }
+
+    pub(crate) fn file_auth_homes(&self) -> std::io::Result<Vec<PathBuf>> {
+        let entries = match std::fs::read_dir(self.accounts_dir()) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+        let mut auth_homes = Vec::new();
+        for entry in entries {
+            let account_home = entry?.path();
+            if account_home.join("auth.json").is_file() {
+                auth_homes.push(account_home);
+            }
+        }
+        auth_homes.sort();
+        Ok(auth_homes)
     }
 
     pub(crate) fn account_home(&self, account_id: &AccountId) -> PathBuf {
@@ -303,6 +459,10 @@ impl AccountStore {
 
     fn index_path(&self) -> PathBuf {
         self.accounts_dir().join(INDEX_FILE)
+    }
+
+    pub(crate) fn acquire_index_lock(&self) -> std::io::Result<AccountLease> {
+        AccountLease::acquire(&self.accounts_dir().join(INDEX_LOCK_FILE))
     }
 
     fn load_index(&self) -> std::io::Result<AccountIndex> {
@@ -454,6 +614,43 @@ fn is_managed_chatgpt_auth(auth: &AuthDotJson) -> bool {
             | AuthMode::BedrockApiKey,
         ) => false,
         None => auth.openai_api_key.is_none() && auth.tokens.is_some(),
+    }
+}
+
+pub(crate) fn is_root_account_marker(auth: &AuthDotJson) -> bool {
+    is_managed_chatgpt_auth(auth)
+        && auth
+            .tokens
+            .as_ref()
+            .is_some_and(|tokens| tokens.refresh_token.is_empty())
+}
+
+fn save_root_account_marker(
+    codex_home: &Path,
+    auth: &AuthDotJson,
+    store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<()> {
+    let mut marker = auth.clone();
+    if let Some(tokens) = marker.tokens.as_mut() {
+        tokens.refresh_token.clear();
+    }
+    save_auth(codex_home, &marker, store_mode, keyring_backend_kind)
+}
+
+fn restore_file_auth(auth_home: &Path, auth: Option<&AuthDotJson>) -> std::io::Result<()> {
+    if let Some(auth) = auth {
+        return save_auth(
+            auth_home,
+            auth,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        );
+    }
+    match std::fs::remove_file(auth_home.join("auth.json")) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
     }
 }
 

@@ -9,6 +9,24 @@ pub(crate) struct AccountLease {
 }
 
 impl AccountLease {
+    pub(crate) fn acquire_auth_refresh(auth_home: &Path) -> io::Result<Self> {
+        Self::acquire(&auth_home.join(".auth-refresh.lock"))
+    }
+
+    pub(crate) fn acquire(path: &Path) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.lock_exclusive()?;
+        Ok(Self { file })
+    }
+
     pub(crate) fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
