@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use pretty_assertions::assert_eq;
 use ratatui::Terminal;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 fn candidates() -> Vec<AccountPickerCandidate> {
     vec![
@@ -46,7 +47,7 @@ fn account_picker_snapshot() {
     let view = new_view(
         &candidates(),
         /*selected_idx*/ 1,
-        /*seconds_remaining*/ 15,
+        /*seconds_remaining*/ Some(15),
     );
     let mut terminal =
         Terminal::new(VT100Backend::new(/*width*/ 100, /*height*/ 10)).expect("terminal");
@@ -55,6 +56,17 @@ fn account_picker_snapshot() {
         .expect("render account picker");
 
     insta::assert_snapshot!("account_picker_startup", terminal.backend());
+
+    let view = new_view(
+        &candidates(),
+        /*selected_idx*/ 1,
+        /*seconds_remaining*/ None,
+    );
+    terminal
+        .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
+        .expect("render account picker after input");
+
+    insta::assert_snapshot!("account_picker_after_input", terminal.backend());
 }
 
 #[test]
@@ -74,13 +86,51 @@ fn recommendation_avoids_accounts_used_by_other_sessions() {
 fn enter_selects_highlighted_candidate() {
     let rows = candidates();
     let mut view = new_view(
-        &rows, /*selected_idx*/ 1, /*seconds_remaining*/ 15,
+        &rows,
+        /*selected_idx*/ 1,
+        /*seconds_remaining*/ Some(15),
     );
 
     view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(view.is_complete());
     assert_eq!(view.take_last_selected_index(), Some(1));
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn input_cancels_auto_selection() -> Result<()> {
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let picker = run_startup_account_picker_with_events(
+        &mut tui,
+        candidates(),
+        UnboundedReceiverStream::new(event_rx),
+    );
+    tokio::pin!(picker);
+
+    event_tx.send(TuiEvent::Key(KeyEvent::new(
+        KeyCode::Down,
+        KeyModifiers::NONE,
+    )))?;
+    tokio::select! {
+        biased;
+        result = &mut picker => panic!("picker completed after input: {result:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
+
+    tokio::time::advance(STARTUP_AUTO_PICK_AFTER + Duration::from_secs(1)).await;
+    tokio::select! {
+        biased;
+        result = &mut picker => panic!("picker auto-selected after input: {result:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
+
+    event_tx.send(TuiEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )))?;
+    assert_eq!(picker.await?, Some("acct_c".to_string()));
+    Ok(())
 }
 
 #[test]

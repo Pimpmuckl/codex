@@ -21,6 +21,7 @@ use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 
 const STARTUP_AUTO_PICK_AFTER: Duration = Duration::from_secs(15);
@@ -41,31 +42,36 @@ pub(crate) async fn run_startup_account_picker(
     tui: &mut Tui,
     candidates: Vec<AccountPickerCandidate>,
 ) -> Result<Option<String>> {
+    let events = tui.event_stream();
+    run_startup_account_picker_with_events(tui, candidates, events).await
+}
+
+async fn run_startup_account_picker_with_events(
+    tui: &mut Tui,
+    candidates: Vec<AccountPickerCandidate>,
+    mut events: impl Stream<Item = TuiEvent> + Unpin,
+) -> Result<Option<String>> {
     if candidates.len() <= 1 {
         return Ok(default_candidate(&candidates).map(|candidate| candidate.id.clone()));
     }
 
     let default_idx = default_candidate_index(&candidates);
     let deadline = Instant::now() + STARTUP_AUTO_PICK_AFTER;
-    let mut view = new_view(&candidates, default_idx, STARTUP_AUTO_PICK_AFTER.as_secs());
+    let mut auto_pick = true;
+    let mut view = new_view(
+        &candidates,
+        default_idx,
+        Some(STARTUP_AUTO_PICK_AFTER.as_secs()),
+    );
     draw_view(tui, &view)?;
 
-    let mut events = tui.event_stream();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => {
-                return Ok(Some(candidates[default_idx].id.clone()));
-            }
-            _ = tick.tick() => {
-                let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();
-                let selected_idx = view.selected_index().unwrap_or(default_idx);
-                view = new_view(&candidates, selected_idx, remaining);
-                draw_view(tui, &view)?;
-            }
+            biased;
             event = events.next() => {
                 let Some(event) = event else {
-                    return Ok(Some(candidates[default_idx].id.clone()));
+                    return Ok(auto_pick.then(|| candidates[default_idx].id.clone()));
                 };
                 match event {
                     TuiEvent::Key(key) => {
@@ -84,11 +90,32 @@ pub(crate) async fn run_startup_account_picker(
                                 .and_then(|idx| candidates.get(idx))
                                 .map(|candidate| candidate.id.clone()));
                         }
+                        if auto_pick {
+                            auto_pick = false;
+                            let selected_idx = view.selected_index().unwrap_or(default_idx);
+                            view = new_view(&candidates, selected_idx, None);
+                        }
                         draw_view(tui, &view)?;
                     }
-                    TuiEvent::Paste(_) => {}
+                    TuiEvent::Paste(_) => {
+                        if auto_pick {
+                            auto_pick = false;
+                            let selected_idx = view.selected_index().unwrap_or(default_idx);
+                            view = new_view(&candidates, selected_idx, None);
+                            draw_view(tui, &view)?;
+                        }
+                    }
                     TuiEvent::Draw | TuiEvent::Resize => draw_view(tui, &view)?,
                 }
+            }
+            _ = tokio::time::sleep_until(deadline), if auto_pick => {
+                return Ok(Some(candidates[default_idx].id.clone()));
+            }
+            _ = tick.tick(), if auto_pick => {
+                let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();
+                let selected_idx = view.selected_index().unwrap_or(default_idx);
+                view = new_view(&candidates, selected_idx, Some(remaining));
+                draw_view(tui, &view)?;
             }
         }
     }
@@ -130,7 +157,7 @@ fn default_candidate_index(candidates: &[AccountPickerCandidate]) -> usize {
 fn new_view(
     candidates: &[AccountPickerCandidate],
     selected_idx: usize,
-    seconds_remaining: u64,
+    seconds_remaining: Option<u64>,
 ) -> ListSelectionView {
     let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
     ListSelectionView::new(
@@ -143,15 +170,17 @@ fn new_view(
 fn selection_params(
     candidates: &[AccountPickerCandidate],
     selected_idx: usize,
-    seconds_remaining: u64,
+    seconds_remaining: Option<u64>,
 ) -> SelectionViewParams {
     SelectionViewParams {
         title: Some("Choose account".to_string()),
-        footer_note: Some(Line::from(vec![
-            "Auto-selects in ".dim(),
-            seconds_remaining.to_string().bold(),
-            "s".dim(),
-        ])),
+        footer_note: seconds_remaining.map(|seconds_remaining| {
+            Line::from(vec![
+                "Auto-selects in ".dim(),
+                seconds_remaining.to_string().bold(),
+                "s".dim(),
+            ])
+        }),
         items: candidates.iter().map(selection_item).collect(),
         initial_selected_idx: Some(selected_idx.min(candidates.len().saturating_sub(1))),
         is_searchable: false,
