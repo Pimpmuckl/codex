@@ -65,6 +65,7 @@ use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_jwt_claims;
 use crate::token_data::parse_jwt_expiration;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AutomaticAccountSelection;
 use codex_http_client::HttpClient;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::auth::PlanType as InternalPlanType;
@@ -416,6 +417,27 @@ impl CodexAuth {
         keyring_backend_kind: AuthKeyringBackendKind,
         auth_route_config: Option<&AuthRouteConfig>,
     ) -> std::io::Result<Option<Self>> {
+        Self::from_auth_storage_with_automatic_account_selection(
+            codex_home,
+            auth_credentials_store_mode,
+            forced_chatgpt_workspace_id,
+            chatgpt_base_url,
+            keyring_backend_kind,
+            auth_route_config,
+            AutomaticAccountSelection::Enabled,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn from_auth_storage_with_automatic_account_selection(
+        codex_home: &Path,
+        auth_credentials_store_mode: AuthCredentialsStoreMode,
+        forced_chatgpt_workspace_id: Option<&[String]>,
+        chatgpt_base_url: Option<&str>,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        auth_route_config: Option<&AuthRouteConfig>,
+        automatic_account_selection: AutomaticAccountSelection,
+    ) -> std::io::Result<Option<Self>> {
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(chatgpt_base_url).ok();
         let auth = load_auth(
@@ -430,11 +452,16 @@ impl CodexAuth {
         )
         .await?;
         if !imported_account_refresh::root_auth_is_account_marker(auth.as_ref()) {
-            return Ok(auth);
+            return Ok(auth.filter(|auth| {
+                auth.is_personal_access_token_auth()
+                    || !auth.is_chatgpt_auth()
+                    || chatgpt_auth_workspace_allowed(auth, forced_chatgpt_workspace_id)
+            }));
         }
         Ok(load_initial_imported_account_auth(
             codex_home,
             auth.as_ref(),
+            automatic_account_selection,
             forced_chatgpt_workspace_id,
             chatgpt_base_url,
             agent_identity_authapi_base_url.as_deref(),
@@ -1119,6 +1146,7 @@ pub struct AuthConfig {
     pub codex_home: PathBuf,
     pub auth_credentials_store_mode: AuthCredentialsStoreMode,
     pub keyring_backend_kind: AuthKeyringBackendKind,
+    pub automatic_account_selection: AutomaticAccountSelection,
     pub forced_login_method: Option<ForcedLoginMethod>,
     pub chatgpt_base_url: Option<String>,
     pub forced_chatgpt_workspace_id: Option<Vec<String>>,
@@ -1158,6 +1186,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
         let Some((_, _, auth)) = load_initial_imported_account_auth(
             &config.codex_home,
             Some(&root_auth),
+            config.automatic_account_selection,
             config.forced_chatgpt_workspace_id.as_deref(),
             config.chatgpt_base_url.as_deref(),
             agent_identity_authapi_base_url,
@@ -1881,6 +1910,7 @@ pub struct AuthManager {
     auth_change_tx: watch::Sender<u64>,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
+    automatic_account_selection: AutomaticAccountSelection,
     keyring_backend_kind: AuthKeyringBackendKind,
     forced_chatgpt_workspace_id: RwLock<Option<Vec<String>>>,
     chatgpt_base_url: Option<String>,
@@ -1908,6 +1938,8 @@ pub trait AuthManagerConfig {
     /// Returns the backend to use when CLI auth keyring storage is selected.
     fn auth_keyring_backend_kind(&self) -> AuthKeyringBackendKind;
 
+    /// Returns the policy for automatic imported-account selection and failover.
+    fn automatic_account_selection(&self) -> AutomaticAccountSelection;
     /// Returns the workspace IDs that ChatGPT auth should be restricted to, if any.
     fn forced_chatgpt_workspace_id(&self) -> Option<Vec<String>>;
 
@@ -1928,6 +1960,10 @@ impl Debug for AuthManager {
                 "auth_credentials_store_mode",
                 &self.auth_credentials_store_mode,
             )
+            .field(
+                "automatic_account_selection",
+                &self.automatic_account_selection,
+            )
             .field("keyring_backend_kind", &self.keyring_backend_kind)
             .field(
                 "forced_chatgpt_workspace_id",
@@ -1947,6 +1983,7 @@ fn default_agent_identity_authapi_base_url() -> Option<String> {
 async fn load_initial_imported_account_auth(
     codex_home: &Path,
     root_auth: Option<&CodexAuth>,
+    automatic_account_selection: AutomaticAccountSelection,
     forced_chatgpt_workspace_id: Option<&[String]>,
     chatgpt_base_url: Option<&str>,
     agent_identity_authapi_base_url: Option<&str>,
@@ -1954,9 +1991,10 @@ async fn load_initial_imported_account_auth(
 ) -> Option<(AccountId, PathBuf, CodexAuth)> {
     let store = AccountStore::new(codex_home.to_path_buf());
     let accounts: Vec<_> = store
-        .enabled_file_account_profiles()
+        .file_account_profiles()
         .unwrap_or_default()
         .into_iter()
+        .filter(|(account, _)| account.enabled && !account.login_required)
         .map(|(account, account_home)| {
             let in_use = store.account_in_use(&account.id).unwrap_or(false);
             (account, account_home, in_use)
@@ -1969,7 +2007,10 @@ async fn load_initial_imported_account_auth(
         .and_then(|auth| account_id_for_auth(&auth).ok())
     {
         for (account, account_home, in_use) in &accounts {
-            if account.id != root_account_id || *in_use || imported_account_blocked(account, now) {
+            if account.id != root_account_id
+                || (automatic_account_selection == AutomaticAccountSelection::Enabled
+                    && (*in_use || imported_account_blocked(account, now)))
+            {
                 continue;
             }
             if let Some(auth) = load_imported_account_auth(
@@ -1986,6 +2027,9 @@ async fn load_initial_imported_account_auth(
         }
     }
 
+    if automatic_account_selection == AutomaticAccountSelection::Disabled {
+        return None;
+    }
     for blocked in [false, true] {
         for in_use in [false, true] {
             for (account, account_home, account_in_use) in &accounts {
@@ -2047,6 +2091,12 @@ fn chatgpt_auth_workspace_allowed(
     if expected_workspace_ids.is_none() {
         return true;
     }
+    if auth.is_external_chatgpt_tokens() {
+        return auth.get_account_id().as_deref().is_some_and(|account_id| {
+            crate::server::ensure_workspace_account_allowed(expected_workspace_ids, account_id)
+                .is_ok()
+        });
+    }
     let Ok(token_data) = auth.get_token_data() else {
         return false;
     };
@@ -2071,6 +2121,29 @@ impl AuthManager {
         keyring_backend_kind: AuthKeyringBackendKind,
         auth_route_config: Option<AuthRouteConfig>,
     ) -> Self {
+        Self::new_with_automatic_account_selection(
+            codex_home,
+            enable_codex_api_key_env,
+            auth_credentials_store_mode,
+            forced_chatgpt_workspace_id,
+            chatgpt_base_url,
+            keyring_backend_kind,
+            auth_route_config,
+            AutomaticAccountSelection::Enabled,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_with_automatic_account_selection(
+        codex_home: PathBuf,
+        enable_codex_api_key_env: bool,
+        auth_credentials_store_mode: AuthCredentialsStoreMode,
+        forced_chatgpt_workspace_id: Option<Vec<String>>,
+        chatgpt_base_url: Option<String>,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        auth_route_config: Option<AuthRouteConfig>,
+        automatic_account_selection: AutomaticAccountSelection,
+    ) -> Self {
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
         let root_auth = load_auth(
@@ -2087,6 +2160,7 @@ impl AuthManager {
         .ok()
         .flatten();
         let root_auth_workspace_allowed = match root_auth.as_ref() {
+            Some(auth) if auth.is_personal_access_token_auth() => true,
             Some(auth) if auth.is_chatgpt_auth() => {
                 chatgpt_auth_workspace_allowed(auth, forced_chatgpt_workspace_id.as_deref())
             }
@@ -2097,35 +2171,55 @@ impl AuthManager {
                 &codex_home,
                 root_auth.as_ref(),
             );
-        let should_prefer_imported_accounts = !root_reauthenticates_login_required_account
-            && match root_auth.as_ref() {
-                Some(CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_)) | None => true,
-                Some(
-                    CodexAuth::ApiKey(_)
-                    | CodexAuth::Headers(_)
-                    | CodexAuth::AgentIdentity(_)
-                    | CodexAuth::PersonalAccessToken(_)
-                    | CodexAuth::BedrockApiKey(_),
-                ) => false,
-            };
         let root_auth_is_account_marker =
             imported_account_refresh::root_auth_is_account_marker(root_auth.as_ref());
-        let (active_account_id, active_auth_home, managed_auth) = if should_prefer_imported_accounts
-        {
-            match load_initial_imported_account_auth(
-                &codex_home,
-                root_auth.as_ref(),
-                forced_chatgpt_workspace_id.as_deref(),
-                chatgpt_base_url.as_deref(),
-                agent_identity_authapi_base_url.as_deref(),
-                auth_route_config.as_ref(),
-            )
-            .await
-            {
-                Some((account_id, account_home, auth)) => {
+        let store = AccountStore::new(codex_home.clone());
+        let current_account_id = store
+            .current_root_account_id(auth_credentials_store_mode, keyring_backend_kind)
+            .ok()
+            .flatten();
+        let selected_login_required_account = store
+            .file_account_profiles()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|(account, _)| {
+                automatic_account_selection == AutomaticAccountSelection::Disabled
+                    && account.enabled
+                    && account.login_required
+                    && current_account_id.as_ref() == Some(&account.id)
+            });
+        let should_load_imported_account = root_auth_is_account_marker
+            || (automatic_account_selection == AutomaticAccountSelection::Enabled
+                && !root_reauthenticates_login_required_account
+                && match root_auth.as_ref() {
+                    Some(CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_)) | None => true,
+                    Some(
+                        CodexAuth::ApiKey(_)
+                        | CodexAuth::Headers(_)
+                        | CodexAuth::AgentIdentity(_)
+                        | CodexAuth::PersonalAccessToken(_)
+                        | CodexAuth::BedrockApiKey(_),
+                    ) => false,
+                });
+        let (active_account_id, active_auth_home, managed_auth) = if should_load_imported_account {
+            match (
+                load_initial_imported_account_auth(
+                    &codex_home,
+                    root_auth.as_ref(),
+                    automatic_account_selection,
+                    forced_chatgpt_workspace_id.as_deref(),
+                    chatgpt_base_url.as_deref(),
+                    agent_identity_authapi_base_url.as_deref(),
+                    auth_route_config.as_ref(),
+                )
+                .await,
+                selected_login_required_account,
+            ) {
+                (Some((account_id, account_home, auth)), _) => {
                     (Some(account_id), account_home, Some(auth))
                 }
-                None => (
+                (None, Some((account, _))) => (Some(account.id), codex_home.clone(), None),
+                (None, None) => (
                     None,
                     codex_home.clone(),
                     (!root_auth_is_account_marker && root_auth_workspace_allowed)
@@ -2134,7 +2228,11 @@ impl AuthManager {
                 ),
             }
         } else {
-            (None, codex_home.clone(), root_auth)
+            (
+                None,
+                codex_home.clone(),
+                root_auth_workspace_allowed.then_some(root_auth).flatten(),
+            )
         };
         let active_account_lease = active_account_id.as_ref().and_then(|account_id| {
             AccountStore::new(codex_home.clone())
@@ -2155,6 +2253,7 @@ impl AuthManager {
             auth_change_tx,
             enable_codex_api_key_env,
             auth_credentials_store_mode,
+            automatic_account_selection,
             keyring_backend_kind,
             forced_chatgpt_workspace_id: RwLock::new(forced_chatgpt_workspace_id),
             chatgpt_base_url,
@@ -2184,6 +2283,7 @@ impl AuthManager {
             auth_change_tx,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
@@ -2212,6 +2312,7 @@ impl AuthManager {
             auth_change_tx,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
@@ -2244,6 +2345,7 @@ impl AuthManager {
             auth_change_tx,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
@@ -2274,6 +2376,7 @@ impl AuthManager {
             auth_change_tx,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
             forced_chatgpt_workspace_id: RwLock::new(None),
             chatgpt_base_url: None,
@@ -2406,6 +2509,17 @@ impl AuthManager {
         tracing::info!("Reloading auth");
         let active_account_id_before_reload = self.active_account_id();
         let loaded_auth = self.load_auth().await;
+        if let (Some(account_id), Some(auth)) = (
+            active_account_id_before_reload.as_ref(),
+            loaded_auth.auth.as_ref(),
+        ) && auth
+            .get_current_auth_json()
+            .and_then(|auth| account_id_for_auth(&auth).ok())
+            .as_ref()
+            != Some(account_id)
+        {
+            self.clear_active_imported_account();
+        }
         if let Some((account_id, account_home)) = loaded_auth.imported_source {
             self.set_active_imported_account_source(account_id, account_home);
         }
@@ -2545,6 +2659,7 @@ impl AuthManager {
         let imported_source = load_initial_imported_account_auth(
             &self.codex_home,
             auth.as_ref(),
+            self.automatic_account_selection,
             forced_chatgpt_workspace_id.as_deref(),
             self.chatgpt_base_url.as_deref(),
             self.agent_identity_authapi_base_url.as_deref(),
@@ -2588,7 +2703,7 @@ impl AuthManager {
     }
 
     fn active_auth_credentials_store_mode(&self) -> AuthCredentialsStoreMode {
-        if self.active_account_id().is_some() {
+        if self.active_auth_home() != self.codex_home {
             AuthCredentialsStoreMode::File
         } else {
             self.auth_credentials_store_mode
@@ -2596,7 +2711,7 @@ impl AuthManager {
     }
 
     fn active_keyring_backend_kind(&self) -> AuthKeyringBackendKind {
-        if self.active_account_id().is_some() {
+        if self.active_auth_home() != self.codex_home {
             AuthKeyringBackendKind::default()
         } else {
             self.keyring_backend_kind
@@ -2630,9 +2745,9 @@ impl AuthManager {
             return Ok(());
         }
         let (account, account_home) = AccountStore::new(self.codex_home.clone())
-            .enabled_file_account_profiles()?
+            .file_account_profiles()?
             .into_iter()
-            .find(|(account, _)| &account.id == account_id)
+            .find(|(account, _)| account.enabled && &account.id == account_id)
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -2640,6 +2755,11 @@ impl AuthManager {
                 )
             })?;
 
+        if account.login_required {
+            self.set_active_imported_account_source(account.id, self.codex_home.clone());
+            self.set_cached_auth(/*new_auth*/ None);
+            return Ok(());
+        }
         let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
         let auth = load_imported_account_auth(
             &account_home,
@@ -2673,6 +2793,9 @@ impl AuthManager {
         &self,
         attempted_account_ids: &HashSet<String>,
     ) -> bool {
+        if self.automatic_account_selection == AutomaticAccountSelection::Disabled {
+            return false;
+        }
         let Ok(_refresh_guard) = self.refresh_lock.acquire().await else {
             return false;
         };
@@ -2812,6 +2935,9 @@ impl AuthManager {
         self.enable_codex_api_key_env
     }
 
+    pub fn automatic_account_selection(&self) -> AutomaticAccountSelection {
+        self.automatic_account_selection
+    }
     /// Convenience constructor returning an `Arc` wrapper.
     pub async fn shared(
         codex_home: PathBuf,
@@ -2841,16 +2967,19 @@ impl AuthManager {
         config: &impl AuthManagerConfig,
         enable_codex_api_key_env: bool,
     ) -> Arc<Self> {
-        Self::shared(
-            config.codex_home(),
-            enable_codex_api_key_env,
-            config.cli_auth_credentials_store_mode(),
-            config.forced_chatgpt_workspace_id(),
-            Some(config.chatgpt_base_url()),
-            config.auth_keyring_backend_kind(),
-            config.auth_route_config(),
+        Arc::new(
+            Self::new_with_automatic_account_selection(
+                config.codex_home(),
+                enable_codex_api_key_env,
+                config.cli_auth_credentials_store_mode(),
+                config.forced_chatgpt_workspace_id(),
+                Some(config.chatgpt_base_url()),
+                config.auth_keyring_backend_kind(),
+                config.auth_route_config(),
+                config.automatic_account_selection(),
+            )
+            .await,
         )
-        .await
     }
 
     pub fn unauthorized_recovery(self: &Arc<Self>) -> UnauthorizedRecovery {

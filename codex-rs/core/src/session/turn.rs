@@ -74,6 +74,7 @@ use codex_analytics::InvocationType;
 use codex_analytics::TurnResolvedConfigFact;
 use codex_analytics::build_track_events_context;
 use codex_async_utils::OrCancelExt;
+use codex_config::types::AutomaticAccountSelection;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::TurnInputContext;
@@ -1175,7 +1176,7 @@ async fn run_sampling_request(
                 sess.set_total_tokens_full(&turn_context).await;
                 return Err(CodexErr::ContextWindowExceeded);
             }
-            Err(CodexErr::UsageLimitReached(e)) => {
+            Err(CodexErr::UsageLimitReached(mut e)) => {
                 let rate_limits = e.rate_limits.clone();
                 if let Some(rate_limits) = rate_limits {
                     sess.update_rate_limits(&turn_context, *rate_limits).await;
@@ -1203,6 +1204,18 @@ async fn run_sampling_request(
                         }
                         turn_context.turn_timing_state.record_sampling_retry();
                         continue;
+                    }
+                    if auth_manager.automatic_account_selection()
+                        == AutomaticAccountSelection::Disabled
+                        && auth_manager.active_account_id().is_some()
+                    {
+                        let account_guidance = "Automatic account selection is disabled. Choose another account in the Codex TUI or enable automatic account selection";
+                        e.promo_message = Some(match e.promo_message.take() {
+                            Some(promo_message) => {
+                                format!("{promo_message}\n\n{account_guidance}")
+                            }
+                            None => account_guidance.to_string(),
+                        });
                     }
                 }
                 return Err(CodexErr::UsageLimitReached(e));
