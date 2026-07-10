@@ -1,0 +1,336 @@
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
+
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_protocol::auth::RefreshTokenFailedReason;
+
+use super::AuthManager;
+use super::CodexAuth;
+use super::RefreshTokenError;
+use super::RefreshTokenFailedError;
+use super::ReloadOutcome;
+use super::load_auth_dot_json;
+use super::revoke_auth_tokens;
+use crate::account::AccountId;
+use crate::account::AccountStore;
+use crate::account::account_id_for_auth;
+use crate::account::is_root_account_marker;
+use crate::account_lease::AccountLease;
+use crate::auth::storage::AuthDotJson;
+use crate::auth::storage::AuthKeyringBackendKind;
+
+const IMPORTED_ACCOUNT_LOGIN_REQUIRED_MESSAGE: &str =
+    "This account needs you to sign in again. Run `codex account add` to continue.";
+
+pub(super) enum ImportedAccountRefreshReadiness {
+    Ready,
+    Recovered,
+}
+
+pub(super) fn root_auth_is_account_marker(root_auth: Option<&CodexAuth>) -> bool {
+    root_auth
+        .and_then(CodexAuth::get_current_auth_json)
+        .is_some_and(|auth| is_root_account_marker(&auth))
+}
+
+pub(super) fn root_auth_reauthenticates_login_required_account(
+    codex_home: &Path,
+    root_auth: Option<&CodexAuth>,
+) -> bool {
+    root_auth
+        .and_then(CodexAuth::get_current_auth_json)
+        .filter(|auth| !is_root_account_marker(auth))
+        .and_then(|auth| account_id_for_auth(&auth).ok())
+        .is_some_and(|root_account_id| {
+            AccountStore::new(codex_home.to_path_buf())
+                .list()
+                .is_ok_and(|accounts| {
+                    accounts
+                        .iter()
+                        .any(|account| account.id == root_account_id && account.login_required)
+                })
+        })
+}
+
+pub(super) struct ManagedAuthRefreshLocks {
+    account_store: AccountStore,
+    account_homes: Vec<PathBuf>,
+    index_readable: bool,
+    index_guard: Option<AccountLease>,
+    _refresh_guards: Vec<AccountLease>,
+}
+
+impl ManagedAuthRefreshLocks {
+    pub(super) fn account_homes(&self) -> &[PathBuf] {
+        &self.account_homes
+    }
+
+    pub(super) fn disable_all(&self) -> std::io::Result<bool> {
+        if self.index_guard.is_none() {
+            return Err(std::io::Error::other("account index lock is not held"));
+        }
+        if self.index_readable {
+            self.account_store.disable_all_unlocked()
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub(super) fn release_index_lock(&mut self) {
+        self.index_guard = None;
+    }
+
+    pub(super) async fn reacquire_index_lock(&mut self) -> std::io::Result<()> {
+        let account_store = self.account_store.clone();
+        self.index_guard = Some(
+            tokio::task::spawn_blocking(move || account_store.acquire_index_lock())
+                .await
+                .map_err(std::io::Error::other)??,
+        );
+        Ok(())
+    }
+}
+
+impl AuthManager {
+    pub(super) async fn acquire_refresh_file_lock(
+        &self,
+    ) -> Result<Option<AccountLease>, RefreshTokenError> {
+        if self.has_external_auth() {
+            return Ok(None);
+        }
+        let auth_home = self.active_auth_home();
+        tokio::task::spawn_blocking(move || acquire_refresh_file_lock(&auth_home))
+            .await
+            .map_err(|err| RefreshTokenError::Transient(std::io::Error::other(err)))?
+            .map(Some)
+            .map_err(RefreshTokenError::Transient)
+    }
+
+    pub(super) async fn acquire_managed_auth_refresh_locks(
+        &self,
+    ) -> std::io::Result<ManagedAuthRefreshLocks> {
+        let codex_home = self.codex_home.clone();
+        tokio::task::spawn_blocking(move || acquire_managed_auth_refresh_locks(&codex_home))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub(super) async fn revoke_managed_auth(&self, locks: &ManagedAuthRefreshLocks) {
+        let mut auth_snapshots = Vec::new();
+        if let Some(auth) = self
+            .auth_cached()
+            .and_then(|auth| auth.get_current_auth_json())
+            .filter(|auth| !is_root_account_marker(auth))
+        {
+            auth_snapshots.push(auth);
+        }
+        if let Some(auth) = load_auth_snapshot(
+            &self.codex_home,
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        )
+        .filter(|auth| !is_root_account_marker(auth))
+        {
+            auth_snapshots.push(auth);
+        }
+        if self.auth_credentials_store_mode != AuthCredentialsStoreMode::Ephemeral
+            && let Some(auth) = load_auth_snapshot(
+                &self.codex_home,
+                self.auth_credentials_store_mode,
+                self.keyring_backend_kind,
+            )
+            .filter(|auth| !is_root_account_marker(auth))
+        {
+            auth_snapshots.push(auth);
+        }
+        for account_home in locks.account_homes() {
+            if let Some(auth) = load_auth_snapshot(
+                account_home,
+                AuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::default(),
+            ) {
+                auth_snapshots.push(auth);
+            }
+        }
+
+        let mut revoked_tokens = HashSet::new();
+        for auth in auth_snapshots {
+            let Some(token) = revocation_token(&auth) else {
+                continue;
+            };
+            if !revoked_tokens.insert(token.to_string()) {
+                continue;
+            }
+            if let Err(err) = revoke_auth_tokens(Some(&auth), self.auth_route_config.as_ref()).await
+            {
+                tracing::warn!("failed to revoke auth tokens during logout: {err}");
+            }
+        }
+    }
+
+    pub(super) async fn recover_terminal_imported_refresh(
+        &self,
+        result: Result<(), RefreshTokenError>,
+        attempted_account_id: Option<AccountId>,
+    ) -> Result<(), RefreshTokenError> {
+        let terminal = matches!(
+            result
+                .as_ref()
+                .err()
+                .and_then(RefreshTokenError::failed_reason),
+            Some(
+                RefreshTokenFailedReason::Expired
+                    | RefreshTokenFailedReason::Exhausted
+                    | RefreshTokenFailedReason::Revoked
+            )
+        );
+        let Some(attempted_account_id) = terminal.then_some(attempted_account_id).flatten() else {
+            return result;
+        };
+        if self.active_account_id().as_ref() == Some(&attempted_account_id) {
+            let expected_account_id = self
+                .auth_cached()
+                .as_ref()
+                .and_then(CodexAuth::get_account_id);
+            if matches!(
+                self.reload_if_account_id_matches(expected_account_id.as_deref())
+                    .await,
+                ReloadOutcome::ReloadedChanged
+            ) {
+                return Ok(());
+            }
+        }
+
+        AccountStore::new(self.codex_home.clone())
+            .record_login_required(&attempted_account_id)
+            .map_err(RefreshTokenError::Transient)?;
+        if self.active_account_id().as_ref() == Some(&attempted_account_id) {
+            self.move_off_imported_account_requiring_login(attempted_account_id)
+                .await
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) async fn reconcile_imported_account_refresh_readiness(
+        &self,
+    ) -> Result<ImportedAccountRefreshReadiness, RefreshTokenError> {
+        let Some(active_account_id) = self.active_account_id() else {
+            return Ok(ImportedAccountRefreshReadiness::Ready);
+        };
+        let login_required = AccountStore::new(self.codex_home.clone())
+            .list()
+            .map_err(RefreshTokenError::Transient)?
+            .into_iter()
+            .find(|account| account.id == active_account_id)
+            .is_some_and(|account| account.login_required);
+        if !login_required {
+            return Ok(ImportedAccountRefreshReadiness::Ready);
+        }
+
+        self.move_off_imported_account_requiring_login(active_account_id)
+            .await?;
+        Ok(ImportedAccountRefreshReadiness::Recovered)
+    }
+
+    async fn move_off_imported_account_requiring_login(
+        &self,
+        active_account_id: AccountId,
+    ) -> Result<(), RefreshTokenError> {
+        let attempted_account_ids = HashSet::from([active_account_id.to_string()]);
+        if self
+            .switch_to_next_imported_account_unlocked(&attempted_account_ids)
+            .await
+        {
+            tracing::info!(%active_account_id, "switched away from imported account that requires login");
+            Ok(())
+        } else {
+            self.clear_active_imported_account();
+            self.set_cached_auth(/*new_auth*/ None);
+            Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Other,
+                IMPORTED_ACCOUNT_LOGIN_REQUIRED_MESSAGE.to_string(),
+            )))
+        }
+    }
+}
+
+fn acquire_refresh_file_lock(auth_home: &Path) -> std::io::Result<AccountLease> {
+    AccountLease::acquire_auth_refresh(auth_home)
+}
+
+fn acquire_managed_auth_refresh_locks(
+    codex_home: &Path,
+) -> std::io::Result<ManagedAuthRefreshLocks> {
+    loop {
+        let account_store = AccountStore::new(codex_home.to_path_buf());
+        let (account_homes, index_readable) = file_account_homes(&account_store)?;
+        let mut auth_homes = vec![codex_home.to_path_buf()];
+        auth_homes.extend(account_homes.iter().cloned());
+        auth_homes.sort();
+        auth_homes.dedup();
+        let refresh_guards = auth_homes
+            .iter()
+            .map(|auth_home| acquire_refresh_file_lock(auth_home))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let index_guard = account_store.acquire_index_lock()?;
+        let (current_account_homes, current_index_readable) = file_account_homes(&account_store)?;
+        if current_account_homes == account_homes && current_index_readable == index_readable {
+            return Ok(ManagedAuthRefreshLocks {
+                account_store,
+                account_homes,
+                index_readable,
+                index_guard: Some(index_guard),
+                _refresh_guards: refresh_guards,
+            });
+        }
+    }
+}
+
+fn file_account_homes(account_store: &AccountStore) -> std::io::Result<(Vec<PathBuf>, bool)> {
+    let (mut account_homes, index_readable) = match account_store.file_account_profiles() {
+        Ok(profiles) => (
+            profiles
+                .into_iter()
+                .map(|(_account, account_home)| account_home)
+                .collect(),
+            true,
+        ),
+        Err(err) => {
+            tracing::warn!(%err, "account index is unreadable during logout; scanning account auth files");
+            (account_store.file_auth_homes()?, false)
+        }
+    };
+    account_homes.sort();
+    account_homes.dedup();
+    Ok((account_homes, index_readable))
+}
+
+fn load_auth_snapshot(
+    auth_home: &Path,
+    store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Option<AuthDotJson> {
+    match load_auth_dot_json(auth_home, store_mode, keyring_backend_kind) {
+        Ok(auth) => auth,
+        Err(err) => {
+            tracing::warn!(
+                auth_home = %auth_home.display(),
+                "failed to load stored auth during logout: {err}"
+            );
+            None
+        }
+    }
+}
+
+fn revocation_token(auth: &AuthDotJson) -> Option<&str> {
+    let tokens = auth.tokens.as_ref()?;
+    if !tokens.refresh_token.is_empty() {
+        Some(tokens.refresh_token.as_str())
+    } else if !tokens.access_token.is_empty() {
+        Some(tokens.access_token.as_str())
+    } else {
+        None
+    }
+}

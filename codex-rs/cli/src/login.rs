@@ -10,6 +10,7 @@
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
 use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
@@ -428,6 +429,7 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     match CodexAuth::from_auth_storage(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
+        config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
         auth_route_config.as_ref(),
@@ -478,16 +480,10 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
 
 pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
-    let auth_route_config = config.auth_route_config();
+    let auth_manager =
+        AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
 
-    match logout_with_revoke(
-        &config.codex_home,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
-    )
-    .await
-    {
+    match auth_manager.logout_with_revoke().await {
         Ok(true) => {
             eprintln!("Successfully logged out");
             std::process::exit(0);
