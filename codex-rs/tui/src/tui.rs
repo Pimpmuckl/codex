@@ -19,6 +19,7 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
+#[cfg(not(windows))]
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyEvent;
 use crossterm::terminal::EnterAlternateScreen;
@@ -178,6 +179,11 @@ pub fn set_modes() -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
 
     enable_raw_mode()?;
+    if let Err(err) = ensure_native_windows_input_mode() {
+        let _ = execute!(stdout(), DisableBracketedPaste);
+        let _ = disable_raw_mode();
+        return Err(err);
+    }
     // Enable keyboard enhancement flags so modifiers for keys like Enter are disambiguated.
     // chat_composer.rs is using a keyboard event listener to enter for any modified keys
     // to create a new line that require this.
@@ -185,7 +191,7 @@ pub fn set_modes() -> Result<()> {
     // keyboard enhancement flags. Attempt to enable them, but continue
     // gracefully if unsupported.
     keyboard_modes::enable_keyboard_enhancement();
-
+    #[cfg(not(windows))]
     let _ = execute!(stdout(), EnableFocusChange);
     Ok(())
 }
@@ -262,6 +268,9 @@ fn restore_common(
     if matches!(raw_mode_restore, RawModeRestore::Disable)
         && let Err(err) = disable_raw_mode()
     {
+        first_error.get_or_insert(err);
+    }
+    if let Err(err) = restore_native_windows_input_mode() {
         first_error.get_or_insert(err);
     }
     if let Err(err) = execute!(
@@ -1087,6 +1096,92 @@ impl Tui {
         }
         Ok(None)
     }
+}
+
+#[cfg(windows)]
+static ORIGINAL_VIRTUAL_TERMINAL_INPUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn ensure_native_windows_input_mode() -> Result<()> {
+    use windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+    let Some((handle, mode)) = windows_console_input_mode()? else {
+        return Ok(());
+    };
+    ORIGINAL_VIRTUAL_TERMINAL_INPUT.get_or_init(|| mode & ENABLE_VIRTUAL_TERMINAL_INPUT != 0);
+
+    let native_mode = mode & !ENABLE_VIRTUAL_TERMINAL_INPUT;
+    if native_mode != mode {
+        set_windows_console_input_mode(handle, native_mode)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restore_native_windows_input_mode() -> Result<()> {
+    use windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+    let Some(originally_enabled) = ORIGINAL_VIRTUAL_TERMINAL_INPUT.get().copied() else {
+        return Ok(());
+    };
+    let Some((handle, mode)) = windows_console_input_mode()? else {
+        return Ok(());
+    };
+
+    let restored_mode = if originally_enabled {
+        mode | ENABLE_VIRTUAL_TERMINAL_INPUT
+    } else {
+        mode & !ENABLE_VIRTUAL_TERMINAL_INPUT
+    };
+    if restored_mode != mode {
+        set_windows_console_input_mode(handle, restored_mode)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_native_windows_input_mode() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn restore_native_windows_input_mode() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_console_input_mode() -> Result<Option<(windows_sys::Win32::Foundation::HANDLE, u32)>> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetConsoleMode;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if handle == INVALID_HANDLE_VALUE || handle == 0 {
+        return Ok(None);
+    }
+
+    let mut mode = 0;
+    if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some((handle, mode)))
+}
+
+#[cfg(windows)]
+fn set_windows_console_input_mode(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    mode: u32,
+) -> Result<()> {
+    use windows_sys::Win32::System::Console::SetConsoleMode;
+
+    if unsafe { SetConsoleMode(handle, mode) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
