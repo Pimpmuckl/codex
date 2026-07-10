@@ -1,3 +1,5 @@
+mod account;
+mod account_lease;
 pub mod auth;
 pub mod auth_env_telemetry;
 pub mod token_data;
@@ -8,6 +10,12 @@ mod pkce;
 mod server;
 mod success_page;
 
+pub use account::AccountAuthScope;
+pub use account::AccountAuthStorage;
+pub use account::AccountCandidate;
+pub use account::AccountId;
+pub use account::AccountProfile;
+pub use account::AccountStore;
 pub use codex_config::types::AuthCredentialsStoreMode;
 pub use codex_http_client::BuildCustomCaTransportError as BuildLoginHttpClientError;
 pub use device_code_auth::DeviceCode;
@@ -54,6 +62,7 @@ pub use auth::logout_with_revoke;
 pub use auth::oauth_client_id;
 pub use auth::read_codex_access_token_from_env;
 pub use auth::read_openai_api_key_from_env;
+pub use auth::refresh_auth_from_storage;
 pub use auth::save_auth;
 pub use auth_env_telemetry::AuthEnvTelemetry;
 pub use auth_env_telemetry::collect_auth_env_telemetry;

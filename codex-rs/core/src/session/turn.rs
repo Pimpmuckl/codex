@@ -1138,6 +1138,7 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut usage_limit_account_attempts = HashSet::new();
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
@@ -1178,6 +1179,31 @@ async fn run_sampling_request(
                 let rate_limits = e.rate_limits.clone();
                 if let Some(rate_limits) = rate_limits {
                     sess.update_rate_limits(&turn_context, *rate_limits).await;
+                }
+                if let Some(auth_manager) = turn_context.auth_manager.as_ref() {
+                    if let Some(account_id) = auth_manager.active_account_id() {
+                        if let Some(resets_at) = e.resets_at.as_ref()
+                            && let Err(err) = auth_manager
+                                .record_imported_account_usage_limit_resets_at(
+                                    &account_id,
+                                    resets_at.timestamp(),
+                                )
+                        {
+                            warn!("failed to record account usage limit reset: {err}");
+                        }
+                        usage_limit_account_attempts.insert(account_id.to_string());
+                    }
+                    if auth_manager
+                        .switch_to_next_imported_account(&usage_limit_account_attempts)
+                        .await
+                    {
+                        client_session.reset_websocket_session();
+                        if original_input.is_none() {
+                            original_input = Some(prompt.input);
+                        }
+                        turn_context.turn_timing_state.record_sampling_retry();
+                        continue;
+                    }
                 }
                 return Err(CodexErr::UsageLimitReached(e));
             }
