@@ -12,8 +12,14 @@ fn candidates() -> Vec<AccountPickerCandidate> {
         AccountPickerCandidate {
             id: "acct_a".to_string(),
             email: "first@example.com".to_string(),
+            primary_window_label: "5h".to_string(),
+            five_hour_reset: Some("Jul 10 17:00Z".to_string()),
+            five_hour_usage_left_percent: Some(0),
+            five_hour_exhausted: true,
             weekly_reset: Some("Jul 14".to_string()),
-            usage_left_percent: Some(12),
+            weekly_usage_left_percent: Some(12),
+            weekly_exhausted: false,
+            blocked_until: None,
             blocked: false,
             in_use: true,
             is_current: true,
@@ -22,8 +28,14 @@ fn candidates() -> Vec<AccountPickerCandidate> {
         AccountPickerCandidate {
             id: "acct_b".to_string(),
             email: "best@example.com".to_string(),
+            primary_window_label: "5h".to_string(),
+            five_hour_reset: Some("Jul 10 18:00Z".to_string()),
+            five_hour_usage_left_percent: Some(72),
+            five_hour_exhausted: false,
             weekly_reset: None,
-            usage_left_percent: Some(84),
+            weekly_usage_left_percent: Some(84),
+            weekly_exhausted: false,
+            blocked_until: None,
             blocked: false,
             in_use: false,
             is_current: false,
@@ -32,8 +44,14 @@ fn candidates() -> Vec<AccountPickerCandidate> {
         AccountPickerCandidate {
             id: "acct_c".to_string(),
             email: "unknown@example.com".to_string(),
+            primary_window_label: "5h".to_string(),
+            five_hour_reset: None,
+            five_hour_usage_left_percent: None,
+            five_hour_exhausted: false,
             weekly_reset: None,
-            usage_left_percent: None,
+            weekly_usage_left_percent: None,
+            weekly_exhausted: false,
+            blocked_until: None,
             blocked: false,
             in_use: false,
             is_current: false,
@@ -80,6 +98,30 @@ fn default_candidate_prefers_backend_marked_default() {
 #[test]
 fn recommendation_avoids_accounts_used_by_other_sessions() {
     assert_eq!(recommended_candidate_index(&candidates()), 1);
+}
+
+#[test]
+fn recommendation_avoids_exhausted_five_hour_window() {
+    let mut candidates = candidates();
+    candidates[0].in_use = false;
+    candidates[0].is_current = false;
+    candidates[1].in_use = true;
+    candidates[2].five_hour_usage_left_percent = Some(0);
+    candidates[2].five_hour_exhausted = true;
+
+    assert_eq!(recommended_candidate_index(&candidates), 1);
+}
+
+#[test]
+fn recommendation_does_not_treat_rounded_zero_as_exhausted() {
+    let mut candidates = candidates();
+    candidates[0].five_hour_exhausted = false;
+    candidates[0].in_use = false;
+    candidates[0].is_current = false;
+    candidates[1].in_use = true;
+    candidates[2].five_hour_exhausted = true;
+
+    assert_eq!(recommended_candidate_index(&candidates), 0);
 }
 
 #[test]
@@ -139,6 +181,19 @@ fn row_description_uses_unknown_for_missing_usage_data() {
 
     assert_eq!(
         item.description.as_deref(),
-        Some("Weekly Reset: unknown    Usage left: unknown")
+        Some("5h unknown    Weekly unknown")
+    );
+}
+
+#[test]
+fn row_description_uses_window_label_and_generic_blocked_reset() {
+    let mut candidate = candidates()[2].clone();
+    candidate.primary_window_label = "daily".to_string();
+    candidate.blocked_until = Some("Jul 14 08:00Z".to_string());
+    let item = selection_item(&candidate);
+
+    assert_eq!(
+        item.description.as_deref(),
+        Some("daily unknown    Weekly unknown    Unavailable until Jul 14 08:00Z")
     );
 }
