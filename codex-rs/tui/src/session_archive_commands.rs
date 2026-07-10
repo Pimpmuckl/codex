@@ -399,6 +399,7 @@ async fn start_app_server_for_archive_command(
         /*log_db*/ None,
         state_db,
         environment_manager,
+        /*initial_account_id*/ None,
     )
     .await?;
     Ok(

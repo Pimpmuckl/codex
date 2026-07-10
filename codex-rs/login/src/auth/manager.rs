@@ -2476,6 +2476,9 @@ impl AuthManager {
     }
 
     pub async fn activate_imported_account(&self, account_id: &AccountId) -> std::io::Result<()> {
+        if self.active_account_id().as_ref() == Some(account_id) {
+            return Ok(());
+        }
         let (account, account_home) = AccountStore::new(self.codex_home.clone())
             .enabled_file_account_profiles()?
             .into_iter()

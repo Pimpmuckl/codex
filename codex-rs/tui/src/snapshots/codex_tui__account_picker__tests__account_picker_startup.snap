@@ -5,9 +5,9 @@ expression: terminal.backend()
 
   Choose account
 
-  1. first@example.com           Weekly Reset: Jul 14    Usage left: 12%    In use
-› 2. best@example.com (default)  Weekly Reset: unknown    Usage left: 84%
-  3. unknown@example.com         Weekly Reset: unknown    Usage left: unknown
+  1. first@example.com           5h 0% (Jul 10 17:00Z)    Weekly 12% (Jul 14)    In use
+› 2. best@example.com (default)  5h 72% (Jul 10 18:00Z)    Weekly 84%
+  3. unknown@example.com         5h unknown    Weekly unknown
 
 
 

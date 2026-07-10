@@ -479,8 +479,36 @@ impl InProcessAppServerClient {
     /// with overload error instead of being silently dropped.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let mut handle =
-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        Self::start_with_handle(
+            channel_capacity,
+            codex_app_server::in_process::start(args.into_runtime_start_args()),
+        )
+        .await
+    }
+
+    /// Starts the in-process runtime with an explicitly selected imported account.
+    pub async fn start_with_initial_account(
+        args: InProcessClientStartArgs,
+        account_id: String,
+    ) -> IoResult<Self> {
+        let channel_capacity = args.channel_capacity.max(1);
+        Self::start_with_handle(
+            channel_capacity,
+            codex_app_server::in_process::start_with_initial_account(
+                args.into_runtime_start_args(),
+                account_id,
+            ),
+        )
+        .await
+    }
+
+    async fn start_with_handle(
+        channel_capacity: usize,
+        handle: impl std::future::Future<
+            Output = IoResult<codex_app_server::in_process::InProcessClientHandle>,
+        >,
+    ) -> IoResult<Self> {
+        let mut handle = handle.await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);

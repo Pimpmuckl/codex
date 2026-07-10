@@ -297,11 +297,18 @@ async fn switch_to_next_imported_account_prefers_unblocked_accounts() {
 }
 
 #[tokio::test]
-async fn activate_imported_account_selects_requested_account() {
+async fn activate_imported_account_respects_requested_blocked_in_use_account() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());
     let first = import_test_account(&store, codex_home.path(), "first", "account-a");
     let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .record_usage_limit_resets_at(&second.id, Utc::now().timestamp() + 60)
+        .expect("record reset");
+    let _lease = store
+        .try_acquire_lease(&second.id)
+        .expect("acquire lease")
+        .expect("selected account should initially be free");
     save_root_test_auth(codex_home.path(), "account-a");
     let manager = test_auth_manager(codex_home.path()).await;
     assert_eq!(manager.active_account_id(), Some(first.id));
@@ -316,6 +323,25 @@ async fn activate_imported_account_selects_requested_account() {
         manager.auth_cached().and_then(|auth| auth.get_account_id()),
         Some("account-b".to_string())
     );
+}
+
+#[tokio::test]
+async fn reactivating_current_imported_account_preserves_its_lease() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let account = import_test_account(&store, codex_home.path(), "first", "account-a");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let manager = test_auth_manager(codex_home.path()).await;
+    assert_eq!(manager.active_account_id(), Some(account.id.clone()));
+    assert!(store.account_in_use(&account.id).expect("check lease"));
+
+    manager
+        .activate_imported_account(&account.id)
+        .await
+        .expect("reactivate account");
+
+    assert_eq!(manager.active_account_id(), Some(account.id.clone()));
+    assert!(store.account_in_use(&account.id).expect("check lease"));
 }
 
 #[tokio::test]
