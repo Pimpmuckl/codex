@@ -95,11 +95,11 @@ fn print_accounts(accounts: Vec<AccountProfile>) {
         return;
     }
 
-    println!("ID  Label  Enabled  Priority");
+    println!("ID  Label  Enabled  Login required  Priority");
     for account in accounts {
         println!(
-            "{}  {}  {}  {}",
-            account.id, account.label, account.enabled, account.priority
+            "{}  {}  {}  {}  {}",
+            account.id, account.label, account.enabled, account.login_required, account.priority
         );
     }
 }
