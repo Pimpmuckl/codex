@@ -93,7 +93,7 @@ def suffixed_version(version: str, suffix: str) -> str:
 def default_package_args(package_args: list[str]) -> list[str]:
     if "--cargo-profile" in package_args:
         return package_args
-    return ["--cargo-profile", "release", *package_args]
+    return ["--cargo-profile", "release-fast", *package_args]
 
 
 def replace_workspace_version(cargo_toml: str, version: str) -> str:
