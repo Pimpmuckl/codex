@@ -1,12 +1,15 @@
 use std::borrow::Cow;
 
+use sqlx::AssertSqlSafe;
 use sqlx::Row;
+use sqlx::SqlSafeStr;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
 use super::repair_legacy_recency_migration_version;
+use super::runtime_migrator_for_pool;
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -24,6 +27,102 @@ fn migrator_through(version: i64) -> Migrator {
         create_schemas: STATE_MIGRATOR.create_schemas.clone(),
         no_tx: STATE_MIGRATOR.no_tx,
     }
+}
+
+#[tokio::test]
+async fn new_migrations_use_the_released_platform_checksum() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    let current_migrator = migrator_through(/*version*/ 1);
+    let current = &current_migrator.migrations[0];
+    let lf_sql = current
+        .sql
+        .as_str()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let expected_sql = if cfg!(windows) {
+        lf_sql.replace('\n', "\r\n")
+    } else {
+        lf_sql
+    };
+    let expected_migration = Migration::new(
+        current.version,
+        current.description.clone(),
+        current.migration_type,
+        AssertSqlSafe(expected_sql).into_sql_str(),
+        current.no_tx,
+    );
+
+    runtime_migrator_for_pool(&pool, &current_migrator)
+        .await
+        .expect("runtime migrator should load")
+        .run(&pool)
+        .await
+        .expect("migration should apply");
+
+    let applied =
+        sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("applied migration should load");
+    assert_eq!(
+        applied,
+        (
+            expected_migration.version,
+            expected_migration.checksum.to_vec()
+        )
+    );
+}
+
+#[tokio::test]
+async fn accepts_windows_package_checksums_without_rewriting_them() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    let current_migrator = migrator_through(/*version*/ 1);
+    let current = &current_migrator.migrations[0];
+    let crlf_sql = current
+        .sql
+        .as_str()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    let crlf_migrator = Migrator::with_migrations(vec![Migration::new(
+        current.version,
+        current.description.clone(),
+        current.migration_type,
+        AssertSqlSafe(crlf_sql).into_sql_str(),
+        current.no_tx,
+    )]);
+    crlf_migrator
+        .run(&pool)
+        .await
+        .expect("CRLF migration should apply");
+
+    runtime_migrator_for_pool(&pool, &current_migrator)
+        .await
+        .expect("CRLF checksum should be accepted")
+        .run(&pool)
+        .await
+        .expect("compatible migration should validate");
+
+    let applied =
+        sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("applied migration should load");
+    assert_eq!(
+        applied,
+        (
+            crlf_migrator.migrations[0].version,
+            crlf_migrator.migrations[0].checksum.to_vec(),
+        )
+    );
 }
 
 #[tokio::test]
@@ -131,7 +230,7 @@ INSERT INTO threads (
 }
 
 #[tokio::test]
-async fn repairs_recency_migration_that_was_applied_as_version_38() {
+async fn repairs_recency_migration_with_alternate_checksum_applied_as_version_38() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -147,6 +246,16 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .iter()
         .find(|migration| migration.version == 39)
         .expect("recency migration should exist");
+    let lf_sql = recency_migration
+        .sql
+        .as_str()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let legacy_sql = if cfg!(windows) {
+        lf_sql
+    } else {
+        lf_sql.replace('\n', "\r\n")
+    };
     let mut legacy_migrations = STATE_MIGRATOR
         .migrations
         .iter()
@@ -157,7 +266,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         38,
         recency_migration.description.clone(),
         recency_migration.migration_type,
-        recency_migration.sql.clone(),
+        AssertSqlSafe(legacy_sql).into_sql_str(),
         recency_migration.no_tx,
     ));
     let legacy_recency_migrator = Migrator::with_migrations(legacy_migrations);
@@ -166,10 +275,13 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .await
         .expect("legacy recency migration should apply as version 38");
 
-    repair_legacy_recency_migration_version(&pool, &STATE_MIGRATOR)
+    let runtime_migrator = runtime_migrator_for_pool(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("runtime migrator should load");
+    repair_legacy_recency_migration_version(&pool, &runtime_migrator)
         .await
         .expect("legacy migration history should be repaired");
-    STATE_MIGRATOR
+    runtime_migrator
         .run(&pool)
         .await
         .expect("current migrations should apply after repair");
@@ -188,7 +300,7 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         )
     })
     .collect::<Vec<_>>();
-    let expected = STATE_MIGRATOR
+    let expected = runtime_migrator
         .migrations
         .iter()
         .filter(|migration| migration.version >= 38)
