@@ -16,6 +16,10 @@ use ratatui::crossterm::execute;
 const DISABLE_KEYBOARD_ENHANCEMENT_ENV_VAR: &str = "CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT";
 
 pub(super) fn keyboard_enhancement_disabled() -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+
     let disable_env = std::env::var(DISABLE_KEYBOARD_ENHANCEMENT_ENV_VAR).ok();
     let is_wsl = running_in_wsl();
     let is_vscode_terminal = is_wsl && running_in_vscode_terminal();
