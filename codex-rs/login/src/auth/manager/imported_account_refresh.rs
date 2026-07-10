@@ -3,6 +3,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AutomaticAccountSelection;
 use codex_protocol::auth::RefreshTokenFailedReason;
 
 use super::AuthManager;
@@ -22,6 +23,7 @@ use crate::auth::storage::AuthKeyringBackendKind;
 
 const IMPORTED_ACCOUNT_LOGIN_REQUIRED_MESSAGE: &str =
     "This account needs you to sign in again. Run `codex account add` to continue.";
+const AUTOMATIC_ACCOUNT_SELECTION_DISABLED_MESSAGE: &str = "This account needs you to sign in again. Automatic account selection is disabled; choose another account in the Codex TUI, run `codex account add`, or enable automatic account selection.";
 
 pub(super) enum ImportedAccountRefreshReadiness {
     Ready,
@@ -219,6 +221,9 @@ impl AuthManager {
         let Some(active_account_id) = self.active_account_id() else {
             return Ok(ImportedAccountRefreshReadiness::Ready);
         };
+        if self.active_auth_home() == self.codex_home {
+            return Ok(ImportedAccountRefreshReadiness::Ready);
+        }
         let login_required = AccountStore::new(self.codex_home.clone())
             .list()
             .map_err(RefreshTokenError::Transient)?
@@ -238,6 +243,12 @@ impl AuthManager {
         &self,
         active_account_id: AccountId,
     ) -> Result<(), RefreshTokenError> {
+        if self.automatic_account_selection() == AutomaticAccountSelection::Disabled {
+            return Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Other,
+                AUTOMATIC_ACCOUNT_SELECTION_DISABLED_MESSAGE.to_string(),
+            )));
+        }
         let attempted_account_ids = HashSet::from([active_account_id.to_string()]);
         if self
             .switch_to_next_imported_account_unlocked(&attempted_account_ids)

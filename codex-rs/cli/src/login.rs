@@ -426,13 +426,14 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let auth_route_config = config.auth_route_config();
 
-    match CodexAuth::from_auth_storage(
+    match CodexAuth::from_auth_storage_with_automatic_account_selection(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
         auth_route_config.as_ref(),
+        config.automatic_account_selection,
     )
     .await
     {

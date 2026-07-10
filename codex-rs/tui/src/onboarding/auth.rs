@@ -1050,6 +1050,7 @@ mod tests {
                 codex_home_path.clone(),
                 /*enable_codex_api_key_env*/ false,
                 AuthCredentialsStoreMode::File,
+                Default::default(),
                 AuthKeyringBackendKind::default(),
                 "https://chatgpt.com/backend-api/".to_string(),
                 /*auth_route_config*/ None,
