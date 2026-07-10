@@ -216,7 +216,7 @@ async fn login_with_access_token_writes_only_personal_access_token() {
             ResponseTemplate::new(200)
                 .set_body_json(personal_access_token_whoami(WORKSPACE_ID_ALLOWED)),
         )
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let _authapi_guard = EnvVarGuard::set("CODEX_AUTHAPI_BASE_URL", &server.uri());
@@ -250,6 +250,18 @@ async fn login_with_access_token_writes_only_personal_access_token() {
         }
     );
     assert_eq!(auth.resolved_mode(), AuthMode::PersonalAccessToken);
+    let loaded = CodexAuth::from_auth_storage(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        Some(&allowed_workspaces),
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+    )
+    .await
+    .expect("stored auth should load")
+    .expect("personal access token should be retained");
+    assert_eq!(loaded.api_auth_mode(), AuthMode::PersonalAccessToken);
     let persisted: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(auth_path).unwrap()).unwrap();
     assert!(persisted.get("auth_mode").is_none());
@@ -1345,6 +1357,7 @@ async fn build_config(
         codex_home: codex_home.to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        automatic_account_selection: AutomaticAccountSelection::Enabled,
         forced_login_method,
         forced_chatgpt_workspace_id,
         chatgpt_base_url: None,
@@ -1461,7 +1474,7 @@ async fn load_auth_reads_personal_access_token_from_env() {
             ResponseTemplate::new(200)
                 .set_body_json(personal_access_token_whoami(WORKSPACE_ID_ALLOWED)),
         )
-        .expect(2)
+        .expect(3)
         .mount(&server)
         .await;
     let _authapi_guard = EnvVarGuard::set("CODEX_AUTHAPI_BASE_URL", &server.uri());
@@ -1500,6 +1513,17 @@ async fn load_auth_reads_personal_access_token_from_env() {
         assert_eq!(auth.account_plan_type(), Some(AccountPlanType::Business));
         assert!(auth.is_fedramp_account());
     }
+    let manager = AuthManager::new(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+    )
+    .await;
+    assert_eq!(manager.auth_mode(), Some(AuthMode::PersonalAccessToken));
     assert!(
         !get_auth_file(codex_home.path()).exists(),
         "env auth should not write auth.json"
@@ -1728,7 +1752,7 @@ async fn enforce_login_restrictions_logs_out_for_workspace_mismatch() {
 
 #[tokio::test]
 #[serial(codex_auth_env)]
-async fn enforce_login_restrictions_resolves_marker_to_allowed_imported_account() {
+async fn enforce_login_restrictions_respects_marker_selection_policy() {
     let codex_home = tempdir().unwrap();
     let _access_token_guard = remove_access_token_env_var();
     let store = AccountStore::new(codex_home.path().to_path_buf());
@@ -1772,7 +1796,7 @@ async fn enforce_login_restrictions_resolves_marker_to_allowed_imported_account(
         )
         .expect("select disallowed marker");
     let candidates_before = store.candidates().expect("account candidates");
-    let config = build_config(
+    let mut config = build_config(
         codex_home.path(),
         /*forced_login_method*/ None,
         Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
@@ -1783,6 +1807,15 @@ async fn enforce_login_restrictions_resolves_marker_to_allowed_imported_account(
         .await
         .expect("allowed imported account should satisfy workspace restriction");
 
+    assert!(codex_home.path().join("auth.json").exists());
+    assert_eq!(
+        store.candidates().expect("account candidates"),
+        candidates_before
+    );
+    config.automatic_account_selection = AutomaticAccountSelection::Disabled;
+    super::enforce_login_restrictions(&config)
+        .await
+        .expect("disallowed marker should remain available for manual replacement");
     assert!(codex_home.path().join("auth.json").exists());
     assert_eq!(
         store.candidates().expect("account candidates"),
@@ -1822,6 +1855,7 @@ async fn enforce_login_restrictions_logs_out_for_personal_access_token_workspace
         codex_home: codex_home.path().to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::default(),
+        automatic_account_selection: AutomaticAccountSelection::Enabled,
         forced_login_method: None,
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         chatgpt_base_url: None,
@@ -1946,6 +1980,7 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
         codex_home: codex_home.path().to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        automatic_account_selection: AutomaticAccountSelection::Enabled,
         forced_login_method: None,
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         chatgpt_base_url: Some(chatgpt_base_url),

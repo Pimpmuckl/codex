@@ -44,30 +44,43 @@ pub(crate) struct AccountPickerCandidate {
     pub(crate) is_default: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StartupAccountPickerMode {
+    Timed,
+    Manual,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StartupAccountPickerSelection {
+    Automatic(String),
+    User(String),
+}
 pub(crate) async fn run_startup_account_picker(
     tui: &mut Tui,
     candidates: Vec<AccountPickerCandidate>,
-) -> Result<Option<String>> {
+    mode: StartupAccountPickerMode,
+) -> Result<Option<StartupAccountPickerSelection>> {
     let events = tui.event_stream();
-    run_startup_account_picker_with_events(tui, candidates, events).await
+    run_startup_account_picker_with_events(tui, candidates, mode, events).await
 }
 
 async fn run_startup_account_picker_with_events(
     tui: &mut Tui,
     candidates: Vec<AccountPickerCandidate>,
+    mode: StartupAccountPickerMode,
     mut events: impl Stream<Item = TuiEvent> + Unpin,
-) -> Result<Option<String>> {
-    if candidates.len() <= 1 {
-        return Ok(default_candidate(&candidates).map(|candidate| candidate.id.clone()));
+) -> Result<Option<StartupAccountPickerSelection>> {
+    if candidates.len() <= 1 && mode == StartupAccountPickerMode::Timed {
+        return Ok(default_candidate(&candidates)
+            .map(|candidate| StartupAccountPickerSelection::Automatic(candidate.id.clone())));
     }
 
     let default_idx = default_candidate_index(&candidates);
     let deadline = Instant::now() + STARTUP_AUTO_PICK_AFTER;
-    let mut auto_pick = true;
+    let mut auto_pick = mode == StartupAccountPickerMode::Timed;
     let mut view = new_view(
         &candidates,
         default_idx,
-        Some(STARTUP_AUTO_PICK_AFTER.as_secs()),
+        auto_pick.then_some(STARTUP_AUTO_PICK_AFTER.as_secs()),
     );
     draw_view(tui, &view)?;
 
@@ -77,7 +90,11 @@ async fn run_startup_account_picker_with_events(
             biased;
             event = events.next() => {
                 let Some(event) = event else {
-                    return Ok(auto_pick.then(|| candidates[default_idx].id.clone()));
+                    return Ok(auto_pick.then(|| {
+                        StartupAccountPickerSelection::Automatic(
+                            candidates[default_idx].id.clone(),
+                        )
+                    }));
                 };
                 match event {
                     TuiEvent::Key(key) => {
@@ -94,7 +111,9 @@ async fn run_startup_account_picker_with_events(
                             return Ok(view
                                 .take_last_selected_index()
                                 .and_then(|idx| candidates.get(idx))
-                                .map(|candidate| candidate.id.clone()));
+                                .map(|candidate| {
+                                    StartupAccountPickerSelection::User(candidate.id.clone())
+                                }));
                         }
                         if auto_pick {
                             auto_pick = false;
@@ -115,7 +134,9 @@ async fn run_startup_account_picker_with_events(
                 }
             }
             _ = tokio::time::sleep_until(deadline), if auto_pick => {
-                return Ok(Some(candidates[default_idx].id.clone()));
+                return Ok(Some(StartupAccountPickerSelection::Automatic(
+                    candidates[default_idx].id.clone(),
+                )));
             }
             _ = tick.tick(), if auto_pick => {
                 let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();

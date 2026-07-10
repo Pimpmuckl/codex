@@ -343,6 +343,7 @@ async fn start_app_server_for_archive_command(
         codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
         config_toml.cli_auth_credentials_store.unwrap_or_default(),
+        config_toml.automatic_account_selection.unwrap_or_default(),
         resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
         chatgpt_base_url,
         auth_route_config,

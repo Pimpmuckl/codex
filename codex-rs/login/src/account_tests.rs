@@ -5,6 +5,7 @@ use crate::token_data::IdTokenInfo;
 use crate::token_data::TokenData;
 use base64::Engine;
 use chrono::Utc;
+use codex_config::types::AutomaticAccountSelection;
 use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
 use serde::Serialize;
@@ -622,6 +623,29 @@ async fn switch_to_next_imported_account_skips_attempted_local_account_ids() {
     assert_eq!(manager.active_account_id(), Some(second.id));
 }
 
+#[tokio::test]
+async fn disabled_automatic_selection_keeps_login_required_account() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    store
+        .record_login_required(&second.id)
+        .expect("record login requirement");
+    let manager = AuthManager::new_with_automatic_account_selection(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
+        AutomaticAccountSelection::Disabled,
+    )
+    .await;
+    save_root_test_auth(codex_home.path(), "account-b");
+    assert!(manager.reload().await);
+    assert_eq!(manager.active_account_id(), Some(second.id.clone()));
+}
 #[tokio::test]
 async fn switch_to_next_imported_account_prefers_unblocked_accounts() {
     let codex_home = tempdir().expect("tempdir");

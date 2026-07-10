@@ -36,6 +36,7 @@ use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthKeyringBackendKind;
+use codex_config::types::AutomaticAccountSelection;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
@@ -822,6 +823,7 @@ pub struct Config {
     /// auto: Use the OS-specific keyring service if available, otherwise use a file.
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
 
+    pub automatic_account_selection: AutomaticAccountSelection,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
@@ -1217,6 +1219,9 @@ impl AuthManagerConfig for Config {
         Config::auth_keyring_backend_kind(self)
     }
 
+    fn automatic_account_selection(&self) -> AutomaticAccountSelection {
+        self.automatic_account_selection
+    }
     fn forced_chatgpt_workspace_id(&self) -> Option<Vec<String>> {
         self.forced_chatgpt_workspace_id.clone()
     }
@@ -3831,6 +3836,7 @@ impl Config {
                 cfg.cli_auth_credentials_store.unwrap_or_default(),
                 env!("CARGO_PKG_VERSION"),
             ),
+            automatic_account_selection: cfg.automatic_account_selection.unwrap_or_default(),
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
