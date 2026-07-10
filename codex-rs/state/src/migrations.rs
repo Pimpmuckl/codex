@@ -1,12 +1,22 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 
+use sqlx::AssertSqlSafe;
+use sqlx::SqlSafeStr;
 use sqlx::SqlitePool;
+use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
 pub(crate) static STATE_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 pub(crate) static LOGS_MIGRATOR: Migrator = sqlx::migrate!("./logs_migrations");
 pub(crate) static GOALS_MIGRATOR: Migrator = sqlx::migrate!("./goals_migrations");
 pub(crate) static MEMORIES_MIGRATOR: Migrator = sqlx::migrate!("./memory_migrations");
+
+#[derive(Clone, Copy)]
+enum MigrationLineEndings {
+    Lf,
+    Crlf,
+}
 
 /// Allow an older Codex binary to open a database that has already been
 /// migrated by a newer binary running in parallel.
@@ -39,6 +49,95 @@ pub(crate) fn runtime_goals_migrator() -> Migrator {
 
 pub(crate) fn runtime_memories_migrator() -> Migrator {
     runtime_migrator(&MEMORIES_MIGRATOR)
+}
+
+pub(crate) async fn runtime_migrator_for_pool(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<Migrator> {
+    let migrations_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .is_some();
+    let applied = if migrations_table_exists {
+        sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect::<HashMap<_, _>>()
+    } else {
+        HashMap::new()
+    };
+    let migrations = migrator
+        .migrations
+        .iter()
+        .map(|migration| {
+            let lf_migration = migration_with_line_endings(migration, MigrationLineEndings::Lf);
+            let crlf_migration = migration_with_line_endings(migration, MigrationLineEndings::Crlf);
+            let applied_checksum = applied.get(&migration.version).or_else(|| {
+                (migration.version == 39)
+                    .then(|| applied.get(&38))
+                    .flatten()
+                    .filter(|checksum| {
+                        checksum.as_slice() == lf_migration.checksum.as_ref()
+                            || checksum.as_slice() == crlf_migration.checksum.as_ref()
+                    })
+            });
+            let Some(applied_checksum) = applied_checksum else {
+                return if cfg!(windows) {
+                    crlf_migration
+                } else {
+                    lf_migration
+                };
+            };
+            if applied_checksum == migration.checksum.as_ref() {
+                return migration.clone();
+            }
+            if applied_checksum == lf_migration.checksum.as_ref() {
+                return lf_migration;
+            }
+            if applied_checksum == crlf_migration.checksum.as_ref() {
+                crlf_migration
+            } else {
+                migration.clone()
+            }
+        })
+        .collect();
+    Ok(Migrator {
+        migrations: Cow::Owned(migrations),
+        ignore_missing: migrator.ignore_missing,
+        locking: migrator.locking,
+        no_tx: migrator.no_tx,
+        table_name: migrator.table_name.clone(),
+        create_schemas: migrator.create_schemas.clone(),
+    })
+}
+
+fn migration_with_line_endings(
+    migration: &Migration,
+    line_endings: MigrationLineEndings,
+) -> Migration {
+    let lf_sql = migration
+        .sql
+        .as_str()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let sql = match line_endings {
+        MigrationLineEndings::Lf => lf_sql,
+        MigrationLineEndings::Crlf => lf_sql.replace('\n', "\r\n"),
+    };
+    if migration.sql == sql {
+        return migration.clone();
+    }
+    Migration::new(
+        migration.version,
+        migration.description.clone(),
+        migration.migration_type,
+        AssertSqlSafe(sql).into_sql_str(),
+        migration.no_tx,
+    )
 }
 
 pub(crate) async fn repair_legacy_recency_migration_version(

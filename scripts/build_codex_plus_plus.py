@@ -17,11 +17,6 @@ WORKSPACE_VERSION_PATTERN = re.compile(r'^(version\s*=\s*")[^"]+(")', re.MULTILI
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from codex_package.version import read_workspace_version  # noqa: E402
-from codex_package.targets import TARGET_SPECS  # noqa: E402
-from codex_package.targets import default_target  # noqa: E402
-
-
-MIGRATION_FILES = tuple(sorted((CODEX_RS / "state").glob("*migrations/*.sql")))
 
 
 def main() -> int:
@@ -33,19 +28,12 @@ def main() -> int:
 
     original_toml = CARGO_TOML.read_text(encoding="utf-8")
     original_lock = CARGO_LOCK.read_bytes() if CARGO_LOCK.exists() else None
-    original_migrations = (
-        {path: path.read_bytes() for path in MIGRATION_FILES}
-        if builds_windows_package(package_args)
-        else {}
-    )
     CARGO_TOML.write_text(
         replace_workspace_version(original_toml, fork_version),
         encoding="utf-8",
         newline="",
     )
     try:
-        for path, contents in original_migrations.items():
-            path.write_bytes(with_crlf_line_endings(contents))
         print(f"Codex++ package version: {fork_version}", flush=True)
         print(f"Suggested git tag: {tag_name}", flush=True)
         return subprocess.call(
@@ -62,8 +50,6 @@ def main() -> int:
             CARGO_LOCK.unlink(missing_ok=True)
         else:
             CARGO_LOCK.write_bytes(original_lock)
-        for path, contents in original_migrations.items():
-            path.write_bytes(contents)
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
@@ -108,26 +94,6 @@ def default_package_args(package_args: list[str]) -> list[str]:
     if "--cargo-profile" in package_args:
         return package_args
     return ["--cargo-profile", "release", *package_args]
-
-
-def builds_windows_package(package_args: list[str]) -> bool:
-    target = None
-    for index, arg in enumerate(package_args):
-        if arg == "--target":
-            if index + 1 == len(package_args):
-                raise ValueError("--target requires a value")
-            target = package_args[index + 1]
-            break
-        if arg.startswith("--target="):
-            target = arg.partition("=")[2]
-            break
-    return TARGET_SPECS[target or default_target()].is_windows
-
-
-def with_crlf_line_endings(contents: bytes) -> bytes:
-    return (
-        contents.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(b"\n", b"\r\n")
-    )
 
 
 def replace_workspace_version(cargo_toml: str, version: str) -> str:
