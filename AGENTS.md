@@ -1,5 +1,29 @@
 # Rust/codex-rs
 
+## Codex++ fork isolation
+
+- Put fork-specific behavior in focused, capability-named files under a
+  `codex_plus_plus/` directory beneath the nearest owning crate or module. The directory
+  identifies fork provenance; do not add `_fork_` filename prefixes.
+- Existing upstream files are integration seams. Keep only the minimum module declarations,
+  fields, config or schema entries, enum or match arms, and delegation calls required to invoke
+  fork behavior.
+- If fork code in an upstream file begins owning branching, loops, persistence, retry policy, or
+  state transitions, extract it into the nearest `codex_plus_plus/` module.
+- Preserve the owning module hierarchy when fork behavior needs private state. Do not widen
+  visibility or create a new crate solely to make code appear isolated.
+- Keep fork-owned unit tests beside their implementation. Cross-crate behavior, public API
+  behavior, and user-visible TUI output remain covered in the repository's canonical integration
+  and snapshot suites.
+- Do not force generated schemas, Cargo or Bazel manifests, config fields, migration registration,
+  public enum or match integration points, or generic upstreamable bug fixes into fork modules.
+  Keep those changes upstream-shaped and minimal.
+- Do not perform rename-only migrations of already-standalone fork files. Move existing code only
+  when doing so removes substantive fork logic from an upstream-owned file or avoids a
+  demonstrated rebase hotspot.
+- Land generic fixes suitable for upstream as isolated commits rather than mixing them with
+  Codex++ product behavior.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
