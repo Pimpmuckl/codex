@@ -191,12 +191,7 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
         .and(path("/codex/responses"))
         .and(header("authorization", "Bearer one"))
         .respond_with(move |_request: &Request| {
-            write_auth(
-                &account_home,
-                "account-123",
-                "two",
-                "refresh-two",
-            );
+            write_auth(&account_home, "account-123", "two", "refresh-two");
             ResponseTemplate::new(401)
         })
         .mount(&server)
@@ -219,12 +214,7 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
         .respond_with(move |_request: &Request| {
-            write_auth(
-                &account_home,
-                "other-account",
-                "other",
-                "other-refresh",
-            );
+            write_auth(&account_home, "other-account", "other", "other-refresh");
             ResponseTemplate::new(401)
         })
         .mount(&server)

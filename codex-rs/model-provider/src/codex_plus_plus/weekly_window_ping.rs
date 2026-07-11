@@ -146,6 +146,7 @@ async fn send_once(
         retry_5xx: false,
         retry_transport: false,
     };
+    provider.stream_idle_timeout = PING_TIMEOUT;
     let request_url = provider.url_for_path("responses");
     let Ok(client) = build_default_reqwest_client_for_route(
         &request.http_client_factory,
