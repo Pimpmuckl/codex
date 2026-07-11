@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use codex_cloud_config::stop_cloud_config_refresh_before_account_picker;
 use codex_config::types::AutomaticAccountSelection;
 use codex_login::AccountCandidate;
 use codex_login::AccountId;
@@ -150,6 +151,7 @@ async fn maybe_run_startup_account_picker(
             reload_cloud_config: false,
         });
     }
+    stop_cloud_config_refresh_before_account_picker().await;
     let mut picker_candidates: Vec<_> = candidates
         .iter()
         .map(|candidate| {
@@ -161,12 +163,19 @@ async fn maybe_run_startup_account_picker(
             )
         })
         .collect();
-    let default_idx = account_picker::recommended_candidate_index(&picker_candidates);
-    picker_candidates[default_idx].is_default = true;
-    let mode = match config.automatic_account_selection {
-        AutomaticAccountSelection::Enabled => account_picker::StartupAccountPickerMode::Timed,
-        AutomaticAccountSelection::Disabled => account_picker::StartupAccountPickerMode::Manual,
+    let automatic_default_idx =
+        automatic_default_index(&candidates, &picker_candidates, current_account_id.as_ref());
+    let manual_default_idx = account_picker::recommended_candidate_index(&picker_candidates);
+    let (default_idx, mode) = match (config.automatic_account_selection, automatic_default_idx) {
+        (AutomaticAccountSelection::Enabled, Some(default_idx)) => {
+            (default_idx, account_picker::StartupAccountPickerMode::Timed)
+        }
+        (AutomaticAccountSelection::Enabled, None) | (AutomaticAccountSelection::Disabled, _) => (
+            manual_default_idx,
+            account_picker::StartupAccountPickerMode::Manual,
+        ),
     };
+    picker_candidates[default_idx].is_default = true;
     let Some(selection) =
         account_picker::run_startup_account_picker(tui, picker_candidates, mode).await?
     else {
@@ -191,6 +200,40 @@ async fn maybe_run_startup_account_picker(
     Ok(StartupAccountSelection::Continue {
         selected_account_id: selected_account.map(|candidate| candidate.id.clone()),
         reload_cloud_config,
+    })
+}
+
+fn automatic_default_index(
+    candidates: &[AccountCandidate],
+    picker_candidates: &[account_picker::AccountPickerCandidate],
+    current_account_id: Option<&AccountId>,
+) -> Option<usize> {
+    if let Some(current_index) = candidates.iter().position(|candidate| {
+        !candidate.automation_enabled && current_account_id == Some(&candidate.id)
+    }) && picker_candidates
+        .get(current_index)
+        .is_some_and(|candidate| {
+            !candidate.blocked
+                && !candidate.in_use
+                && !candidate.five_hour_exhausted
+                && !candidate.weekly_exhausted
+        })
+    {
+        return Some(current_index);
+    }
+
+    let automatic_indices = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.automation_enabled)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let automatic_candidates = automatic_indices
+        .iter()
+        .map(|index| picker_candidates[*index].clone())
+        .collect::<Vec<_>>();
+    (!automatic_indices.is_empty()).then(|| {
+        automatic_indices[account_picker::recommended_candidate_index(&automatic_candidates)]
     })
 }
 
@@ -271,3 +314,7 @@ fn format_reset_timestamp(timestamp: i64) -> Option<String> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, /*nsecs*/ 0)
         .map(|timestamp| timestamp.format("%b %d %H:%MZ").to_string())
 }
+
+#[cfg(test)]
+#[path = "startup_accounts_tests.rs"]
+mod tests;
