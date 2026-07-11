@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/slash_dispatch/account_settings_tests.rs
+expression: error
+---
+Failed to update automatic account selection: permission denied

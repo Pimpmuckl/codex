@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/slash_dispatch/account_settings_tests.rs
+expression: message
+---
+Automatic account selection remains enabled because this setting is controlled elsewhere.

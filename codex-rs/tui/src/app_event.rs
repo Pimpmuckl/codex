@@ -44,6 +44,7 @@ use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
+use codex_config::types::AutomaticAccountSelection;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
@@ -853,6 +854,11 @@ pub(crate) enum AppEvent {
     /// Update feature flags and persist them to the top-level config.
     UpdateFeatureFlags {
         updates: Vec<(Feature, bool)>,
+    },
+
+    /// Persist the automatic account-selection policy for future Codex launches.
+    PersistAutomaticAccountSelection {
+        selection: AutomaticAccountSelection,
     },
 
     /// Update memory settings and persist them to config.toml.
