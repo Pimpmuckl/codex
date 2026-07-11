@@ -277,6 +277,7 @@ impl AuthManager {
         if self
             .switch_to_next_imported_account_unlocked(&attempted_account_ids)
             .await
+            != super::imported_account_selection::ImportedAccountSwitchOutcome::NoCandidate
         {
             tracing::info!(%active_account_id, "switched away from imported account that requires login");
             Ok(())
