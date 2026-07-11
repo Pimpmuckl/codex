@@ -192,6 +192,7 @@ pub(crate) fn new_session_info(
                 "/review".into(),
                 " - review any changes and find issues".dim(),
             ]),
+            crate::codex_plus_plus::welcome_help_line(),
         ];
 
         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));

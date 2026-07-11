@@ -2,7 +2,9 @@
 
 mod account_policy;
 mod startup_accounts;
+mod welcome;
 
 pub(crate) use account_policy::persist_automatic_account_selection;
 pub(super) use startup_accounts::StartupAccountSelection;
 pub(super) use startup_accounts::run_startup_account_picker;
+pub(crate) use welcome::welcome_help_line;

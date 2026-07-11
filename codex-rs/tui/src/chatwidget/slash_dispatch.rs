@@ -450,7 +450,11 @@ impl ChatWidget {
                     self.open_usage_menu();
                 }
             }
-            SlashCommand::Accounts | SlashCommand::CodexPlusPlus => {
+            SlashCommand::Accounts => {
+                self.open_accounts_popup();
+                self.defer_input_until_settings_applied();
+            }
+            SlashCommand::CodexPlusPlus => {
                 self.open_codex_plus_plus_popup();
                 self.defer_input_until_settings_applied();
             }

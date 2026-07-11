@@ -1,0 +1,5 @@
+---
+source: tui/src/codex_plus_plus/welcome_tests.rs
+expression: terminal.backend().to_string()
+---
+  Use /codexplusplus for fork settings and /accounts to manage accounts.

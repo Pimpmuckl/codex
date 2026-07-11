@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/accounts_tests.rs
+expression: terminal.backend().to_string()
+---
+
+  Account Automation
+  Select the accounts Codex++ may choose automatically.
+
+› 1. [*] one@example.com (current)  In use
+  2. [ ] two@example.com            Login required
+  3. [*] three@example.com          Login required · In use
+  4. [*] four@example.com           Account disabled
+
+
+
+  Press space to toggle; enter to save; esc to cancel
