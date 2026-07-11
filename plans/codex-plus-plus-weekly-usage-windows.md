@@ -124,7 +124,8 @@ Rules:
 - Do not send `previous_response_id`, session/thread IDs, turn metadata/state, prompt cache keys,
   tools, history, reasoning configuration, service tier, or model-visible scheduler context.
 - Treat the request as successful only after the stream reaches `ResponseEvent::Completed` **and**
-  a fresh authoritative rate-limit fetch shows the weekly reset in the future. Ignore output text.
+  a fresh authoritative rate-limit fetch shows `used_percent > 0.0` with the weekly reset in the
+  future. Ignore output text.
 - On HTTP 401, run the existing `UnauthorizedRecovery` steps and rebuild request auth for each
   retry. Never switch accounts in this manager. Terminal refresh failures use
   `record_login_required_if_auth_matches` so a concurrent re-login is not overwritten.
@@ -141,12 +142,21 @@ Read account configuration fresh on every scan. An account is eligible only when
 4. Its auth file exists and passes the effective forced-workspace restriction.
 5. Authoritative Codex usage includes a weekly/secondary window whose exact `used_percent` is
    `0.0`.
-6. That weekly window has no reset timestamp or `resets_at <= now`.
+6. That weekly window has no reset timestamp, has `resets_at <= now`, or has moved forward from the
+   last observed weekly reset. A future reset with no prior observation or the same prior reset is
+   only a baseline and is not due.
 7. The account is not inside scheduler backoff and its scheduler lease can be acquired.
 
 Missing weekly usage is unknown, not unused. Any `used_percent > 0.0` is partial/running and must
-not be pinged. Any `resets_at > now` is already running and must not be pinged, even if reported
-usage is exactly zero.
+not be pinged. A future reset is eligible only when the exact-zero window moved forward from a
+previously observed reset; the reset timestamp is normally the end of the new window, not proof
+that the window has already been used.
+
+This mirrors the useful transition detection in codex-account-switcher: it retains the previous
+weekly reset, refreshes exact-full windows, and pings when the full window's reset moves forward
+(`C:/Code/codex-account-switcher/src/app/auto_start.rs:271-320`). It does not ping a first-seen
+future/full window. Persist the first observation as a baseline so the next reset transition is
+detectable.
 
 `AccountUsage` currently stores rounded remaining percentages. Add an exact boolean derived from
 the raw snapshot (`weekly_unused = used_percent == 0.0`); do not infer unused state from a displayed
@@ -164,7 +174,8 @@ accounts/<account-id>/weekly-window.lock
 The state contains only:
 
 ```text
-due_reset_at: null | unix-seconds
+last_observed_reset_at: null | unix-seconds
+attempt_reset_at: null | unix-seconds
 last_attempt_at: unix-seconds
 failure_count: 0..8
 retry_not_before: null | unix-seconds
@@ -172,13 +183,15 @@ last_success_reset_at: null | unix-seconds
 last_error: null | transient | login_required | rejected
 ```
 
-- `(account_id, due_reset_at)` is the attempt identity; `null` is a valid identity for a due window
-  with no reset timestamp.
+- `(account_id, attempt_reset_at)` is the attempt identity; `null` is a valid identity for a due
+  window with no reset timestamp. A first-seen non-due window is saved as the baseline. Once a
+  reset transition becomes due, preserve the old `last_observed_reset_at` across failures so the
+  same transition stays retryable; advance it to the refreshed reset only after verified success.
 - Hold `weekly-window.lock` from the final due check through the post-ping usage verification and
   state write. Another process skips the account when `try_lock` reports contention.
 - File locks are kernel-owned, so a crashed process releases the lease. The next five-minute scan
   is stale-lease recovery; file presence alone never means locked.
-- On a new due identity, clear old failures. On failure, use
+- On a new attempt identity, clear old failures. On failure, use
   `min(5 minutes * 2^failure_count, 6 hours)` and cap the counter at 8. The normal five-minute poll
   remains the only retry driver, so there is no busy loop.
 - Persist only sanitized error categories. Detailed errors stay in trace/debug logs.
@@ -274,8 +287,9 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - `just test -p codex-model-provider`
 - `just fix -p codex-login`
 - `just fix -p codex-model-provider`
-- Unit tests prove lease contention/drop recovery, due-identity reset, capped backoff, atomic
-  bounded state, corruption recovery, and sanitized status.
+- Unit tests prove lease contention/drop recovery, first-observation baselining, a future/full
+  reset transition becoming due, unchanged future/full windows staying skipped, attempt-identity
+  reset, capped backoff, atomic bounded state, corruption recovery, and sanitized status.
 - Wire tests prove the exact request has no tools/history/session IDs/previous response/WebSocket,
   refresh never crosses identity, and only `Completed` counts as request completion.
 
