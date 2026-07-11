@@ -123,9 +123,10 @@ Rules:
 - Use `ResponsesClient::stream`, not a WebSocket client and not a foreground `ModelClientSession`.
 - Do not send `previous_response_id`, session/thread IDs, turn metadata/state, prompt cache keys,
   tools, history, reasoning configuration, service tier, or model-visible scheduler context.
-- Treat the request as successful only after the stream reaches `ResponseEvent::Completed` **and**
-  a fresh authoritative rate-limit fetch shows `used_percent > 0.0` and either a future weekly
-  reset or no reset timestamp. Ignore output text.
+- Treat the request as successful when the stream reaches `ResponseEvent::Completed`; a completed
+  response proves the authenticated request was accepted even when the backend's integer usage
+  percentage still rounds a small request to zero. Ignore output text. Refresh authoritative usage
+  afterward only as best-effort scheduler status, never as the success or deduplication gate.
 - On HTTP 401, run the existing `UnauthorizedRecovery` steps and rebuild request auth for each
   retry. Never switch accounts in this manager. Terminal refresh failures use
   `record_login_required_if_auth_matches` so a concurrent re-login is not overwritten.
@@ -159,10 +160,13 @@ future/full window. Persist the first observation as a baseline so the next rese
 detectable.
 
 For a reset-less window, use a persisted synthetic generation rather than `null` as the durable
-identity. The first exact-zero observation is generation 1. A verified active observation
-(`used_percent > 0.0`) followed later by exact zero increments the generation. Failures retain the
-same generation. This lets an absent-reset window be due as required, while preventing every
-five-minute scan from treating one already-started window as new.
+identity. The first exact-zero observation is generation 1. An observed active value
+(`used_percent > 0.0`) followed later by exact zero increments the generation. Because the backend
+reports integer percentages and can keep a small successful ping at zero, an unchanged exact-zero
+window also increments once seven days have elapsed since the `last_attempt_at` whose identity
+matches `last_success_identity`. Failures retain the same generation. Without a server reset
+timestamp the exact boundary is unknowable; this conservative fallback makes progress while
+preventing every five-minute scan from treating one already-started window as new.
 
 `AccountUsage` currently stores rounded remaining percentages. Add an exact boolean derived from
 the raw snapshot (`weekly_unused = used_percent == 0.0`); do not infer unused state from a displayed
@@ -197,8 +201,8 @@ last_error: null | transient | login_required | rejected
   reset-bearing window is saved as the baseline with `attempt_identity` and `last_attempt_at` both
   `null`. Once a reset transition becomes due, preserve the old observation across failures so the
   same transition stays retryable; advance it only after verified success.
-- Hold `weekly-window.lock` from the final due check through the post-ping usage verification and
-  state write. Another process skips the account when `try_lock` reports contention.
+- Hold `weekly-window.lock` from the final due check through request completion and the state write.
+  Another process skips the account when `try_lock` reports contention.
 - File locks are kernel-owned, so a crashed process releases the lease. The next five-minute scan
   is stale-lease recovery; file presence alone never means locked.
 - On a new attempt identity, clear old failures. On failure, use
@@ -299,8 +303,9 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - `just fix -p codex-model-provider`
 - Unit tests prove lease contention/drop recovery, first-observation baselining with no attempt
   metadata, a future/full reset transition becoming due, unchanged future/full windows staying
-  skipped, attempt-identity reset, reset-less generation success/deduplication/re-arm, capped
-  backoff, atomic bounded state, corruption recovery, and sanitized status.
+  skipped, attempt-identity reset, reset-less generation success/deduplication/re-arm by activity
+  and by the seven-day fallback, capped backoff, atomic bounded state, corruption recovery, and
+  sanitized status.
 - Wire tests prove the exact request has no tools/history/session IDs/previous response/WebSocket,
   refresh never crosses identity, and only `Completed` counts as request completion.
 
