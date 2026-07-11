@@ -184,8 +184,8 @@ version: 1
 last_observed_reset_at: null | unix-seconds
 last_observed_active: boolean
 missing_reset_generation: 0..4294967295
-attempt_identity: reset_at(unix-seconds) | missing_reset(generation)
-last_attempt_at: unix-seconds
+attempt_identity: null | reset_at(unix-seconds) | missing_reset(generation)
+last_attempt_at: null | unix-seconds
 failure_count: 0..8
 retry_not_before: null | unix-seconds
 last_success_identity: null | reset_at(unix-seconds) | missing_reset(generation)
@@ -194,9 +194,9 @@ last_error: null | transient | login_required | rejected
 
 - `(account_id, attempt_identity)` is the attempt identity. Reset-bearing windows use the server
   timestamp; reset-less windows use the persisted synthetic generation. A first-seen future/full
-  reset-bearing window is saved as the baseline. Once a reset transition becomes due, preserve the
-  old observation across failures so the same transition stays retryable; advance it only after
-  verified success.
+  reset-bearing window is saved as the baseline with `attempt_identity` and `last_attempt_at` both
+  `null`. Once a reset transition becomes due, preserve the old observation across failures so the
+  same transition stays retryable; advance it only after verified success.
 - Hold `weekly-window.lock` from the final due check through the post-ping usage verification and
   state write. Another process skips the account when `try_lock` reports contention.
 - File locks are kernel-owned, so a crashed process releases the lease. The next five-minute scan
@@ -297,10 +297,10 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - `just test -p codex-model-provider`
 - `just fix -p codex-login`
 - `just fix -p codex-model-provider`
-- Unit tests prove lease contention/drop recovery, first-observation baselining, a future/full
-  reset transition becoming due, unchanged future/full windows staying skipped, attempt-identity
-  reset, reset-less generation success/deduplication/re-arm, capped backoff, atomic bounded state,
-  corruption recovery, and sanitized status.
+- Unit tests prove lease contention/drop recovery, first-observation baselining with no attempt
+  metadata, a future/full reset transition becoming due, unchanged future/full windows staying
+  skipped, attempt-identity reset, reset-less generation success/deduplication/re-arm, capped
+  backoff, atomic bounded state, corruption recovery, and sanitized status.
 - Wire tests prove the exact request has no tools/history/session IDs/previous response/WebSocket,
   refresh never crosses identity, and only `Completed` counts as request completion.
 
