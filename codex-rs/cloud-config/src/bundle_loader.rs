@@ -20,6 +20,16 @@ fn refresher_task_slot() -> &'static Mutex<Option<JoinHandle<()>>> {
     REFRESHER_TASK.get_or_init(|| Mutex::new(None))
 }
 
+pub(super) fn take_refresher_task() -> Option<JoinHandle<()>> {
+    refresher_task_slot()
+        .lock()
+        .unwrap_or_else(|err| {
+            tracing::warn!("cloud config bundle refresher task slot was poisoned");
+            err.into_inner()
+        })
+        .take()
+}
+
 pub fn cloud_config_bundle_loader(
     auth_manager: Arc<AuthManager>,
     chatgpt_base_url: String,

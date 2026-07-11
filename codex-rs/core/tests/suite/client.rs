@@ -3462,8 +3462,15 @@ async fn blocked_account_selection_does_not_replay_http_request() -> anyhow::Res
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .and(header("authorization", "Bearer access-b"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer access-d"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            sse_failed("resp-b", "usage_limit_reached", "usage limit reached"),
+            sse_failed("resp-d", "usage_limit_reached", "usage limit reached"),
             "text/event-stream",
         ))
         .expect(1)
@@ -3490,8 +3497,21 @@ async fn blocked_account_selection_does_not_replay_http_request() -> anyhow::Res
         "access-b",
         Some("account-b"),
     );
-    store.import_current(
+    let second = store.import_current(
         Some("second".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    store.set_automation_enabled(&second.id, /*automation_enabled*/ false)?;
+    write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-d",
+        Some("account-d"),
+    );
+    store.import_current(
+        Some("fourth".to_string()),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     )?;
