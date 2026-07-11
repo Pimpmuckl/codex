@@ -15,7 +15,7 @@ use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
 
-mod account_settings;
+mod codex_plus_plus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -450,8 +450,8 @@ impl ChatWidget {
                     self.open_usage_menu();
                 }
             }
-            SlashCommand::Accounts => {
-                self.open_accounts_popup();
+            SlashCommand::Accounts | SlashCommand::CodexPlusPlus => {
+                self.open_codex_plus_plus_popup();
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Ide => {
@@ -1050,6 +1050,7 @@ impl ChatWidget {
             | SlashCommand::Status
             | SlashCommand::Usage
             | SlashCommand::Accounts
+            | SlashCommand::CodexPlusPlus
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
