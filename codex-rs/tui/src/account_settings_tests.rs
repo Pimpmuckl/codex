@@ -1,5 +1,4 @@
 use std::fs;
-use std::sync::Arc;
 
 use codex_config::types::AutomaticAccountSelection;
 use pretty_assertions::assert_eq;
@@ -28,7 +27,7 @@ async fn test_config(contents: &str) -> (tempfile::TempDir, Config) {
 fn render_settings(config: Config, current: AutomaticAccountSelection) -> String {
     let (tx, _rx) = unbounded_channel();
     let view = ListSelectionView::new(
-        account_settings_params(current, Arc::new(config)),
+        account_settings_params(current, config.codex_home.join("config.toml").to_path_buf()),
         AppEventSender::new(tx),
         RuntimeKeymap::defaults().list,
     );
@@ -60,32 +59,27 @@ async fn account_settings_disabled_snapshot() {
 
 #[test]
 fn account_settings_toggle_success_snapshot() {
-    let PersistenceMessage::Success(success) =
-        persistence_message(AutomaticAccountSelection::Disabled, Ok(()))
-    else {
-        panic!("expected success message");
-    };
+    let success = persistence_success_message(AutomaticAccountSelection::Disabled);
     insta::assert_snapshot!("account_settings_toggle_success", success);
 }
 
 #[test]
 fn account_settings_toggle_failure_snapshot() {
-    let PersistenceMessage::Error(error) = persistence_message(
-        AutomaticAccountSelection::Enabled,
-        Err("permission denied".to_string()),
-    ) else {
-        panic!("expected error message");
-    };
+    let error = persistence_error_message("permission denied".to_string());
     insta::assert_snapshot!("account_settings_toggle_failure", error);
 }
 
 #[tokio::test]
 async fn persistence_preserves_unrelated_config() {
-    let (codex_home, config) = test_config("model = \"gpt-5\"\n").await;
+    let codex_home = tempdir().expect("tempdir");
+    fs::write(codex_home.path().join("config.toml"), "model = \"gpt-5\"\n").expect("write config");
 
-    persist_automatic_account_selection(&config, AutomaticAccountSelection::Disabled)
-        .await
-        .expect("persist setting");
+    persist_automatic_account_selection(
+        &codex_home.path().join("config.toml"),
+        AutomaticAccountSelection::Disabled,
+    )
+    .await
+    .expect("persist setting");
 
     assert_eq!(
         fs::read_to_string(codex_home.path().join("config.toml")).expect("read config"),
@@ -95,12 +89,14 @@ async fn persistence_preserves_unrelated_config() {
 
 #[tokio::test]
 async fn persistence_failure_is_returned() {
-    let (codex_home, config) = test_config("").await;
-    fs::remove_file(codex_home.path().join("config.toml")).expect("remove config");
+    let codex_home = tempdir().expect("tempdir");
     fs::create_dir(codex_home.path().join("config.toml")).expect("replace config with directory");
 
-    let result =
-        persist_automatic_account_selection(&config, AutomaticAccountSelection::Disabled).await;
+    let result = persist_automatic_account_selection(
+        &codex_home.path().join("config.toml"),
+        AutomaticAccountSelection::Disabled,
+    )
+    .await;
 
     assert!(result.is_err());
 }
