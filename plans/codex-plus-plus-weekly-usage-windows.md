@@ -84,13 +84,16 @@ superseded by these decisions.
 - `codex-model-provider` already depends on `codex-api`, `codex-login`,
   `codex-model-provider-info`, and `codex-http-client`. It owns provider/auth construction
   (`codex-rs/model-provider/src/provider.rs:156-218`) and is the narrow owner for the one-shot ping.
-- The effective provider is used only when it passes the existing first-party-auth predicate
-  (`codex-rs/model-provider/src/provider.rs:209-215`); expose that predicate `pub(crate)` for the
-  fork helper. Construct the ping provider from `ModelProviderInfo::create_openai_provider` and the
-  same `config.chatgpt_base_url` already used by imported-account usage fetches, never from the
-  effective provider's base URL or headers. This prevents ChatGPT credentials from reaching an
-  OSS/custom provider. Route-aware transport construction still comes from the effective config's
-  `http_client_factory` (`codex-rs/core/src/config/mod.rs:1495`).
+- Require `config.model_provider_id == OPENAI_PROVIDER_ID`; configured providers cannot override
+  that built-in entry (`codex-rs/model-provider-info/src/lib.rs:37`, `:458-490`). Defense in depth,
+  also require `ModelProviderInfo::is_openai` and the existing first-party-auth predicate
+  (`codex-rs/model-provider-info/src/lib.rs:395-398`; `codex-rs/model-provider/src/provider.rs:209-215`).
+  Expose the latter `pub(crate)` for the fork helper. Construct the ping provider from
+  `ModelProviderInfo::create_openai_provider` and the same `config.chatgpt_base_url` already used by
+  imported-account usage fetches, never from the effective provider's base URL or headers. This
+  prevents ChatGPT credentials from reaching an OSS/custom provider. Route-aware transport
+  construction still comes from the effective config's `http_client_factory`
+  (`codex-rs/core/src/config/mod.rs:1495`).
 - The long-running embedded lifecycle starts the app server and then enters `App::run`
   (`codex-rs/tui/src/lib.rs:1332`, `:1396`, `:1836`; `codex-rs/tui/src/app.rs:759`). Start and own
   the scheduler there. Remote TUI sessions and `codex exec` do not host it.
@@ -110,9 +113,6 @@ The model-provider helper issues one new HTTP `/responses` stream with no sessio
       "content": [{ "type": "input_text", "text": "Reply OK." }]
     }
   ],
-  "tools": [],
-  "tool_choice": "auto",
-  "parallel_tool_calls": false,
   "store": false,
   "stream": true,
   "include": [],
@@ -123,8 +123,8 @@ The model-provider helper issues one new HTTP `/responses` stream with no sessio
 Rules:
 
 - Use the effective model already resolved by the embedded TUI. Do not hard-code a model slug or
-  discover models separately for every account. Skip the scheduler entirely unless its effective
-  provider passes `provider_uses_first_party_auth_path`.
+  discover models separately for every account. Skip the scheduler unless the provider ID is the
+  non-overridable built-in `openai` entry and both provider-level checks above pass.
 - Use `ResponsesClient::stream`, not a WebSocket client and not a foreground `ModelClientSession`.
 - Do not send `previous_response_id`, session/thread IDs, turn metadata/state, prompt cache keys,
   tools, history, reasoning configuration, service tier, or model-visible scheduler context.
@@ -156,12 +156,15 @@ Read account configuration fresh on every scan. An account is eligible only when
 2. The imported profile is enabled and not login-required.
 3. Its `/accounts` automation toggle is enabled.
 4. Its auth file exists and passes the effective forced-workspace restriction.
-5. Authoritative Codex usage includes a weekly/secondary window whose exact `used_percent` is
+5. The effective provider is the non-overridable built-in `openai` provider and passes both
+   first-party checks above.
+6. Authoritative Codex usage includes a weekly/secondary window whose exact `used_percent` is
    `0.0`.
-6. That weekly window has no reset timestamp, has `resets_at <= now`, or has moved forward from the
+7. That weekly window has no reset timestamp, has `resets_at <= now`, or has moved forward from the
    last observed weekly reset. A future reset with no prior observation or the same prior reset is
    only a baseline and is not due.
-7. The account is not inside scheduler backoff and its scheduler lease can be acquired.
+8. The account is not quarantined or inside scheduler backoff, and its scheduler lease can be
+   acquired.
 
 Missing weekly usage is unknown, not unused. Any `used_percent > 0.0` is partial/running and must
 not be pinged. A future reset is eligible only when the exact-zero window moved forward from a
@@ -174,14 +177,24 @@ weekly reset, refreshes exact-full windows, and pings when the full window's res
 future/full window. Persist the first observation as a baseline so the next reset transition is
 detectable.
 
+A closed attempt also creates a seven-day suppression horizon. Best-effort post-ping usage refresh
+must save any newly revealed future reset as the new baseline even though rounded usage is not a
+success condition. If that refresh fails, the next scan absorbs the first exact-zero reset
+transition observed inside the suppression horizon as the same just-started window and baselines it
+without dispatch. Once that reset reaches its boundary, normal due detection resumes. This handles
+an expired reset `R1` becoming future reset `R2` after the ping without dispatching both identities.
+
 For a reset-less window, use a persisted synthetic generation rather than `null` as the durable
-identity. The first exact-zero observation is generation 1. An observed active value
-(`used_percent > 0.0`) followed later by exact zero increments the generation. Because the backend
-reports integer percentages and can keep a small successful ping at zero, an unchanged exact-zero
-window also increments once seven days have elapsed since the `last_attempt_at` for a closed
-attempt. Retryable failures retain the same generation. Without a server reset
-timestamp the exact boundary is unknowable; this conservative fallback makes progress while
-preventing every five-minute scan from treating one already-started window as new.
+identity. The first exact-zero observation with no closed timestamped attempt to preserve is
+generation 1. An observed active value (`used_percent > 0.0`) followed later by exact zero increments
+the generation. If reset metadata disappears after a closed timestamped attempt, keep that attempt
+closed and do not mint generation 1 until activity proves a later window or its seven-day
+suppression horizon expires. Because the backend reports integer percentages and can keep a small
+successful ping at zero, an unchanged exact-zero reset-less window also increments once seven days
+have elapsed since the `last_attempt_at` for a closed attempt. Retryable failures retain the same
+generation. Without a server reset timestamp the exact boundary is unknowable; this conservative
+fallback makes progress while preventing every five-minute scan from treating one already-started
+window as new.
 
 `AccountUsage` currently stores rounded remaining percentages. Add an exact boolean derived from
 the raw snapshot (`weekly_unused = used_percent == 0.0`); do not infer unused state from a displayed
@@ -208,7 +221,8 @@ attempt_status: null | dispatching | retryable | closed
 last_attempt_at: null | unix-seconds
 failure_count: 0..8
 retry_not_before: null | unix-seconds
-last_error: null | ambiguous | transient | login_required | rejected
+recovery_not_before: null | unix-seconds
+last_error: null | ambiguous | transient | login_required | rejected | state_quarantined
 ```
 
 - `(account_id, attempt_identity)` is the attempt identity. Reset-bearing windows use the server
@@ -228,9 +242,13 @@ last_error: null | ambiguous | transient | login_required | rejected
   remains the only retry driver, so there is no busy loop. Closed attempts are never retried for
   the same identity.
 - Persist only sanitized error categories. Detailed errors stay in trace/debug logs.
-- Reject state input over 4 KiB, treat corrupt/unknown-version state as empty after a warning, and
-  atomically replace through a same-directory temporary file. This state is reconstructable and
-  never contains auth material.
+- Reject state input over 4 KiB. Corrupt or oversized state is never treated as empty: warn, replace
+  it atomically with version-1 state quarantined for seven days, and baseline authoritative usage
+  without dispatch during that horizon. Observed activity followed by exact zero may end quarantine
+  early; otherwise standard transition logic resumes from the saved baseline after the horizon.
+  An unknown version is left untouched and the account is skipped with an incompatible-state
+  status until compatible code is installed. This prevents corruption, downgrade, or mixed-version
+  processes from erasing the only dedupe evidence. State never contains auth material.
 - Read status through `AccountStore` so `/accounts` can show a concise retry/login error without
   parsing scheduler files in the TUI.
 
@@ -325,8 +343,9 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - Unit tests prove lease contention/drop recovery, first-observation baselining with no attempt
   metadata, a future/full reset transition becoming due, unchanged future/full windows staying
   skipped, attempt-identity reset, reset-less generation success/deduplication/re-arm by activity
-  and by the seven-day fallback, pre-dispatch persistence, crash recovery closing `dispatching`,
-  capped backoff, atomic bounded state, corruption recovery, and sanitized status.
+  and by the seven-day fallback, timestamped-closed to missing-reset preservation, pre-dispatch
+  persistence, crash recovery closing `dispatching`, capped backoff, atomic bounded state,
+  corrupt/oversized quarantine, unknown-version refusal, and sanitized status.
 - Wire tests prove the exact request has no tools/history/session IDs/previous response/WebSocket,
   refresh never crosses identity, the destination is `config.chatgpt_base_url` rather than a custom
   effective-provider URL, the API retry budget is zero, only `Completed` counts as success, and
@@ -339,8 +358,11 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - `just fix -p codex-tui`
 - Snapshot `/codexplusplus`, `/accounts` scheduler status, and the Codex++ welcome toast.
 - A two-scheduler test proves one due account produces one ping.
-- An OSS/custom-provider test proves the scheduler dispatches nothing and never attaches imported
-  account credentials.
+- A rollover test proves expired `R1` can close, reveal future exact-zero `R2`, and baseline `R2`
+  without a second dispatch; cover both successful and failed post-ping refresh.
+- OSS and custom-provider tests—including a custom provider with
+  `requires_openai_auth = true`—prove any non-`openai` provider ID dispatches nothing and never
+  attaches imported account credentials.
 - A root-auth test compares the root `auth.json` bytes before and after a successful ping and a
   terminal refresh failure.
 - A foreground-isolation test proves the active account ID, request history, thread/session state,
