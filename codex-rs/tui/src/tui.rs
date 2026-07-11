@@ -54,6 +54,7 @@ use crate::tui::job_control::SuspendContext;
 use codex_config::types::NotificationCondition;
 use codex_config::types::NotificationMethod;
 
+mod codex_plus_plus;
 mod event_stream;
 mod frame_rate_limiter;
 mod frame_requester;
@@ -63,8 +64,6 @@ mod keyboard_modes;
 mod terminal_stderr;
 #[cfg(test)]
 pub(crate) mod test_support;
-#[cfg(windows)]
-mod windows_input;
 
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
@@ -182,7 +181,7 @@ pub fn set_modes() -> Result<()> {
 
     enable_raw_mode()?;
     #[cfg(windows)]
-    if let Err(err) = windows_input::ensure_native_windows_input_mode() {
+    if let Err(err) = codex_plus_plus::native_windows_input::ensure_native_windows_input_mode() {
         let _ = execute!(stdout(), DisableBracketedPaste);
         let _ = disable_raw_mode();
         return Err(err);
@@ -274,7 +273,7 @@ fn restore_common(
         first_error.get_or_insert(err);
     }
     #[cfg(windows)]
-    if let Err(err) = windows_input::restore_native_windows_input_mode() {
+    if let Err(err) = codex_plus_plus::native_windows_input::restore_native_windows_input_mode() {
         first_error.get_or_insert(err);
     }
     if let Err(err) = execute!(
