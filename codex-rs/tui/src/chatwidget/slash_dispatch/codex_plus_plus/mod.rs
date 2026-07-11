@@ -1,4 +1,6 @@
-//! Codex++ settings exposed through `/codexplusplus`.
+//! Codex++ settings exposed through fork slash commands.
+
+mod accounts;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
