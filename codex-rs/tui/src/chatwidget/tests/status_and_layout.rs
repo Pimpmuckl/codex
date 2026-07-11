@@ -78,6 +78,20 @@ async fn app_server_model_verification_renders_warning() {
 }
 
 #[tokio::test]
+async fn model_capacity_retry_warning_renders_snapshot() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_warning("The selected model is at capacity. Retrying in one minute (1/1).");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("model_capacity_retry_warning", rendered);
+}
+
+#[tokio::test]
 async fn context_indicator_shows_used_tokens_when_window_unknown() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model")).await;
 

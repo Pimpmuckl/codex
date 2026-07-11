@@ -1514,6 +1514,78 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
     server.shutdown().await;
 }
 
+#[tokio::test]
+async fn responses_websocket_capacity_retry_does_not_fallback_to_http() {
+    skip_if_no_network!();
+    let overloaded = json!({
+        "type": "response.failed",
+        "response": {
+            "error": {
+                "code": "server_is_overloaded",
+                "message": "at capacity"
+            }
+        }
+    });
+    let server = start_websocket_server(vec![
+        vec![
+            vec![
+                ev_response_created("resp-prewarm"),
+                ev_completed("resp-prewarm"),
+            ],
+            vec![overloaded.clone()],
+        ],
+        vec![vec![overloaded]],
+    ])
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(1);
+        })
+        .build_with_websocket_server(&server)
+        .await
+        .expect("build websocket codex");
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit turn");
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::Warning(warning)
+                if warning.message
+                    == "The selected model is at capacity. Retrying in one minute (1/1)."
+        )
+    })
+    .await;
+    tokio::time::pause();
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::resume();
+    let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    let EventMsg::Error(error) = error else {
+        unreachable!();
+    };
+
+    assert_eq!(
+        error.codex_error_info,
+        Some(codex_protocol::protocol::CodexErrorInfo::ServerOverloaded)
+    );
+    assert_eq!(server.handshakes().len(), 2);
+    assert_eq!(server.connections().iter().map(Vec::len).sum::<usize>(), 3);
+    server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_account_selection_does_not_replay_websocket_request() {
     skip_if_no_network!();
