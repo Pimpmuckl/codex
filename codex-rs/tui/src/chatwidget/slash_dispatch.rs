@@ -15,6 +15,9 @@ use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
 
+#[path = "../account_settings.rs"]
+mod account_settings;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
     Live,
@@ -447,6 +450,9 @@ impl ChatWidget {
                 if self.ensure_usage_command_available() {
                     self.open_usage_menu();
                 }
+            }
+            SlashCommand::Accounts => {
+                self.open_accounts_popup();
             }
             SlashCommand::Ide => {
                 self.handle_ide_command();
@@ -1043,6 +1049,7 @@ impl ChatWidget {
             SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Usage
+            | SlashCommand::Accounts
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
