@@ -30,11 +30,22 @@ pub(crate) async fn handle_retryable_response_stream_error(
     turn_context: &TurnContext,
     request: ResponsesStreamRequest<'_>,
 ) -> Result<(), CodexErr> {
-    let capacity_retry = matches!(request, ResponsesStreamRequest::Sampling(_))
-        && model_capacity_retry::applies_to_sampling(&err, &turn_context.session_source);
+    if let ResponsesStreamRequest::Sampling(cancellation_token) = request
+        && model_capacity_retry::applies_to_sampling(&err, &turn_context.session_source)
+    {
+        return model_capacity_retry::handle(
+            retries,
+            max_retries,
+            err,
+            client_session,
+            sess,
+            turn_context,
+            cancellation_token,
+        )
+        .await;
+    }
 
-    if !capacity_retry
-        && *retries >= max_retries
+    if *retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             &turn_context.model_info,
@@ -54,34 +65,19 @@ pub(crate) async fn handle_retryable_response_stream_error(
     if *retries < max_retries {
         *retries += 1;
         let retry_count = *retries;
-        let delay = if capacity_retry {
-            model_capacity_retry::DELAY
-        } else {
-            match &err {
-                CodexErr::Stream(_, requested_delay) => {
-                    requested_delay.unwrap_or_else(|| backoff(retry_count))
-                }
-                _ => backoff(retry_count),
+        let delay = match &err {
+            CodexErr::Stream(_, requested_delay) => {
+                requested_delay.unwrap_or_else(|| backoff(retry_count))
             }
+            _ => backoff(retry_count),
         };
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
-        if capacity_retry {
-            sess.send_event(
-                turn_context,
-                EventMsg::Warning(WarningEvent {
-                    message: model_capacity_retry::warning(retry_count, max_retries),
-                }),
-            )
-            .await;
-        }
-
         // In release builds, hide the first websocket retry notification to reduce noisy
         // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = !capacity_retry
-            && (retry_count > 1
-                || cfg!(debug_assertions)
-                || !sess.services.model_client.responses_websocket_enabled());
+        let report_error = retry_count > 1
+            || cfg!(debug_assertions)
+            || !sess.services.model_client.responses_websocket_enabled();
         if report_error {
             // Surface retry information to any UI/front-end so the user understands what is
             // happening instead of staring at a seemingly frozen screen.
@@ -91,18 +87,6 @@ pub(crate) async fn handle_retryable_response_stream_error(
                 err,
             )
             .await;
-        }
-        if capacity_retry {
-            let ResponsesStreamRequest::Sampling(cancellation_token) = request else {
-                unreachable!();
-            };
-            return tokio::select! {
-                _ = tokio::time::sleep(delay) => {
-                    client_session.reset_websocket_session();
-                    Ok(())
-                },
-                _ = cancellation_token.cancelled() => Err(CodexErr::TurnAborted),
-            };
         }
         tokio::time::sleep(delay).await;
         return Ok(());
