@@ -6,13 +6,14 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AutomaticAccountSelection;
 use codex_protocol::auth::RefreshTokenFailedReason;
 
-use super::AuthManager;
-use super::CodexAuth;
-use super::RefreshTokenError;
-use super::RefreshTokenFailedError;
-use super::ReloadOutcome;
-use super::load_auth_dot_json;
-use super::revoke_auth_tokens;
+use super::super::AuthManager;
+use super::super::CodexAuth;
+use super::super::RefreshTokenError;
+use super::super::RefreshTokenFailedError;
+use super::super::ReloadOutcome;
+use super::super::load_auth_dot_json;
+use super::super::logout_all_stores;
+use super::super::revoke_auth_tokens;
 use crate::account::AccountId;
 use crate::account::AccountStore;
 use crate::account::account_id_for_auth;
@@ -25,18 +26,18 @@ const IMPORTED_ACCOUNT_LOGIN_REQUIRED_MESSAGE: &str =
     "This account needs you to sign in again. Run `codex account add` to continue.";
 const AUTOMATIC_ACCOUNT_SELECTION_DISABLED_MESSAGE: &str = "This account needs you to sign in again. Automatic account selection is disabled; choose another account in the Codex TUI, run `codex account add`, or enable automatic account selection.";
 
-pub(super) enum ImportedAccountRefreshReadiness {
+pub(in crate::auth::manager) enum ImportedAccountRefreshReadiness {
     Ready,
     Recovered,
 }
 
-pub(super) fn root_auth_is_account_marker(root_auth: Option<&CodexAuth>) -> bool {
+pub(in crate::auth::manager) fn root_auth_is_account_marker(root_auth: Option<&CodexAuth>) -> bool {
     root_auth
         .and_then(CodexAuth::get_current_auth_json)
         .is_some_and(|auth| is_root_account_marker(&auth))
 }
 
-pub(super) fn root_auth_reauthenticates_login_required_account(
+pub(in crate::auth::manager) fn root_auth_reauthenticates_login_required_account(
     codex_home: &Path,
     root_auth: Option<&CodexAuth>,
 ) -> bool {
@@ -55,7 +56,7 @@ pub(super) fn root_auth_reauthenticates_login_required_account(
         })
 }
 
-pub(super) struct ManagedAuthRefreshLocks {
+pub(in crate::auth::manager) struct ManagedAuthRefreshLocks {
     account_store: AccountStore,
     account_homes: Vec<PathBuf>,
     index_readable: bool,
@@ -64,11 +65,11 @@ pub(super) struct ManagedAuthRefreshLocks {
 }
 
 impl ManagedAuthRefreshLocks {
-    pub(super) fn account_homes(&self) -> &[PathBuf] {
+    pub(in crate::auth::manager) fn account_homes(&self) -> &[PathBuf] {
         &self.account_homes
     }
 
-    pub(super) fn disable_all(&self) -> std::io::Result<bool> {
+    pub(in crate::auth::manager) fn disable_all(&self) -> std::io::Result<bool> {
         if self.index_guard.is_none() {
             return Err(std::io::Error::other("account index lock is not held"));
         }
@@ -79,11 +80,11 @@ impl ManagedAuthRefreshLocks {
         }
     }
 
-    pub(super) fn release_index_lock(&mut self) {
+    pub(in crate::auth::manager) fn release_index_lock(&mut self) {
         self.index_guard = None;
     }
 
-    pub(super) async fn reacquire_index_lock(&mut self) -> std::io::Result<()> {
+    pub(in crate::auth::manager) async fn reacquire_index_lock(&mut self) -> std::io::Result<()> {
         let account_store = self.account_store.clone();
         self.index_guard = Some(
             tokio::task::spawn_blocking(move || account_store.acquire_index_lock())
@@ -95,7 +96,7 @@ impl ManagedAuthRefreshLocks {
 }
 
 impl AuthManager {
-    pub(super) async fn acquire_refresh_file_lock(
+    pub(in crate::auth::manager) async fn acquire_refresh_file_lock(
         &self,
     ) -> Result<Option<AccountLease>, RefreshTokenError> {
         if self.has_external_auth() {
@@ -109,7 +110,7 @@ impl AuthManager {
             .map_err(RefreshTokenError::Transient)
     }
 
-    pub(super) async fn acquire_managed_auth_refresh_locks(
+    pub(in crate::auth::manager) async fn acquire_managed_auth_refresh_locks(
         &self,
     ) -> std::io::Result<ManagedAuthRefreshLocks> {
         let codex_home = self.codex_home.clone();
@@ -118,7 +119,10 @@ impl AuthManager {
             .map_err(std::io::Error::other)?
     }
 
-    pub(super) async fn revoke_managed_auth(&self, locks: &ManagedAuthRefreshLocks) {
+    pub(in crate::auth::manager) async fn revoke_managed_auth(
+        &self,
+        locks: &ManagedAuthRefreshLocks,
+    ) {
         let mut auth_snapshots = Vec::new();
         if let Some(auth) = self
             .auth_cached()
@@ -171,7 +175,7 @@ impl AuthManager {
         }
     }
 
-    pub(super) async fn recover_terminal_imported_refresh(
+    pub(in crate::auth::manager) async fn recover_terminal_imported_refresh(
         &self,
         result: Result<(), RefreshTokenError>,
         attempted_account_id: Option<AccountId>,
@@ -215,7 +219,7 @@ impl AuthManager {
         }
     }
 
-    pub(super) async fn reconcile_imported_account_refresh_readiness(
+    pub(in crate::auth::manager) async fn reconcile_imported_account_refresh_readiness(
         &self,
     ) -> Result<ImportedAccountRefreshReadiness, RefreshTokenError> {
         let Some(active_account_id) = self.active_account_id() else {
@@ -237,6 +241,26 @@ impl AuthManager {
         self.move_off_imported_account_requiring_login(active_account_id)
             .await?;
         Ok(ImportedAccountRefreshReadiness::Recovered)
+    }
+
+    pub(in crate::auth::manager) fn logout_all_managed_auth(
+        &self,
+        auth_locks: &ManagedAuthRefreshLocks,
+    ) -> std::io::Result<bool> {
+        let mut removed = logout_all_stores(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            self.keyring_backend_kind,
+        )?;
+        for account_home in auth_locks.account_homes() {
+            removed |= logout_all_stores(
+                account_home,
+                AuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::default(),
+            )?;
+        }
+        removed |= auth_locks.disable_all()?;
+        Ok(removed)
     }
 
     async fn move_off_imported_account_requiring_login(
