@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/accounts_tests.rs
+expression: "cell.display_lines(96).iter().map(|line|\nline.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+■ Could not update all account automation settings. Reopen /accounts to view saved settings.
