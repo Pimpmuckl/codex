@@ -66,10 +66,12 @@ use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_login::AccountId;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
+use codex_login::auth::ImportedAccountSwitchOutcome;
 use codex_login::default_client::build_default_reqwest_client_for_route;
 use codex_login::default_client::build_reqwest_client;
 use codex_otel::SessionTelemetry;
@@ -273,6 +275,7 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    request_account_id: Option<AccountId>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -481,6 +484,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            request_account_id: None,
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -1120,6 +1124,10 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    pub(crate) fn request_account_id(&self) -> Option<AccountId> {
+        self.request_account_id.clone()
+    }
+
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
     }
@@ -1401,7 +1409,7 @@ impl ModelClientSession {
         )
     )]
     async fn stream_responses_api(
-        &self,
+        &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
@@ -1422,6 +1430,7 @@ impl ModelClientSession {
             let request_account_id = auth_manager
                 .as_ref()
                 .and_then(|manager| manager.active_account_id());
+            self.request_account_id = request_account_id.clone();
             let transport = self
                 .client
                 .build_responses_transport(&client_setup.api_provider, RESPONSES_ENDPOINT)?;
@@ -1528,13 +1537,19 @@ impl ModelClientSession {
                                     }
                                     attempted_account_ids.insert(account_id.to_string());
                                 }
-                                if manager
+                                match manager
                                     .switch_to_next_imported_account(&attempted_account_ids)
                                     .await
                                 {
-                                    auth_recovery = Some(manager.unauthorized_recovery());
-                                    pending_retry = PendingUnauthorizedRetry::default();
-                                    continue;
+                                    ImportedAccountSwitchOutcome::ReadyToRetry => {
+                                        auth_recovery = Some(manager.unauthorized_recovery());
+                                        pending_retry = PendingUnauthorizedRetry::default();
+                                        continue;
+                                    }
+                                    ImportedAccountSwitchOutcome::SelectedBlockedUntil {
+                                        ..
+                                    }
+                                    | ImportedAccountSwitchOutcome::NoCandidate => {}
                                 }
                             }
                             return Err(CodexErr::UsageLimitReached(usage_limit));

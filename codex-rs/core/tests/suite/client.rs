@@ -525,7 +525,7 @@ async fn response_item_ids_are_sent_for_all_remote_v2_compaction_requests() -> a
 /// Writes an `auth.json` into the provided `codex_home` with the specified parameters.
 /// Returns the fake JWT string written to `tokens.id_token`.
 #[expect(clippy::unwrap_used)]
-fn write_auth_json(
+pub(super) fn write_auth_json(
     codex_home: &TempDir,
     openai_api_key: Option<&str>,
     chatgpt_plan_type: &str,
@@ -3438,6 +3438,116 @@ async fn disabled_account_selection_does_not_fail_over_on_usage_limit() -> anyho
         .await?;
     wait_for_event(&fixture.codex, |msg| matches!(msg, EventMsg::Error(_))).await;
     assert_eq!(auth_manager.active_account_id(), Some(first.id));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_account_selection_does_not_replay_http_request() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+    let resets_at = 4_102_444_800;
+    let first_response = ResponseTemplate::new(429).set_body_json(json!({
+        "error": {
+            "type": "usage_limit_reached",
+            "resets_at": resets_at + 60
+        }
+    }));
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer access-a"))
+        .respond_with(first_response)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer access-b"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            sse_failed("resp-b", "usage_limit_reached", "usage limit reached"),
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let home = Arc::new(TempDir::new()?);
+    let store = codex_login::AccountStore::new(home.path().to_path_buf());
+    write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-a",
+        Some("account-a"),
+    );
+    let first = store.import_current(
+        Some("first".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-b",
+        Some("account-b"),
+    );
+    store.import_current(
+        Some("second".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-c",
+        Some("account-c"),
+    );
+    let third = store.import_current(
+        Some("third".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    store.record_usage_limit_resets_at(&third.id, resets_at)?;
+    store.apply_imported_account_to_root_auth(
+        &first.id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let auth_manager = Arc::new(
+        AuthManager::new_with_automatic_account_selection(
+            home.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+            AutomaticAccountSelection::Enabled,
+        )
+        .await,
+    );
+    let fixture = test_codex()
+        .with_home(home)
+        .with_auth_manager(Arc::clone(&auth_manager))
+        .build(&server)
+        .await?;
+
+    fixture
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&fixture.codex, |msg| matches!(msg, EventMsg::Error(_))).await;
+
+    assert_eq!(auth_manager.active_account_id(), Some(third.id));
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
