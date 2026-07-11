@@ -1,33 +1,30 @@
-use std::path::PathBuf;
-
-use codex_config::CONFIG_TOML_FILE;
-use codex_config::TomlValue;
 use codex_config::types::AutomaticAccountSelection;
 
 use super::*;
-use crate::legacy_core::config::edit::ConfigEdit;
-use crate::legacy_core::config::edit::ConfigEditsBuilder;
 
 impl ChatWidget {
     pub(super) fn open_accounts_popup(&mut self) {
-        let config_path = self
-            .config
-            .config_layer_stack
-            .get_user_config_file()
-            .map(codex_utils_absolute_path::AbsolutePathBuf::to_path_buf)
-            .unwrap_or_else(|| self.config.codex_home.join(CONFIG_TOML_FILE).to_path_buf());
-        let current = persisted_automatic_account_selection(&config_path)
-            .unwrap_or(self.config.automatic_account_selection);
         self.bottom_pane
-            .show_selection_view(account_settings_params(current, config_path));
+            .show_selection_view(account_settings_params(
+                self.config.automatic_account_selection,
+            ));
         self.request_redraw();
+    }
+
+    pub(crate) fn automatic_account_selection_persisted(
+        &mut self,
+        selection: AutomaticAccountSelection,
+    ) {
+        self.config.automatic_account_selection = selection;
+        self.add_info_message(persistence_success_message(selection), /*hint*/ None);
+    }
+
+    pub(crate) fn automatic_account_selection_persistence_failed(&mut self, err: String) {
+        self.add_error_message(persistence_error_message(err));
     }
 }
 
-fn account_settings_params(
-    current: AutomaticAccountSelection,
-    config_path: PathBuf,
-) -> SelectionViewParams {
+fn account_settings_params(current: AutomaticAccountSelection) -> SelectionViewParams {
     let state = selection_label(current);
     SelectionViewParams {
         title: Some("Accounts".to_string()),
@@ -52,7 +49,7 @@ fn account_settings_params(
             name: name.to_string(),
             description: Some(description.to_string()),
             is_current: selection == current,
-            actions: vec![selection_action(config_path.clone(), selection)],
+            actions: vec![selection_action(selection)],
             dismiss_on_select: true,
             ..Default::default()
         })
@@ -61,42 +58,10 @@ fn account_settings_params(
     }
 }
 
-fn selection_action(config_path: PathBuf, selection: AutomaticAccountSelection) -> SelectionAction {
+fn selection_action(selection: AutomaticAccountSelection) -> SelectionAction {
     Box::new(move |tx| {
-        let cell = match persist_automatic_account_selection(&config_path, selection) {
-            Ok(()) => history_cell::new_info_event(
-                persistence_success_message(selection),
-                /*hint*/ None,
-            ),
-            Err(err) => history_cell::new_error_event(persistence_error_message(err.to_string())),
-        };
-        tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
+        tx.send(AppEvent::PersistAutomaticAccountSelection { selection });
     })
-}
-
-fn persist_automatic_account_selection(
-    config_path: &std::path::Path,
-    selection: AutomaticAccountSelection,
-) -> anyhow::Result<()> {
-    let value = format!("\"{}\"", selection_label(selection)).parse()?;
-    ConfigEditsBuilder::for_config_path(config_path)
-        .with_edits([ConfigEdit::SetPath {
-            segments: vec!["automatic_account_selection".to_string()],
-            value,
-        }])
-        .apply_blocking()
-}
-
-fn persisted_automatic_account_selection(
-    config_path: &std::path::Path,
-) -> Option<AutomaticAccountSelection> {
-    let contents = std::fs::read_to_string(config_path).ok()?;
-    let config = toml::from_str::<TomlValue>(&contents).ok()?;
-    match config.get("automatic_account_selection")?.as_str()? {
-        "enabled" => Some(AutomaticAccountSelection::Enabled),
-        "disabled" => Some(AutomaticAccountSelection::Disabled),
-        _ => None,
-    }
 }
 
 fn selection_label(selection: AutomaticAccountSelection) -> &'static str {
