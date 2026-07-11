@@ -10,7 +10,11 @@ use codex_api::RetryConfig;
 use codex_api::TransportError;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::HttpTransport;
+use codex_http_client::Request;
 use codex_http_client::ReqwestTransport;
+use codex_http_client::Response;
+use codex_http_client::StreamResponse;
 use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
@@ -31,7 +35,17 @@ use crate::provider::provider_uses_first_party_auth_path;
 
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Inputs for one isolated Codex++ weekly-window request.
+struct TimeoutTransport(ReqwestTransport);
+impl HttpTransport for TimeoutTransport {
+    async fn execute(&self, request: Request) -> Result<Response, TransportError> {
+        self.0.execute(request).await
+    }
+    async fn stream(&self, mut request: Request) -> Result<StreamResponse, TransportError> {
+        request.timeout = Some(PING_TIMEOUT);
+        self.0.stream(request).await
+    }
+}
+
 pub struct WeeklyWindowPingRequest {
     pub root_codex_home: PathBuf,
     pub account_id: AccountId,
@@ -45,7 +59,6 @@ pub struct WeeklyWindowPingRequest {
     pub http_client_factory: HttpClientFactory,
 }
 
-/// Scheduler-safe result categories for a one-shot weekly-window request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WeeklyWindowPingOutcome {
     Completed,
@@ -54,7 +67,6 @@ pub enum WeeklyWindowPingOutcome {
     LoginRequired,
 }
 
-/// Sends one bounded first-party Responses request using only the imported account's auth home.
 pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
     if request.model_provider_id != OPENAI_PROVIDER_ID
         || !request.model_provider.is_openai()
@@ -146,7 +158,6 @@ async fn send_once(
         retry_5xx: false,
         retry_transport: false,
     };
-    provider.stream_idle_timeout = PING_TIMEOUT;
     let request_url = provider.url_for_path("responses");
     let Ok(client) = build_default_reqwest_client_for_route(
         &request.http_client_factory,
@@ -156,7 +167,8 @@ async fn send_once(
         return AttemptOutcome::Finished(WeeklyWindowPingOutcome::DefiniteRejection);
     };
     let auth = auth_provider_from_auth_manager(Arc::clone(auth_manager), expected_auth);
-    let client = ResponsesClient::new(ReqwestTransport::new(client), provider, auth);
+    let transport = TimeoutTransport(ReqwestTransport::new(client));
+    let client = ResponsesClient::new(transport, provider, auth);
     let body = json!({
         "model": request.model,
         "instructions": "",
