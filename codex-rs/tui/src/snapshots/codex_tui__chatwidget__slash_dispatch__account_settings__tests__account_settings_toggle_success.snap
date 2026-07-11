@@ -2,4 +2,4 @@
 source: tui/src/chatwidget/../account_settings_tests.rs
 expression: success
 ---
-Automatic account selection disabled. New sessions will use this setting.
+Automatic account selection disabled. Restart Codex to use this setting.
