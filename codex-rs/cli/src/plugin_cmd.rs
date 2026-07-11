@@ -605,13 +605,14 @@ pub(crate) async fn load_cli_auth_mode(config: &Config) -> Option<AuthMode> {
     }
 
     let auth_route_config = config.auth_route_config();
-    CodexAuth::from_auth_storage(
+    CodexAuth::from_auth_storage_with_automatic_account_selection(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
         auth_route_config.as_ref(),
+        config.automatic_account_selection,
     )
     .await
     .ok()

@@ -343,6 +343,25 @@
       },
       "type": "object"
     },
+    "AutomaticAccountSelection": {
+      "description": "Controls whether Codex may automatically select or switch imported accounts.",
+      "oneOf": [
+        {
+          "description": "Preserve automatic startup selection and account failover.",
+          "enum": [
+            "enabled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Keep the current or explicitly selected account until the user changes it.",
+          "enum": [
+            "disabled"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "BundledSkillsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -4673,6 +4692,15 @@
       ],
       "default": null,
       "description": "Optional policy instructions for the guardian auto-reviewer."
+    },
+    "automatic_account_selection": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AutomaticAccountSelection"
+        }
+      ],
+      "default": null,
+      "description": "Whether Codex may automatically select or switch imported accounts."
     },
     "background_terminal_max_timeout": {
       "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",

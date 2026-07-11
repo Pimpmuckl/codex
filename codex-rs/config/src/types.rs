@@ -99,6 +99,16 @@ pub enum AuthCredentialsStoreMode {
     Ephemeral,
 }
 
+/// Controls whether Codex may automatically select or switch imported accounts.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomaticAccountSelection {
+    /// Preserve automatic startup selection and account failover.
+    #[default]
+    Enabled,
+    /// Keep the current or explicitly selected account until the user changes it.
+    Disabled,
+}
 /// Determine where Codex should store and read MCP credentials.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]

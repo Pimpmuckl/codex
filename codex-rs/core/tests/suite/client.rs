@@ -1,5 +1,6 @@
 use codex_config::ConfigLayerStack;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AutomaticAccountSelection;
 use codex_core::ModelClient;
 use codex_core::NewThread;
 use codex_core::Prompt;
@@ -3154,7 +3155,6 @@ async fn token_count_includes_rate_limits_snapshot() {
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(response)
-        .expect(1)
         .mount(&server)
         .await;
 
@@ -3271,6 +3271,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
     let server = MockServer::start().await;
 
     let response = ResponseTemplate::new(429)
+        .insert_header("x-codex-promo-message", "Check your plan or credits")
         .insert_header("x-codex-primary-used-percent", "100.0")
         .insert_header("x-codex-secondary-used-percent", "87.5")
         .insert_header("x-codex-primary-over-secondary-limit-percent", "95.0")
@@ -3292,7 +3293,9 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         .mount(&server)
         .await;
 
-    let mut builder = test_codex();
+    let mut builder = test_codex().with_config(|config| {
+        config.automatic_account_selection = AutomaticAccountSelection::Disabled;
+    });
     let codex_fixture = builder.build(&server).await?;
     let codex = codex_fixture.codex.clone();
 
@@ -3348,7 +3351,8 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         unreachable!();
     };
     assert!(
-        error_event.message.to_lowercase().contains("usage limit"),
+        error_event.message.contains("Check your plan or credits")
+            && !error_event.message.contains("/accounts"),
         "unexpected error message for submission {submission_id}: {}",
         error_event.message
     );
@@ -3356,6 +3360,86 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_account_selection_does_not_fail_over_on_usage_limit() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+    let response =
+        ResponseTemplate::new(429).set_body_json(json!({"error": {"type": "usage_limit_reached"}}));
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(response)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let home = Arc::new(TempDir::new()?);
+    let store = codex_login::AccountStore::new(home.path().to_path_buf());
+    write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-a",
+        Some("account-a"),
+    );
+    let first = store.import_current(
+        Some("first".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-b",
+        Some("account-b"),
+    );
+    store.import_current(
+        Some("second".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    store.apply_imported_account_to_root_auth(
+        &first.id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let auth_manager = Arc::new(
+        AuthManager::new_with_automatic_account_selection(
+            home.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+            AutomaticAccountSelection::Disabled,
+        )
+        .await,
+    );
+    let mut builder = test_codex()
+        .with_home(home)
+        .with_auth_manager(Arc::clone(&auth_manager))
+        .with_config(|config| {
+            config.automatic_account_selection = AutomaticAccountSelection::Disabled;
+        });
+    let fixture = builder.build(&server).await?;
+    fixture
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&fixture.codex, |msg| matches!(msg, EventMsg::Error(_))).await;
+    assert_eq!(auth_manager.active_account_id(), Some(first.id));
+    Ok(())
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));

@@ -330,9 +330,9 @@ impl AccountStore {
         let _account_refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
         let _index_guard = self.acquire_index_lock()?;
         let (profile, account_home) = self
-            .enabled_file_account_profiles()?
+            .file_account_profiles()?
             .into_iter()
-            .find(|(profile, _)| &profile.id == account_id)
+            .find(|(profile, _)| profile.enabled && &profile.id == account_id)
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,

@@ -84,7 +84,7 @@ fn account_picker_snapshot() {
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .expect("render account picker after input");
 
-    insta::assert_snapshot!("account_picker_after_input", terminal.backend());
+    insta::assert_snapshot!("account_picker_manual", terminal.backend());
 }
 
 #[test]
@@ -146,6 +146,7 @@ async fn input_cancels_auto_selection() -> Result<()> {
     let picker = run_startup_account_picker_with_events(
         &mut tui,
         candidates(),
+        StartupAccountPickerMode::Timed,
         UnboundedReceiverStream::new(event_rx),
     );
     tokio::pin!(picker);
@@ -171,8 +172,26 @@ async fn input_cancels_auto_selection() -> Result<()> {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )))?;
-    assert_eq!(picker.await?, Some("acct_c".to_string()));
+    assert_eq!(
+        picker.await?,
+        Some(StartupAccountPickerSelection::User("acct_c".to_string()))
+    );
     Ok(())
+}
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn manual_mode_waits_for_selection() {
+    let (_event_tx, event_rx) = mpsc::unbounded_channel();
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test TUI");
+    let picker = run_startup_account_picker_with_events(
+        &mut tui,
+        vec![candidates()[0].clone()],
+        StartupAccountPickerMode::Manual,
+        UnboundedReceiverStream::new(event_rx),
+    );
+    tokio::pin!(picker);
+    tokio::time::advance(STARTUP_AUTO_PICK_AFTER + Duration::from_secs(1)).await;
+    let result = tokio::time::timeout(Duration::ZERO, &mut picker).await;
+    assert!(result.is_err());
 }
 
 #[test]
