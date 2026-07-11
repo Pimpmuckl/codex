@@ -1,6 +1,7 @@
 use super::*;
 use crate::AuthManager;
 use crate::CodexAuth;
+use crate::auth::ImportedAccountSwitchOutcome;
 use crate::token_data::IdTokenInfo;
 use crate::token_data::TokenData;
 use base64::Engine;
@@ -615,11 +616,17 @@ async fn switch_to_next_imported_account_skips_attempted_local_account_ids() {
     assert_eq!(manager.active_account_id(), Some(first.id.clone()));
 
     let attempted = HashSet::from([first.id.to_string()]);
-    assert!(manager.switch_to_next_imported_account(&attempted).await);
+    assert_eq!(
+        manager.switch_to_next_imported_account(&attempted).await,
+        ImportedAccountSwitchOutcome::ReadyToRetry
+    );
     assert_eq!(manager.active_account_id(), Some(second.id.clone()));
 
     let attempted = HashSet::from([first.id.to_string(), second.id.to_string()]);
-    assert!(!manager.switch_to_next_imported_account(&attempted).await);
+    assert_eq!(
+        manager.switch_to_next_imported_account(&attempted).await,
+        ImportedAccountSwitchOutcome::NoCandidate
+    );
     assert_eq!(manager.active_account_id(), Some(second.id));
 }
 
@@ -661,7 +668,93 @@ async fn switch_to_next_imported_account_prefers_unblocked_accounts() {
     let manager = test_auth_manager(codex_home.path()).await;
 
     let attempted = HashSet::from([first.id.to_string()]);
-    assert!(manager.switch_to_next_imported_account(&attempted).await);
+    assert_eq!(
+        manager.switch_to_next_imported_account(&attempted).await,
+        ImportedAccountSwitchOutcome::ReadyToRetry
+    );
+    assert_eq!(manager.active_account_id(), Some(third.id));
+}
+
+#[tokio::test]
+async fn switch_to_next_imported_account_selects_earliest_known_reset() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    let third = import_test_account(&store, codex_home.path(), "third", "account-c");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let now = Utc::now().timestamp();
+    store
+        .record_usage_limit_resets_at(&second.id, now + 120)
+        .expect("record second reset");
+    store
+        .record_usage_limit_resets_at(&third.id, now + 60)
+        .expect("record third reset");
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    let attempted = HashSet::from([first.id.to_string()]);
+    assert_eq!(
+        manager.switch_to_next_imported_account(&attempted).await,
+        ImportedAccountSwitchOutcome::SelectedBlockedUntil {
+            resets_at: now + 60
+        }
+    );
+    assert_eq!(manager.active_account_id(), Some(third.id));
+}
+
+#[tokio::test]
+async fn switch_to_next_imported_account_preserves_order_for_reset_ties() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    let third = import_test_account(&store, codex_home.path(), "third", "account-c");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let resets_at = Utc::now().timestamp() + 60;
+    store
+        .record_usage_limit_resets_at(&second.id, resets_at)
+        .expect("record second reset");
+    store
+        .record_usage_limit_resets_at(&third.id, resets_at)
+        .expect("record third reset");
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    let attempted = HashSet::from([first.id.to_string()]);
+    assert_eq!(
+        manager.switch_to_next_imported_account(&attempted).await,
+        ImportedAccountSwitchOutcome::SelectedBlockedUntil { resets_at }
+    );
+    assert_eq!(manager.active_account_id(), Some(second.id));
+}
+
+#[tokio::test]
+async fn switch_to_next_imported_account_prefers_free_blocked_account() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    let third = import_test_account(&store, codex_home.path(), "third", "account-c");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let now = Utc::now().timestamp();
+    store
+        .record_usage_limit_resets_at(&second.id, now + 60)
+        .expect("record second reset");
+    store
+        .record_usage_limit_resets_at(&third.id, now + 120)
+        .expect("record third reset");
+    let _second_lease = store
+        .try_acquire_lease(&second.id)
+        .expect("acquire second lease")
+        .expect("second account should initially be free");
+    let manager = test_auth_manager(codex_home.path()).await;
+
+    let attempted = HashSet::from([first.id.to_string()]);
+    assert_eq!(
+        manager.switch_to_next_imported_account(&attempted).await,
+        ImportedAccountSwitchOutcome::SelectedBlockedUntil {
+            resets_at: now + 120
+        }
+    );
     assert_eq!(manager.active_account_id(), Some(third.id));
 }
 

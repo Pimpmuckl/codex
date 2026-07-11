@@ -77,6 +77,7 @@ mod codex_plus_plus;
 pub use codex_plus_plus::auth_storage_refresh::RefreshAuthFromStorageError;
 pub use codex_plus_plus::auth_storage_refresh::refresh_auth_from_storage;
 use codex_plus_plus::imported_account_refresh;
+pub use codex_plus_plus::imported_account_selection::ImportedAccountSwitchOutcome;
 use codex_plus_plus::imported_account_startup::chatgpt_auth_workspace_allowed;
 use codex_plus_plus::imported_account_startup::load_initial_imported_account_auth;
 

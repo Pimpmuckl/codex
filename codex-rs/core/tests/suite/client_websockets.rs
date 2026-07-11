@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 use codex_api::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use codex_api::WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::CodexResponsesMetadata;
 use codex_core::ModelClient;
 use codex_core::ModelClientSession;
@@ -9,6 +10,8 @@ use codex_core::ResponseEvent;
 use codex_core::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 use codex_features::Feature;
 use codex_http_client::OutboundProxyPolicy;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
@@ -1508,6 +1511,115 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         error_event.message
     );
 
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_account_selection_does_not_replay_websocket_request() {
+    skip_if_no_network!();
+    let resets_at = 4_102_444_800;
+    let usage_limit_error = json!({
+        "type": "error",
+        "status": 429,
+        "error": {
+            "type": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+            "plan_type": "pro",
+            "resets_at": resets_at,
+            "resets_in_seconds": 1234
+        },
+        "headers": {
+            "x-codex-primary-used-percent": "100.0",
+            "x-codex-primary-window-minutes": "15"
+        }
+    });
+    let server = start_websocket_server(vec![vec![
+        vec![
+            ev_response_created("resp-prewarm"),
+            ev_completed("resp-prewarm"),
+        ],
+        vec![usage_limit_error],
+    ]])
+    .await;
+    let home = Arc::new(TempDir::new().expect("tempdir"));
+    let store = codex_login::AccountStore::new(home.path().to_path_buf());
+    super::client::write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "Access Token",
+        Some("account-a"),
+    );
+    let first = store
+        .import_current(
+            Some("first".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import first account");
+    super::client::write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "Access Token",
+        Some("account-b"),
+    );
+    let second = store
+        .import_current(
+            Some("second".to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import second account");
+    store
+        .record_usage_limit_resets_at(&first.id, resets_at + 60)
+        .expect("record first reset");
+    store
+        .record_usage_limit_resets_at(&second.id, resets_at)
+        .expect("record second reset");
+    let auth_manager = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        home.path().to_path_buf(),
+    );
+    assert_eq!(auth_manager.active_account_id(), None);
+    let test = test_codex()
+        .with_auth_manager(Arc::clone(&auth_manager))
+        .with_config(|config| {
+            config.model_provider.requires_openai_auth = false;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build_with_websocket_server(&server)
+        .await
+        .expect("build websocket codex");
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submit turn");
+    let error = wait_for_event(&test.codex, |msg| matches!(msg, EventMsg::Error(_))).await;
+    let EventMsg::Error(error) = error else {
+        unreachable!();
+    };
+
+    assert_eq!(server.handshakes().len(), 1, "{}", error.message);
+    assert_eq!(
+        error.codex_error_info,
+        Some(codex_protocol::protocol::CodexErrorInfo::UsageLimitExceeded),
+        "{}",
+        error.message
+    );
+    assert_eq!(auth_manager.active_account_id(), Some(second.id));
+    assert_eq!(server.single_connection().len(), 2);
     server.shutdown().await;
 }
 
