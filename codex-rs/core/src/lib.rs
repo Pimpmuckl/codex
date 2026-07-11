@@ -9,6 +9,7 @@ mod apply_patch;
 mod apps;
 mod client;
 mod client_common;
+mod codex_plus_plus;
 mod realtime_context;
 mod realtime_conversation;
 mod realtime_prompt;
