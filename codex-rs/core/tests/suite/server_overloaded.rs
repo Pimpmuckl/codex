@@ -70,6 +70,7 @@ async fn capacity_retry_waits_one_minute_and_preserves_input() -> anyhow::Result
     assert_eq!(warning.message, CAPACITY_MESSAGE);
     assert_eq!(responses.requests().len(), 1);
     tokio::time::pause();
+    tokio::task::yield_now().await;
 
     tokio::time::advance(Duration::from_secs(59)).await;
     tokio::task::yield_now().await;
@@ -111,6 +112,7 @@ async fn interrupt_cancels_capacity_retry_wait() -> anyhow::Result<()> {
     )
     .await;
     tokio::time::pause();
+    tokio::task::yield_now().await;
     test.codex.submit(Op::Interrupt).await?;
     tokio::time::resume();
     wait_for_event(&test.codex, |event| {
@@ -156,6 +158,7 @@ async fn exhausted_capacity_retry_budget_surfaces_original_error() -> anyhow::Re
     )
     .await;
     tokio::time::pause();
+    tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(60)).await;
     tokio::time::resume();
     let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;

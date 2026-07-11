@@ -1569,6 +1569,7 @@ async fn responses_websocket_capacity_retry_does_not_fallback_to_http() {
     })
     .await;
     tokio::time::pause();
+    tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(60)).await;
     tokio::time::resume();
     let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;

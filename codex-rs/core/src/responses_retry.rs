@@ -31,7 +31,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
     request: ResponsesStreamRequest<'_>,
 ) -> Result<(), CodexErr> {
     let capacity_retry = matches!(request, ResponsesStreamRequest::Sampling(_))
-        && model_capacity_retry::applies_to(&err);
+        && model_capacity_retry::applies_to_sampling(&err, &turn_context.session_source);
 
     if !capacity_retry
         && *retries >= max_retries

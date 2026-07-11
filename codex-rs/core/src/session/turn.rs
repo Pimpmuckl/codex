@@ -1235,7 +1235,12 @@ async fn run_sampling_request(
             original_input = Some(prompt.input);
         }
 
-        if !err.is_retryable() && !crate::codex_plus_plus::model_capacity_retry::applies_to(&err) {
+        if !err.is_retryable()
+            && !crate::codex_plus_plus::model_capacity_retry::applies_to_sampling(
+                &err,
+                &turn_context.session_source,
+            )
+        {
             return Err(err);
         }
 
