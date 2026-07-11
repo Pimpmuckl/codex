@@ -242,13 +242,16 @@ last_error: null | ambiguous | transient | login_required | rejected | state_qua
   remains the only retry driver, so there is no busy loop. Closed attempts are never retried for
   the same identity.
 - Persist only sanitized error categories. Detailed errors stay in trace/debug logs.
-- Reject state input over 4 KiB. Corrupt or oversized state is never treated as empty: warn, replace
-  it atomically with version-1 state quarantined for seven days, and baseline authoritative usage
-  without dispatch during that horizon. Observed activity followed by exact zero may end quarantine
-  early; otherwise standard transition logic resumes from the saved baseline after the horizon.
-  An unknown version is left untouched and the account is skipped with an incompatible-state
-  status until compatible code is installed. This prevents corruption, downgrade, or mixed-version
-  processes from erasing the only dedupe evidence. State never contains auth material.
+- Never parse state input over 4 KiB and never overwrite it: its version cannot be established
+  safely within the old reader's bound, so warn and skip the account with an oversized/incompatible
+  status. Likewise, leave a bounded file with an unknown version untouched and skip it until
+  compatible code is installed. Only bounded version-1 state that fails its fixed-shape decode is
+  replaced atomically with version-1 state quarantined for seven days; authoritative usage is
+  baselined without dispatch during that horizon. Observed activity followed by exact zero may end
+  quarantine early; otherwise standard transition logic resumes from the saved baseline after the
+  horizon.
+  This precedence prevents corruption, downgrade, or mixed-version processes from erasing the only
+  dedupe evidence. State never contains auth material.
 - Read status through `AccountStore` so `/accounts` can show a concise retry/login error without
   parsing scheduler files in the TUI.
 
@@ -345,7 +348,7 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
   skipped, attempt-identity reset, reset-less generation success/deduplication/re-arm by activity
   and by the seven-day fallback, timestamped-closed to missing-reset preservation, pre-dispatch
   persistence, crash recovery closing `dispatching`, capped backoff, atomic bounded state,
-  corrupt/oversized quarantine, unknown-version refusal, and sanitized status.
+  bounded-corrupt quarantine, oversized/unknown-version refusal, and sanitized status.
 - Wire tests prove the exact request has no tools/history/session IDs/previous response/WebSocket,
   refresh never crosses identity, the destination is `config.chatgpt_base_url` rather than a custom
   effective-provider URL, the API retry budget is zero, only `Completed` counts as success, and
