@@ -5,6 +5,7 @@ use codex_config::CloudConfigBundleLoadError;
 use codex_config::CloudConfigBundleLoadErrorCode;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AutomaticAccountSelection;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
@@ -57,19 +58,23 @@ pub async fn cloud_config_bundle_loader_for_storage(
     codex_home: PathBuf,
     enable_codex_api_key_env: bool,
     credentials_store_mode: AuthCredentialsStoreMode,
+    automatic_account_selection: AutomaticAccountSelection,
     keyring_backend_kind: AuthKeyringBackendKind,
     chatgpt_base_url: String,
     auth_route_config: Option<AuthRouteConfig>,
 ) -> CloudConfigBundleLoader {
-    let auth_manager = AuthManager::shared(
-        codex_home.clone(),
-        enable_codex_api_key_env,
-        credentials_store_mode,
-        /*forced_chatgpt_workspace_id*/ None,
-        Some(chatgpt_base_url.clone()),
-        keyring_backend_kind,
-        auth_route_config,
-    )
-    .await;
+    let auth_manager = Arc::new(
+        AuthManager::new_with_automatic_account_selection(
+            codex_home.clone(),
+            enable_codex_api_key_env,
+            credentials_store_mode,
+            /*forced_chatgpt_workspace_id*/ None,
+            Some(chatgpt_base_url.clone()),
+            keyring_backend_kind,
+            auth_route_config,
+            automatic_account_selection,
+        )
+        .await,
+    );
     cloud_config_bundle_loader(auth_manager, chatgpt_base_url, codex_home)
 }
