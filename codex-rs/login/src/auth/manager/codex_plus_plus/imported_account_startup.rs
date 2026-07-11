@@ -27,10 +27,9 @@ pub(in crate::auth::manager) async fn load_initial_imported_account_auth(
 ) -> Option<(AccountId, PathBuf, CodexAuth)> {
     let store = AccountStore::new(codex_home.to_path_buf());
     let accounts: Vec<_> = store
-        .file_account_profiles()
+        .enabled_file_account_profiles()
         .unwrap_or_default()
         .into_iter()
-        .filter(|(account, _)| account.enabled && !account.login_required)
         .map(|(account, account_home)| {
             let in_use = store.account_in_use(&account.id).unwrap_or(false);
             (account, account_home, in_use)
@@ -69,7 +68,10 @@ pub(in crate::auth::manager) async fn load_initial_imported_account_auth(
     for blocked in [false, true] {
         for in_use in [false, true] {
             for (account, account_home, account_in_use) in &accounts {
-                if imported_account_blocked(account, now) != blocked || *account_in_use != in_use {
+                if !account.automation_enabled
+                    || imported_account_blocked(account, now) != blocked
+                    || *account_in_use != in_use
+                {
                     continue;
                 }
                 if let Some(auth) = load_imported_account_auth(
