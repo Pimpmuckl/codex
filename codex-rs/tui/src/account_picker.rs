@@ -256,8 +256,8 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
 
 fn usage_window(percent: Option<u8>, reset: Option<&str>) -> String {
     match (percent, reset) {
-        (Some(percent), Some(reset)) => format!("{percent}% ({reset})"),
-        (Some(percent), None) => format!("{percent}%"),
+        (Some(percent), Some(reset)) => format!("{percent:>3}% ({reset})"),
+        (Some(percent), None) => format!("{percent:>3}%"),
         (None, Some(reset)) => format!("unknown ({reset})"),
         (None, None) => "unknown".to_string(),
     }
