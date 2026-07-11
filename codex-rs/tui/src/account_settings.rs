@@ -27,7 +27,12 @@ impl ChatWidget {
         &mut self,
         selection: AutomaticAccountSelection,
     ) {
+        self.config.automatic_account_selection = selection;
         self.add_error_message(persistence_overridden_message(selection));
+    }
+
+    pub(crate) fn automatic_account_selection_verification_failed(&mut self, err: String) {
+        self.add_error_message(persistence_verification_failed_message(err));
     }
 }
 
@@ -93,6 +98,12 @@ fn persistence_overridden_message(selection: AutomaticAccountSelection) -> Strin
     format!(
         "Automatic account selection remains {} because this setting is controlled elsewhere.",
         selection_label(selection)
+    )
+}
+
+fn persistence_verification_failed_message(err: String) -> String {
+    format!(
+        "Automatic account selection was saved, but Codex could not verify it for this project: {err}"
     )
 }
 

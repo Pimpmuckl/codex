@@ -1789,16 +1789,48 @@ impl App {
                 )
                 .await
                 {
-                    Ok(response) if response.status == WriteStatus::OkOverridden => {
-                        self.chat_widget
-                            .automatic_account_selection_persistence_overridden(
-                                self.config.automatic_account_selection,
-                            );
-                    }
                     Ok(_) => {
-                        self.config.automatic_account_selection = selection;
-                        self.chat_widget
-                            .automatic_account_selection_persisted(selection);
+                        let cwd = self.config.cwd.display().to_string();
+                        match crate::config_update::read_effective_config(
+                            app_server.request_handle(),
+                            cwd,
+                        )
+                        .await
+                        {
+                            Ok(response) => {
+                                let effective = match response
+                                    .config
+                                    .additional
+                                    .get("automatic_account_selection")
+                                    .and_then(serde_json::Value::as_str)
+                                {
+                                    Some("disabled") => {
+                                        codex_config::types::AutomaticAccountSelection::Disabled
+                                    }
+                                    _ => codex_config::types::AutomaticAccountSelection::Enabled,
+                                };
+                                self.config.automatic_account_selection = effective;
+                                if effective == selection {
+                                    self.chat_widget
+                                        .automatic_account_selection_persisted(selection);
+                                } else {
+                                    self.chat_widget
+                                        .automatic_account_selection_persistence_overridden(
+                                            effective,
+                                        );
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    error = %err,
+                                    "failed to verify automatic account selection"
+                                );
+                                self.chat_widget
+                                    .automatic_account_selection_verification_failed(
+                                        err.to_string(),
+                                    );
+                            }
+                        }
                     }
                     Err(err) => {
                         tracing::error!(

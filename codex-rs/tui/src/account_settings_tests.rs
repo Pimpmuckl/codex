@@ -59,6 +59,12 @@ fn account_settings_toggle_overridden_snapshot() {
 }
 
 #[test]
+fn account_settings_toggle_verification_failure_snapshot() {
+    let message = persistence_verification_failed_message("connection closed".to_string());
+    insta::assert_snapshot!("account_settings_toggle_verification_failure", message);
+}
+
+#[test]
 fn selection_dispatches_persistence_event() {
     let mut params = account_settings_params(AutomaticAccountSelection::Enabled);
     let action = params.items[1].actions.pop().expect("selection action");
