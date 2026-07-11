@@ -16,6 +16,18 @@ use crate::account::AccountId;
 use crate::account::AccountStore;
 use crate::auth::storage::AuthKeyringBackendKind;
 
+/// Result of attempting automatic failover between imported accounts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum ImportedAccountSwitchOutcome {
+    /// The selected account is ready for an immediate request retry.
+    ReadyToRetry,
+    /// The selected account stays active, but cannot be retried before its reset.
+    SelectedBlockedUntil { resets_at: i64 },
+    /// No eligible alternative account could be selected.
+    NoCandidate,
+}
+
 impl AuthManager {
     pub(in crate::auth::manager) fn active_auth_home(&self) -> PathBuf {
         self.active_auth_home
@@ -116,12 +128,12 @@ impl AuthManager {
     pub async fn switch_to_next_imported_account(
         &self,
         attempted_account_ids: &HashSet<String>,
-    ) -> bool {
+    ) -> ImportedAccountSwitchOutcome {
         if self.automatic_account_selection == AutomaticAccountSelection::Disabled {
-            return false;
+            return ImportedAccountSwitchOutcome::NoCandidate;
         }
         let Ok(_refresh_guard) = self.refresh_lock.acquire().await else {
-            return false;
+            return ImportedAccountSwitchOutcome::NoCandidate;
         };
         self.switch_to_next_imported_account_unlocked(attempted_account_ids)
             .await
@@ -130,12 +142,12 @@ impl AuthManager {
     pub(super) async fn switch_to_next_imported_account_unlocked(
         &self,
         attempted_account_ids: &HashSet<String>,
-    ) -> bool {
+    ) -> ImportedAccountSwitchOutcome {
         let store = AccountStore::new(self.codex_home.clone());
         let accounts = store.enabled_file_account_profiles().unwrap_or_default();
         let active_account_id = self.active_account_id();
         if accounts.is_empty() {
-            return false;
+            return ImportedAccountSwitchOutcome::NoCandidate;
         }
 
         let current_id = active_account_id.map(|account_id| account_id.to_string());
@@ -149,40 +161,53 @@ impl AuthManager {
             .map_or(0, |index| index + 1);
 
         let now = Utc::now().timestamp();
-        for blocked in [false, true] {
-            for in_use in [false, true] {
-                for offset in 0..accounts.len() {
-                    let (account, account_home) = &accounts[(start + offset) % accounts.len()];
-                    if current_id.as_deref() == Some(account.id.as_str())
-                        || attempted_account_ids.contains(account.id.as_str())
-                        || imported_account_blocked(account, now) != blocked
-                        || store.account_in_use(&account.id).unwrap_or(false) != in_use
-                    {
-                        continue;
-                    }
-                    let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
-                    let Some(auth) = load_imported_account_auth(
-                        account_home,
-                        forced_chatgpt_workspace_id.as_deref(),
-                        self.chatgpt_base_url.as_deref(),
-                        self.agent_identity_authapi_base_url.as_deref(),
-                        self.auth_route_config.as_ref(),
-                    )
-                    .await
-                    else {
-                        continue;
-                    };
-                    self.set_active_imported_account(
-                        account.id.clone(),
-                        account_home.clone(),
-                        auth,
-                    );
-                    return true;
+        let mut candidates = (0..accounts.len())
+            .map(|offset| &accounts[(start + offset) % accounts.len()])
+            .filter(|(account, _)| {
+                current_id.as_deref() != Some(account.id.as_str())
+                    && !attempted_account_ids.contains(account.id.as_str())
+            })
+            .map(|candidate @ (account, _)| {
+                let blocked = imported_account_blocked(account, now);
+                let in_use = store.account_in_use(&account.id).unwrap_or(false);
+                (candidate, blocked, in_use)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|((account, _), blocked, in_use)| {
+            let reset = blocked.then_some(account.usage_limit_resets_at).flatten();
+            (
+                *blocked,
+                *in_use,
+                reset.is_none(),
+                reset.unwrap_or(i64::MAX),
+            )
+        });
+
+        for ((account, account_home), blocked, _) in candidates {
+            let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
+            let Some(auth) = load_imported_account_auth(
+                account_home,
+                forced_chatgpt_workspace_id.as_deref(),
+                self.chatgpt_base_url.as_deref(),
+                self.agent_identity_authapi_base_url.as_deref(),
+                self.auth_route_config.as_ref(),
+            )
+            .await
+            else {
+                continue;
+            };
+            let outcome = match (blocked, account.usage_limit_resets_at) {
+                (true, Some(resets_at)) => {
+                    ImportedAccountSwitchOutcome::SelectedBlockedUntil { resets_at }
                 }
-            }
+                (true, None) => continue,
+                (false, _) => ImportedAccountSwitchOutcome::ReadyToRetry,
+            };
+            self.set_active_imported_account(account.id.clone(), account_home.clone(), auth);
+            return outcome;
         }
 
-        false
+        ImportedAccountSwitchOutcome::NoCandidate
     }
 
     fn set_active_imported_account(

@@ -81,6 +81,7 @@ use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_git_utils::get_git_repo_root_with_fs;
+use codex_login::auth::ImportedAccountSwitchOutcome;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
@@ -1182,6 +1183,9 @@ async fn run_sampling_request(
                     sess.update_rate_limits(&turn_context, *rate_limits).await;
                 }
                 if let Some(auth_manager) = turn_context.auth_manager.as_ref() {
+                    if client_session.request_account_id() != auth_manager.active_account_id() {
+                        return Err(CodexErr::UsageLimitReached(e));
+                    }
                     if let Some(account_id) = auth_manager.active_account_id() {
                         if let Some(resets_at) = e.resets_at.as_ref()
                             && let Err(err) = auth_manager
@@ -1194,16 +1198,20 @@ async fn run_sampling_request(
                         }
                         usage_limit_account_attempts.insert(account_id.to_string());
                     }
-                    if auth_manager
+                    match auth_manager
                         .switch_to_next_imported_account(&usage_limit_account_attempts)
                         .await
                     {
-                        client_session.reset_websocket_session();
-                        if original_input.is_none() {
-                            original_input = Some(prompt.input);
+                        ImportedAccountSwitchOutcome::ReadyToRetry => {
+                            client_session.reset_websocket_session();
+                            if original_input.is_none() {
+                                original_input = Some(prompt.input);
+                            }
+                            turn_context.turn_timing_state.record_sampling_retry();
+                            continue;
                         }
-                        turn_context.turn_timing_state.record_sampling_retry();
-                        continue;
+                        ImportedAccountSwitchOutcome::SelectedBlockedUntil { .. }
+                        | ImportedAccountSwitchOutcome::NoCandidate => {}
                     }
                     if auth_manager.automatic_account_selection()
                         == AutomaticAccountSelection::Disabled
