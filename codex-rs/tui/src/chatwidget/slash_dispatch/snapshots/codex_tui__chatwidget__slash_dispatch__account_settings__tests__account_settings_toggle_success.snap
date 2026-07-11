@@ -1,5 +1,5 @@
 ---
-source: tui/src/chatwidget/../account_settings_tests.rs
+source: tui/src/chatwidget/slash_dispatch/account_settings_tests.rs
 expression: success
 ---
 Automatic account selection disabled. Restart Codex to use this setting.
