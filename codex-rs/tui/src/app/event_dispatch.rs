@@ -1815,6 +1815,35 @@ impl App {
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;
             }
+            AppEvent::PersistAutomaticAccountSelection { selection } => {
+                let value = match selection {
+                    codex_config::types::AutomaticAccountSelection::Enabled => "enabled",
+                    codex_config::types::AutomaticAccountSelection::Disabled => "disabled",
+                };
+                match crate::config_update::write_config_batch(
+                    app_server.request_handle(),
+                    vec![crate::config_update::replace_config_value(
+                        "automatic_account_selection",
+                        serde_json::json!(value),
+                    )],
+                )
+                .await
+                {
+                    Ok(_) => {
+                        self.config.automatic_account_selection = selection;
+                        self.chat_widget
+                            .automatic_account_selection_persisted(selection);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist automatic account selection"
+                        );
+                        self.chat_widget
+                            .automatic_account_selection_persistence_failed(err.to_string());
+                    }
+                }
+            }
             AppEvent::UpdateMemorySettings {
                 use_memories,
                 generate_memories,

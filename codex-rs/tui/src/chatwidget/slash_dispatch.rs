@@ -453,6 +453,7 @@ impl ChatWidget {
             }
             SlashCommand::Accounts => {
                 self.open_accounts_popup();
+                self.defer_input_until_settings_applied();
             }
             SlashCommand::Ide => {
                 self.handle_ide_command();

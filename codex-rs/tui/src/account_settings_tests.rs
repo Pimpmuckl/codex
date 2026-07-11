@@ -1,33 +1,18 @@
-use std::fs;
-
+use assert_matches::assert_matches;
 use codex_config::types::AutomaticAccountSelection;
-use pretty_assertions::assert_eq;
 use ratatui::Terminal;
-use tempfile::tempdir;
 use tokio::sync::mpsc::unbounded_channel;
 
 use super::*;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ListSelectionView;
 use crate::keymap::RuntimeKeymap;
-use crate::legacy_core::config::ConfigBuilder;
 use crate::test_backend::VT100Backend;
 
-async fn test_config(contents: &str) -> (tempfile::TempDir, Config) {
-    let codex_home = tempdir().expect("tempdir");
-    fs::write(codex_home.path().join("config.toml"), contents).expect("write config");
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.path().to_path_buf())
-        .build()
-        .await
-        .expect("config");
-    (codex_home, config)
-}
-
-fn render_settings(config: Config, current: AutomaticAccountSelection) -> String {
+fn render_settings(current: AutomaticAccountSelection) -> String {
     let (tx, _rx) = unbounded_channel();
     let view = ListSelectionView::new(
-        account_settings_params(current, config.codex_home.join("config.toml").to_path_buf()),
+        account_settings_params(current),
         AppEventSender::new(tx),
         RuntimeKeymap::defaults().list,
     );
@@ -39,21 +24,19 @@ fn render_settings(config: Config, current: AutomaticAccountSelection) -> String
     terminal.backend().to_string()
 }
 
-#[tokio::test]
-async fn account_settings_enabled_snapshot() {
-    let (_codex_home, config) = test_config("").await;
+#[test]
+fn account_settings_enabled_snapshot() {
     insta::assert_snapshot!(
         "account_settings_enabled",
-        render_settings(config, AutomaticAccountSelection::Enabled)
+        render_settings(AutomaticAccountSelection::Enabled)
     );
 }
 
-#[tokio::test]
-async fn account_settings_disabled_snapshot() {
-    let (_codex_home, config) = test_config("automatic_account_selection = \"disabled\"\n").await;
+#[test]
+fn account_settings_disabled_snapshot() {
     insta::assert_snapshot!(
         "account_settings_disabled",
-        render_settings(config, AutomaticAccountSelection::Disabled)
+        render_settings(AutomaticAccountSelection::Disabled)
     );
 }
 
@@ -70,45 +53,17 @@ fn account_settings_toggle_failure_snapshot() {
 }
 
 #[test]
-fn persistence_preserves_unrelated_config() {
-    let codex_home = tempdir().expect("tempdir");
-    fs::write(codex_home.path().join("config.toml"), "model = \"gpt-5\"\n").expect("write config");
+fn selection_dispatches_persistence_event() {
+    let mut params = account_settings_params(AutomaticAccountSelection::Enabled);
+    let action = params.items[1].actions.pop().expect("selection action");
+    let (tx, mut rx) = unbounded_channel();
 
-    persist_automatic_account_selection(
-        &codex_home.path().join("config.toml"),
-        AutomaticAccountSelection::Disabled,
-    )
-    .expect("persist setting");
+    action(&AppEventSender::new(tx));
 
-    assert_eq!(
-        fs::read_to_string(codex_home.path().join("config.toml")).expect("read config"),
-        "model = \"gpt-5\"\nautomatic_account_selection = \"disabled\"\n"
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PersistAutomaticAccountSelection {
+            selection: AutomaticAccountSelection::Disabled,
+        })
     );
-}
-
-#[test]
-fn persisted_selection_reflects_successful_toggle() {
-    let codex_home = tempdir().expect("tempdir");
-    let config_path = codex_home.path().join("config.toml");
-
-    persist_automatic_account_selection(&config_path, AutomaticAccountSelection::Disabled)
-        .expect("persist setting");
-
-    assert_eq!(
-        persisted_automatic_account_selection(&config_path),
-        Some(AutomaticAccountSelection::Disabled)
-    );
-}
-
-#[test]
-fn persistence_failure_is_returned() {
-    let codex_home = tempdir().expect("tempdir");
-    fs::create_dir(codex_home.path().join("config.toml")).expect("replace config with directory");
-
-    let result = persist_automatic_account_selection(
-        &codex_home.path().join("config.toml"),
-        AutomaticAccountSelection::Disabled,
-    );
-
-    assert!(result.is_err());
 }
