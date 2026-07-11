@@ -1588,12 +1588,6 @@ impl App {
                 )
                 .await
                 {
-                    Ok(response) if response.status == WriteStatus::OkOverridden => {
-                        self.chat_widget
-                            .automatic_account_selection_persistence_overridden(
-                                self.config.automatic_account_selection,
-                            );
-                    }
                     Ok(_) => {
                         let effort_label = effort
                             .as_ref()
@@ -1835,6 +1829,12 @@ impl App {
                 )
                 .await
                 {
+                    Ok(response) if response.status == WriteStatus::OkOverridden => {
+                        self.chat_widget
+                            .automatic_account_selection_persistence_overridden(
+                                self.config.automatic_account_selection,
+                            );
+                    }
                     Ok(_) => {
                         self.config.automatic_account_selection = selection;
                         self.chat_widget
