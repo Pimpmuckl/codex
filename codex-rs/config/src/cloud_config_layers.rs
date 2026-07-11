@@ -88,11 +88,14 @@ fn cloud_config_layers_from_fragments_impl(
     for fragment in fragments {
         let source_ref = fragment.source_ref();
         let raw_toml = fragment.contents;
-        let value: TomlValue =
+        let mut value: TomlValue =
             toml::from_str(&raw_toml).map_err(|err| CloudConfigLayerError::Parse {
                 fragment: source_ref.clone(),
                 message: err.to_string(),
             })?;
+        if let Some(table) = value.as_table_mut() {
+            table.remove("automatic_account_selection");
+        }
         if strict_config {
             validate_fragment_strictly(&source_ref, &raw_toml, &value, base_dir)?;
         }

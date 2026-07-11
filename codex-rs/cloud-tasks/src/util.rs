@@ -45,7 +45,7 @@ pub async fn load_auth_manager(chatgpt_base_url: Option<String>) -> Option<AuthM
     // TODO: pass in cli overrides once cloud tasks properly support them.
     let config = Config::load_with_cli_overrides(Vec::new()).await.ok()?;
     Some(
-        AuthManager::new(
+        AuthManager::new_with_automatic_account_selection(
             config.codex_home.to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             config.cli_auth_credentials_store_mode,
@@ -53,6 +53,7 @@ pub async fn load_auth_manager(chatgpt_base_url: Option<String>) -> Option<AuthM
             chatgpt_base_url.or(Some(config.chatgpt_base_url.clone())),
             config.auth_keyring_backend_kind(),
             config.auth_route_config(),
+            config.automatic_account_selection,
         )
         .await,
     )

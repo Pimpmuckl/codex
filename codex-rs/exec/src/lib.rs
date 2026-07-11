@@ -359,20 +359,21 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             .feature_requirements
             .as_ref(),
     )?;
+    let bootstrap_automatic_account_selection = bootstrap_config_toml
+        .automatic_account_selection
+        .unwrap_or_default();
     let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
         codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
         bootstrap_config_toml
             .cli_auth_credentials_store
             .unwrap_or_default(),
+        bootstrap_automatic_account_selection,
         resolve_bootstrap_auth_keyring_backend_kind(&bootstrap_config)?,
         chatgpt_base_url,
         auth_route_config,
     )
     .await;
-    let run_cli_overrides = cli_kv_overrides.clone();
-    let run_loader_overrides = loader_overrides.clone();
-    let run_cloud_config_bundle = cloud_config_bundle.clone();
 
     let model_provider = if oss {
         let bootstrap_config_with_cloud_config;
@@ -464,6 +465,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         build_config,
     )
     .await?;
+    let run_cli_overrides = cli_kv_overrides.clone();
+    let run_loader_overrides = loader_overrides.clone();
+    let run_cloud_config_bundle = cloud_config_bundle.clone();
     let resume_approvals_reviewer_override = cli_kv_overrides
         .iter()
         .any(|(key, _)| key == "approvals_reviewer")
@@ -488,6 +492,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         codex_home: config.codex_home.to_path_buf(),
         auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
         keyring_backend_kind: config.auth_keyring_backend_kind(),
+        automatic_account_selection: config.automatic_account_selection,
         forced_login_method: config.forced_login_method,
         forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
         chatgpt_base_url: Some(config.chatgpt_base_url.clone()),
