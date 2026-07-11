@@ -1,6 +1,6 @@
 ---
-source: tui/src/chatwidget/../account_settings_tests.rs
-expression: "render_settings(config, AutomaticAccountSelection::Disabled)"
+source: tui/src/chatwidget/slash_dispatch/account_settings_tests.rs
+expression: "render_settings(AutomaticAccountSelection::Disabled)"
 ---
 
   Accounts

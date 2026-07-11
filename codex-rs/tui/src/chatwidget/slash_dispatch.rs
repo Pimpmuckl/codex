@@ -15,7 +15,6 @@ use crate::bottom_pane::slash_commands::find_slash_command;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
 
-#[path = "../account_settings.rs"]
 mod account_settings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
