@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/../account_settings_tests.rs
+expression: "render_settings(config, AutomaticAccountSelection::Enabled)"
+---
+
+  Accounts
+  Automatic account selection is enabled. Changes apply to new sessions.
+
+› 1. Enable automatic selection (current)  Choose and switch accounts when needed.
+  2. Disable automatic selection           Stay on the current or manually
+                                           selected account.
+
+
+
+
+  Press enter to confirm or esc to go back

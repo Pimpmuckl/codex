@@ -49,6 +49,7 @@ pub enum SlashCommand {
     Mention,
     Status,
     Usage,
+    Accounts,
     DebugConfig,
     Title,
     Statusline,
@@ -104,6 +105,7 @@ impl SlashCommand {
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Usage => "view account usage or use a usage limit reset",
+            SlashCommand::Accounts => "configure automatic account selection",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
@@ -219,6 +221,7 @@ impl SlashCommand {
             | SlashCommand::Hooks
             | SlashCommand::Status
             | SlashCommand::Usage
+            | SlashCommand::Accounts
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
