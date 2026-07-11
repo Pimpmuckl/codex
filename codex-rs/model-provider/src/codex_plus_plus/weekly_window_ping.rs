@@ -89,20 +89,20 @@ async fn ping_weekly_window_inner(request: WeeklyWindowPingRequest) -> WeeklyWin
         )
         .await,
     );
-    let Some(expected_auth) = auth_manager.auth().await else {
+    if auth_manager.active_account_id().is_some() {
+        return WeeklyWindowPingOutcome::DefiniteRejection;
+    }
+    let Some(auth) = auth_manager.auth().await else {
         return WeeklyWindowPingOutcome::LoginRequired;
     };
-    if auth_manager
-        .refresh_failure_for_auth(&expected_auth)
-        .is_some()
-    {
-        mark_login_required_if_identity_matches(&request, &auth_manager, &expected_auth);
+    if auth_manager.refresh_failure_for_auth(&auth).is_some() {
+        mark_login_required_if_identity_matches(&request, &auth_manager, &auth);
         return WeeklyWindowPingOutcome::LoginRequired;
     }
 
     let mut unauthorized_recovery = auth_manager.unauthorized_recovery();
     loop {
-        match send_once(&request, &auth_manager, &expected_auth).await {
+        match send_once(&request, &auth_manager, &auth).await {
             AttemptOutcome::Finished(outcome) => return outcome,
             AttemptOutcome::Unauthorized => {}
         }
@@ -115,14 +115,13 @@ async fn ping_weekly_window_inner(request: WeeklyWindowPingRequest) -> WeeklyWin
                 return WeeklyWindowPingOutcome::DefiniteRejection;
             }
             Err(RefreshTokenError::Permanent(_)) => {
-                mark_login_required_if_identity_matches(&request, &auth_manager, &expected_auth);
+                mark_login_required_if_identity_matches(&request, &auth_manager, &auth);
                 return WeeklyWindowPingOutcome::LoginRequired;
             }
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AttemptOutcome {
     Finished(WeeklyWindowPingOutcome),
     Unauthorized,
@@ -133,10 +132,8 @@ async fn send_once(
     auth_manager: &Arc<AuthManager>,
     expected_auth: &CodexAuth,
 ) -> AttemptOutcome {
-    let base_url = request
-        .chatgpt_base_url
-        .trim_end_matches('/')
-        .trim_end_matches("/codex");
+    let root = request.chatgpt_base_url.trim_end_matches('/');
+    let base_url = root.trim_end_matches("/codex");
     let provider_info =
         ModelProviderInfo::create_openai_provider(Some(format!("{base_url}/codex")));
     let Ok(mut provider) = provider_info.to_api_provider(Some(expected_auth.auth_mode())) else {
@@ -204,10 +201,9 @@ async fn send_once(
 
 fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
     match error {
-        ApiError::Transport(TransportError::Http { status, .. }) if status.is_client_error() => {
-            WeeklyWindowPingOutcome::DefiniteRejection
-        }
-        ApiError::Api { status, .. } if status.is_client_error() => {
+        ApiError::Transport(TransportError::Http { status, .. }) | ApiError::Api { status, .. }
+            if status.is_client_error() =>
+        {
             WeeklyWindowPingOutcome::DefiniteRejection
         }
         ApiError::QuotaExceeded

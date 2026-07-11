@@ -42,7 +42,7 @@ impl TestAccount {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create test home");
-        save_test_auth(&root, "account-123", "header.e30.one", "refresh-one");
+        write_auth(&root, "account-123", "one", "refresh-one");
         let profile = AccountStore::new(root.clone())
             .import_current(
                 Some("test account".to_string()),
@@ -56,10 +56,6 @@ impl TestAccount {
             account_id: profile.id,
             account_home,
         }
-    }
-
-    fn save_auth(&self, account_id: &str, access_token: &str, refresh_token: &str) {
-        save_test_auth(&self.account_home, account_id, access_token, refresh_token);
     }
 
     fn request(&self, server: &MockServer) -> WeeklyWindowPingRequest {
@@ -76,6 +72,10 @@ impl TestAccount {
             http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         }
     }
+
+    fn reset_auth(&self) {
+        write_auth(&self.account_home, "account-123", "one", "refresh-one");
+    }
 }
 
 impl Drop for TestAccount {
@@ -84,7 +84,7 @@ impl Drop for TestAccount {
     }
 }
 
-fn save_test_auth(home: &std::path::Path, account_id: &str, token: &str, refresh: &str) {
+fn write_auth(home: &std::path::Path, account_id: &str, token: &str, refresh: &str) {
     let auth: AuthDotJson = serde_json::from_value(json!({
         "OPENAI_API_KEY": null,
         "tokens": {"id_token": TEST_ID_TOKEN, "access_token": token,
@@ -156,21 +156,29 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
             .headers
             .get("authorization")
             .and_then(|value| value.to_str().ok()),
-        Some("Bearer header.e30.one")
+        Some("Bearer one")
     );
-    assert_eq!(
-        std::fs::read(account.root.join("auth.json")).unwrap(),
-        root_auth
-    );
+    let root_auth_after = std::fs::read(account.root.join("auth.json")).unwrap();
+    assert_eq!(root_auth_after, root_auth);
     assert_eq!(foreground.active_account_id(), foreground_id);
 
     server.reset().await;
-    let mut request = account.request(&server);
-    request.model_provider_id = "custom".to_string();
-    assert_eq!(
-        ping_weekly_window(request).await,
-        WeeklyWindowPingOutcome::DefiniteRejection
-    );
+    let mut custom_request = account.request(&server);
+    custom_request.model_provider_id = "custom".to_string();
+    AccountStore::new(account.account_home.clone())
+        .import_current(
+            Some("nested".into()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("import nested account");
+    account.reset_auth();
+    for request in [custom_request, account.request(&server)] {
+        assert_eq!(
+            ping_weekly_window(request).await,
+            WeeklyWindowPingOutcome::DefiniteRejection
+        );
+    }
     assert_eq!(request_count(&server).await, 0);
 }
 
@@ -181,12 +189,12 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
     let account_home = account.account_home.clone();
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
-        .and(header("authorization", "Bearer header.e30.one"))
+        .and(header("authorization", "Bearer one"))
         .respond_with(move |_request: &Request| {
-            save_test_auth(
+            write_auth(
                 &account_home,
                 "account-123",
-                "header.e30.two",
+                "two",
                 "refresh-two",
             );
             ResponseTemplate::new(401)
@@ -195,7 +203,7 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
         .await;
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
-        .and(header("authorization", "Bearer header.e30.two"))
+        .and(header("authorization", "Bearer two"))
         .respond_with(completed_response())
         .mount(&server)
         .await;
@@ -206,15 +214,15 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
     assert_eq!(request_count(&server).await, 2);
 
     server.reset().await;
-    account.save_auth("account-123", "header.e30.one", "refresh-one");
+    account.reset_auth();
     let account_home = account.account_home.clone();
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
         .respond_with(move |_request: &Request| {
-            save_test_auth(
+            write_auth(
                 &account_home,
                 "other-account",
-                "header.e30.other",
+                "other",
                 "other-refresh",
             );
             ResponseTemplate::new(401)
