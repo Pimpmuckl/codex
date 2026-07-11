@@ -42,23 +42,16 @@ use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
 use codex_config::format_config_error_with_source;
-use codex_config::types::AutomaticAccountSelection;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
-use codex_login::AccountCandidate;
-use codex_login::AccountId;
-use codex_login::AccountStore;
 use codex_login::AuthConfig;
 use codex_login::AuthManager;
-use codex_login::CodexAuth;
 use codex_login::default_client::originator;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::enforce_login_restrictions;
-use codex_login::load_auth_dot_json;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AltScreenMode;
-use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::SandboxMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -76,8 +69,6 @@ pub use session_archive_commands::DeleteConfirmation;
 pub use session_archive_commands::SessionArchiveAction;
 pub use session_archive_commands::SessionArchiveCommandOptions;
 pub use session_archive_commands::run_session_archive_command;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
@@ -113,6 +104,7 @@ mod chatwidget;
 mod cli;
 mod clipboard_copy;
 mod clipboard_paste;
+mod codex_plus_plus;
 mod collaboration_modes;
 mod color;
 mod config_update;
@@ -302,15 +294,6 @@ impl AppServerTarget {
             ThreadParamsMode::Embedded
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum StartupAccountSelection {
-    Continue {
-        selected_account_id: Option<AccountId>,
-        reload_cloud_config: bool,
-    },
-    Exit,
 }
 
 async fn init_state_db_for_app_server_target(
@@ -620,246 +603,6 @@ async fn shutdown_app_server_if_present(app_server: Option<AppServerSession>) {
     {
         warn!(%err, "Failed to shut down temporary embedded app server");
     }
-}
-
-async fn run_startup_account_picker(
-    config: &Config,
-    app_server_target: &AppServerTarget,
-) -> color_eyre::Result<StartupAccountSelection> {
-    let mut initialized_terminal = tui::init()?;
-    initialized_terminal.terminal.clear()?;
-    let mut tui = Tui::new(
-        initialized_terminal.terminal,
-        initialized_terminal.enhanced_keys_supported,
-        initialized_terminal.stderr_guard,
-    );
-    let mut restore_guard = TerminalRestoreGuard::new();
-    let selection = maybe_run_startup_account_picker(&mut tui, config, app_server_target).await;
-    let _ = tui.terminal.clear();
-    restore_guard.restore()?;
-    selection
-}
-async fn maybe_run_startup_account_picker(
-    tui: &mut Tui,
-    config: &Config,
-    app_server_target: &AppServerTarget,
-) -> color_eyre::Result<StartupAccountSelection> {
-    if !app_server_target.supports_startup_account_picker()
-        || !config.model_provider.requires_openai_auth
-        || config.forced_login_method == Some(ForcedLoginMethod::Api)
-        || !root_auth_allows_imported_account_picker(config)
-    {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
-    }
-
-    let store = AccountStore::new(config.codex_home.to_path_buf());
-    let current_account_id = store
-        .current_root_account_id(
-            config.cli_auth_credentials_store_mode,
-            config.auth_keyring_backend_kind(),
-        )
-        .ok()
-        .flatten();
-    let root_auth_is_marker = load_auth_dot_json(
-        config.codex_home.as_path(),
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-    )
-    .is_ok_and(|auth| {
-        auth.and_then(|auth| auth.tokens)
-            .is_some_and(|tokens| tokens.refresh_token.is_empty())
-    });
-    let mut selectable_accounts = store.enabled_file_accounts()?;
-    if config.automatic_account_selection == AutomaticAccountSelection::Disabled
-        && root_auth_is_marker
-        && let Some(current_account_id) = current_account_id.as_ref()
-        && let Some(current_account) = store
-            .list()?
-            .into_iter()
-            .find(|account| account.login_required && &account.id == current_account_id)
-    {
-        let auth_path = config.codex_home.join(current_account.auth.path);
-        if let Some(account_home) = auth_path.parent().filter(|_| auth_path.is_file()) {
-            selectable_accounts.push((current_account.id, account_home.to_path_buf()));
-        }
-    }
-    if config.forced_chatgpt_workspace_id.is_some() {
-        let auth_route_config = config.auth_route_config();
-        let mut allowed_accounts = Vec::with_capacity(selectable_accounts.len());
-        for (account_id, account_home) in selectable_accounts {
-            let auth = CodexAuth::from_auth_storage(
-                &account_home,
-                codex_config::types::AuthCredentialsStoreMode::File,
-                config.forced_chatgpt_workspace_id.as_deref(),
-                Some(&config.chatgpt_base_url),
-                config.auth_keyring_backend_kind(),
-                auth_route_config.as_ref(),
-            )
-            .await
-            .ok()
-            .flatten();
-            if auth.as_ref().is_some_and(CodexAuth::is_chatgpt_auth) {
-                allowed_accounts.push((account_id, account_home));
-            }
-        }
-        selectable_accounts = allowed_accounts;
-    }
-    let selectable_homes: HashMap<AccountId, PathBuf> =
-        selectable_accounts.iter().cloned().collect();
-    let mut candidates: Vec<AccountCandidate> = store
-        .candidates()?
-        .into_iter()
-        .filter(|candidate| candidate.enabled && selectable_homes.contains_key(&candidate.id))
-        .collect();
-    if candidates.is_empty() {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
-    }
-
-    let usage = account_usage::load(config, &selectable_accounts, &store).await;
-    let mut login_required = HashSet::new();
-    for (account_id, attempted_auth) in &usage.login_required {
-        if store.record_login_required_if_auth_matches(account_id, attempted_auth)? {
-            login_required.insert(account_id.clone());
-        }
-    }
-    candidates.retain(|candidate| {
-        !login_required.contains(&candidate.id)
-            || (config.automatic_account_selection == AutomaticAccountSelection::Disabled
-                && root_auth_is_marker
-                && current_account_id.as_ref() == Some(&candidate.id))
-    });
-    if candidates.is_empty() {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
-    }
-    let mut picker_candidates: Vec<_> = candidates
-        .iter()
-        .map(|candidate| {
-            account_picker_candidate(
-                candidate,
-                usage.usage.get(&candidate.id),
-                store.account_in_use(&candidate.id).unwrap_or(false),
-                current_account_id.as_ref() == Some(&candidate.id),
-            )
-        })
-        .collect();
-    let default_idx = account_picker::recommended_candidate_index(&picker_candidates);
-    picker_candidates[default_idx].is_default = true;
-    let mode = match config.automatic_account_selection {
-        AutomaticAccountSelection::Enabled => account_picker::StartupAccountPickerMode::Timed,
-        AutomaticAccountSelection::Disabled => account_picker::StartupAccountPickerMode::Manual,
-    };
-    let Some(selection) =
-        account_picker::run_startup_account_picker(tui, picker_candidates, mode).await?
-    else {
-        return Ok(StartupAccountSelection::Exit);
-    };
-    let (selected_id, reload_cloud_config) = match selection {
-        account_picker::StartupAccountPickerSelection::Automatic(account_id) => (account_id, true),
-        account_picker::StartupAccountPickerSelection::User(account_id) => (account_id, true),
-    };
-
-    let selected_account = candidates
-        .iter()
-        .find(|candidate| candidate.id.as_str() == selected_id);
-    if let Some(candidate) = selected_account {
-        store.apply_imported_account_to_root_auth(
-            &candidate.id,
-            config.cli_auth_credentials_store_mode,
-            config.auth_keyring_backend_kind(),
-        )?;
-    }
-
-    Ok(StartupAccountSelection::Continue {
-        selected_account_id: selected_account.map(|candidate| candidate.id.clone()),
-        reload_cloud_config,
-    })
-}
-
-fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
-    match load_auth_dot_json(
-        config.codex_home.as_path(),
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-    ) {
-        Ok(Some(auth)) => match auth.auth_mode {
-            Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens) => {
-                config.automatic_account_selection == AutomaticAccountSelection::Enabled
-                    || auth
-                        .tokens
-                        .is_some_and(|tokens| tokens.refresh_token.is_empty())
-            }
-            Some(
-                AuthMode::ApiKey
-                | AuthMode::Headers
-                | AuthMode::AgentIdentity
-                | AuthMode::PersonalAccessToken
-                | AuthMode::BedrockApiKey,
-            ) => false,
-            None => {
-                auth.openai_api_key.is_none()
-                    && auth.personal_access_token.is_none()
-                    && auth.bedrock_api_key.is_none()
-                    && auth.agent_identity.is_none()
-                    && (config.automatic_account_selection == AutomaticAccountSelection::Enabled
-                        || auth
-                            .tokens
-                            .is_none_or(|tokens| tokens.refresh_token.is_empty()))
-            }
-        },
-        Ok(None) => true,
-        Err(err) => {
-            warn!(%err, "Skipping startup account picker because root auth could not be read");
-            false
-        }
-    }
-}
-
-fn account_picker_candidate(
-    candidate: &AccountCandidate,
-    usage: Option<&account_usage::AccountUsage>,
-    in_use: bool,
-    is_current: bool,
-) -> account_picker::AccountPickerCandidate {
-    account_picker::AccountPickerCandidate {
-        id: candidate.id.to_string(),
-        email: candidate.display_label.clone(),
-        primary_window_label: crate::chatwidget::limit_label_for_window(
-            usage.and_then(|usage| usage.primary_window_minutes),
-            /*is_secondary*/ false,
-        ),
-        five_hour_reset: usage
-            .and_then(|usage| usage.five_hour_reset_at)
-            .and_then(format_reset_timestamp),
-        five_hour_usage_left_percent: usage.and_then(|usage| usage.five_hour_remaining_percent),
-        five_hour_exhausted: usage.is_some_and(|usage| usage.five_hour_exhausted),
-        weekly_reset: usage
-            .and_then(|usage| usage.weekly_reset_at)
-            .and_then(format_reset_timestamp),
-        weekly_usage_left_percent: usage.and_then(|usage| usage.weekly_remaining_percent),
-        weekly_exhausted: usage.is_some_and(|usage| usage.weekly_exhausted),
-        blocked_until: (usage.is_none() && candidate.blocked)
-            .then_some(candidate.usage_limit_resets_at)
-            .flatten()
-            .and_then(format_reset_timestamp),
-        blocked: candidate.blocked,
-        in_use,
-        is_current,
-        is_default: false,
-    }
-}
-
-fn format_reset_timestamp(timestamp: i64) -> Option<String> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, /*nsecs*/ 0)
-        .map(|timestamp| timestamp.format("%b %d %H:%MZ").to_string())
 }
 
 fn session_target_from_app_server_thread(
@@ -1357,15 +1100,15 @@ pub async fn run_main(
     color_eyre::install().map_err(std::io::Error::other)?;
     set_default_client_residency_requirement(config.enforce_residency.value());
     let (initial_account_id, reload_cloud_config) =
-        match run_startup_account_picker(&config, &app_server_target)
+        match codex_plus_plus::run_startup_account_picker(&config, &app_server_target)
             .await
             .map_err(std::io::Error::other)?
         {
-            StartupAccountSelection::Continue {
+            codex_plus_plus::StartupAccountSelection::Continue {
                 selected_account_id,
                 reload_cloud_config,
             } => (selected_account_id, reload_cloud_config),
-            StartupAccountSelection::Exit => {
+            codex_plus_plus::StartupAccountSelection::Exit => {
                 return Ok(AppExitInfo {
                     token_usage: crate::token_usage::TokenUsage::default(),
                     thread_id: None,
