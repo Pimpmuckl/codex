@@ -84,9 +84,13 @@ superseded by these decisions.
 - `codex-model-provider` already depends on `codex-api`, `codex-login`,
   `codex-model-provider-info`, and `codex-http-client`. It owns provider/auth construction
   (`codex-rs/model-provider/src/provider.rs:156-218`) and is the narrow owner for the one-shot ping.
-- Provider URL/header/retry construction stays in `ModelProviderInfo::to_api_provider`
-  (`codex-rs/model-provider-info/src/lib.rs:241`). Route-aware client construction comes from the
-  effective config's `http_client_factory` (`codex-rs/core/src/config/mod.rs:1495`).
+- The effective provider is used only when it passes the existing first-party-auth predicate
+  (`codex-rs/model-provider/src/provider.rs:209-215`); expose that predicate `pub(crate)` for the
+  fork helper. Construct the ping provider from `ModelProviderInfo::create_openai_provider` and the
+  same `config.chatgpt_base_url` already used by imported-account usage fetches, never from the
+  effective provider's base URL or headers. This prevents ChatGPT credentials from reaching an
+  OSS/custom provider. Route-aware transport construction still comes from the effective config's
+  `http_client_factory` (`codex-rs/core/src/config/mod.rs:1495`).
 - The long-running embedded lifecycle starts the app server and then enters `App::run`
   (`codex-rs/tui/src/lib.rs:1332`, `:1396`, `:1836`; `codex-rs/tui/src/app.rs:759`). Start and own
   the scheduler there. Remote TUI sessions and `codex exec` do not host it.
@@ -119,7 +123,8 @@ The model-provider helper issues one new HTTP `/responses` stream with no sessio
 Rules:
 
 - Use the effective model already resolved by the embedded TUI. Do not hard-code a model slug or
-  discover models separately for every account.
+  discover models separately for every account. Skip the scheduler entirely unless its effective
+  provider passes `provider_uses_first_party_auth_path`.
 - Use `ResponsesClient::stream`, not a WebSocket client and not a foreground `ModelClientSession`.
 - Do not send `previous_response_id`, session/thread IDs, turn metadata/state, prompt cache keys,
   tools, history, reasoning configuration, service tier, or model-visible scheduler context.
@@ -130,8 +135,18 @@ Rules:
 - On HTTP 401, run the existing `UnauthorizedRecovery` steps and rebuild request auth for each
   retry. Never switch accounts in this manager. Terminal refresh failures use
   `record_login_required_if_auth_matches` so a concurrent re-login is not overwritten.
-- Bound the whole ping attempt with a 30-second timeout. Existing transport retries still handle
-  transport/5xx failures; scheduler backoff handles the final failure.
+- Set the one-shot `ApiProvider` retry policy to zero attempts with transport and 5xx replay both
+  disabled. The [public Responses create schema](https://developers.openai.com/api/reference/resources/responses/methods/create)
+  and current client expose no server-recognized idempotency key for creation;
+  `x-client-request-id` is request correlation, not a deduplication contract.
+- Before network dispatch, atomically persist the attempt as `dispatching`. A completed stream
+  closes it successfully. A transport error, 5xx, timeout, EOF, stream error, or process restart
+  while `dispatching` is an ambiguous outcome and closes that identity without another dispatch.
+  Only a definite pre-execution rejection (401 after the safe refresh path, or an explicit
+  rate-limit/capacity rejection) remains retryable under scheduler backoff. This intentionally
+  chooses at-most-once dispatch per weekly identity over risking duplicate usage after a lost
+  response.
+- Bound the whole ping attempt with a 30-second timeout.
 
 ## Eligibility and due-window predicate
 
@@ -163,8 +178,8 @@ For a reset-less window, use a persisted synthetic generation rather than `null`
 identity. The first exact-zero observation is generation 1. An observed active value
 (`used_percent > 0.0`) followed later by exact zero increments the generation. Because the backend
 reports integer percentages and can keep a small successful ping at zero, an unchanged exact-zero
-window also increments once seven days have elapsed since the `last_attempt_at` whose identity
-matches `last_success_identity`. Failures retain the same generation. Without a server reset
+window also increments once seven days have elapsed since the `last_attempt_at` for a closed
+attempt. Retryable failures retain the same generation. Without a server reset
 timestamp the exact boundary is unknowable; this conservative fallback makes progress while
 preventing every five-minute scan from treating one already-started window as new.
 
@@ -189,25 +204,29 @@ last_observed_reset_at: null | unix-seconds
 last_observed_active: boolean
 missing_reset_generation: 0..4294967295
 attempt_identity: null | reset_at(unix-seconds) | missing_reset(generation)
+attempt_status: null | dispatching | retryable | closed
 last_attempt_at: null | unix-seconds
 failure_count: 0..8
 retry_not_before: null | unix-seconds
-last_success_identity: null | reset_at(unix-seconds) | missing_reset(generation)
-last_error: null | transient | login_required | rejected
+last_error: null | ambiguous | transient | login_required | rejected
 ```
 
 - `(account_id, attempt_identity)` is the attempt identity. Reset-bearing windows use the server
   timestamp; reset-less windows use the persisted synthetic generation. A first-seen future/full
   reset-bearing window is saved as the baseline with `attempt_identity` and `last_attempt_at` both
-  `null`. Once a reset transition becomes due, preserve the old observation across failures so the
-  same transition stays retryable; advance it only after verified success.
+  `null` and `attempt_status = null`. Once a reset transition becomes due, preserve the old
+  observation across retryable failures so the same transition stays eligible; advance it when
+  the attempt closes, whether completed or conservatively suppressed as ambiguous.
 - Hold `weekly-window.lock` from the final due check through request completion and the state write.
-  Another process skips the account when `try_lock` reports contention.
+  Persist `dispatching` before releasing control to the transport. Another process skips the
+  account when `try_lock` reports contention, and crash recovery closes a persisted `dispatching`
+  attempt as ambiguous before any later scan can dispatch it again.
 - File locks are kernel-owned, so a crashed process releases the lease. The next five-minute scan
   is stale-lease recovery; file presence alone never means locked.
-- On a new attempt identity, clear old failures. On failure, use
+- On a new attempt identity, clear old failures. On a definite retryable failure, use
   `min(5 minutes * 2^failure_count, 6 hours)` and cap the counter at 8. The normal five-minute poll
-  remains the only retry driver, so there is no busy loop.
+  remains the only retry driver, so there is no busy loop. Closed attempts are never retried for
+  the same identity.
 - Persist only sanitized error categories. Detailed errors stay in trace/debug logs.
 - Reject state input over 4 KiB, treat corrupt/unknown-version state as empty after a warning, and
   atomically replace through a same-directory temporary file. This state is reconstructable and
@@ -236,9 +255,11 @@ Target: at most 450 changed lines including focused tests.
 - `codex-rs/login/src/lib.rs`: smallest required public re-export.
 - `codex-rs/model-provider/src/codex_plus_plus/mod.rs`: module wiring.
 - `codex-rs/model-provider/src/codex_plus_plus/weekly_window_ping.rs`: HTTP-only one-shot Responses
-  helper using the existing provider/auth/transport stack.
+  helper using the existing first-party provider/auth/transport stack with replay disabled.
 - `codex-rs/model-provider/src/codex_plus_plus/weekly_window_ping_tests.rs`: wire body, auth identity,
   completion, unauthorized recovery, and timeout tests.
+- `codex-rs/model-provider/src/provider.rs`: expose the existing first-party-auth predicate only at
+  crate visibility; no new predicate.
 - `codex-rs/model-provider/src/lib.rs`: smallest required export.
 
 This slice must rebase after the granular `/accounts` PR and use its landed automation field and
@@ -249,8 +270,8 @@ mutation API exactly. Do not introduce a parallel field.
 Target: at most 500 changed lines excluding intentional snapshots.
 
 - `codex-rs/tui/src/codex_plus_plus/weekly_window_scheduler.rs`: five-minute loop, independent
-  account managers, usage due check, ping orchestration, post-ping verification, and live enable
-  watch handle.
+  account managers, usage due check, ping orchestration, best-effort post-ping status refresh, and
+  live enable watch handle.
 - `codex-rs/tui/src/codex_plus_plus/weekly_window_scheduler_tests.rs`: paused-time scheduling,
   dedupe, eligibility, root-auth immutability, and foreground-session isolation.
 - `codex-rs/tui/src/codex_plus_plus/mod.rs`: module/delegation seam only.
@@ -304,10 +325,13 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - Unit tests prove lease contention/drop recovery, first-observation baselining with no attempt
   metadata, a future/full reset transition becoming due, unchanged future/full windows staying
   skipped, attempt-identity reset, reset-less generation success/deduplication/re-arm by activity
-  and by the seven-day fallback, capped backoff, atomic bounded state, corruption recovery, and
-  sanitized status.
+  and by the seven-day fallback, pre-dispatch persistence, crash recovery closing `dispatching`,
+  capped backoff, atomic bounded state, corruption recovery, and sanitized status.
 - Wire tests prove the exact request has no tools/history/session IDs/previous response/WebSocket,
-  refresh never crosses identity, and only `Completed` counts as request completion.
+  refresh never crosses identity, the destination is `config.chatgpt_base_url` rather than a custom
+  effective-provider URL, the API retry budget is zero, only `Completed` counts as success, and
+  transport/5xx/EOF ambiguity cannot replay an identity while a rejected 401 can use the bounded
+  identity-safe refresh path.
 
 ### Slice 2
 
@@ -315,6 +339,8 @@ file read. The state JSON is runtime data. `codex-rs/tui/BUILD.bazel` already gl
 - `just fix -p codex-tui`
 - Snapshot `/codexplusplus`, `/accounts` scheduler status, and the Codex++ welcome toast.
 - A two-scheduler test proves one due account produces one ping.
+- An OSS/custom-provider test proves the scheduler dispatches nothing and never attaches imported
+  account credentials.
 - A root-auth test compares the root `auth.json` bytes before and after a successful ping and a
   terminal refresh failure.
 - A foreground-isolation test proves the active account ID, request history, thread/session state,
