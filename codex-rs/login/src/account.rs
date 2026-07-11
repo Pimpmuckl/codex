@@ -17,6 +17,9 @@ use crate::account_lease::AccountLease;
 use crate::load_auth_dot_json;
 use crate::save_auth;
 
+#[path = "codex_plus_plus/account_policy.rs"]
+pub(crate) mod account_policy;
+
 const ACCOUNTS_DIR: &str = "accounts";
 const INDEX_FILE: &str = "index.json";
 const INDEX_LOCK_FILE: &str = "index.lock";
@@ -43,6 +46,8 @@ pub struct AccountProfile {
     pub label: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_enabled")]
+    pub automation_enabled: bool,
     #[serde(default)]
     pub login_required: bool,
     #[serde(default)]
@@ -58,6 +63,7 @@ pub struct AccountCandidate {
     pub display_label: String,
     pub priority: u32,
     pub enabled: bool,
+    pub automation_enabled: bool,
     pub usage_limit_resets_at: Option<i64>,
     pub blocked: bool,
 }
@@ -172,10 +178,12 @@ impl AccountStore {
             .map(|profile| profile.priority)
             .unwrap_or_else(|| next_priority(&index.accounts));
         let usage_limit_resets_at = existing.and_then(|profile| profile.usage_limit_resets_at);
+        let automation_enabled = existing.is_none_or(|profile| profile.automation_enabled);
         let profile = AccountProfile {
             id: account_id,
             label,
             enabled: true,
+            automation_enabled,
             login_required: imported_from_root_marker
                 && existing.is_some_and(|profile| profile.login_required),
             priority,
@@ -251,6 +259,7 @@ impl AccountStore {
                 display_label: profile.label,
                 priority: profile.priority,
                 enabled: profile.enabled,
+                automation_enabled: profile.automation_enabled,
                 usage_limit_resets_at: profile.usage_limit_resets_at,
             })
             .collect())

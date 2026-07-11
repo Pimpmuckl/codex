@@ -164,7 +164,8 @@ impl AuthManager {
         let mut candidates = (0..accounts.len())
             .map(|offset| &accounts[(start + offset) % accounts.len()])
             .filter(|(account, _)| {
-                current_id.as_deref() != Some(account.id.as_str())
+                account.automation_enabled
+                    && current_id.as_deref() != Some(account.id.as_str())
                     && !attempted_account_ids.contains(account.id.as_str())
             })
             .map(|candidate @ (account, _)| {

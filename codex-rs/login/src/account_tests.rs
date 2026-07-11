@@ -105,6 +105,7 @@ fn import_current_reenables_existing_account_profile() {
             display_label: "first again".to_string(),
             priority: first.priority,
             enabled: true,
+            automation_enabled: true,
             usage_limit_resets_at: None,
             blocked: false,
         }]
@@ -254,6 +255,7 @@ fn candidates_include_usage_limit_blocked_state() {
                 display_label: "first".to_string(),
                 priority: first.priority,
                 enabled: true,
+                automation_enabled: true,
                 usage_limit_resets_at: Some(2_000),
                 blocked: true,
             },
@@ -262,6 +264,7 @@ fn candidates_include_usage_limit_blocked_state() {
                 display_label: "second".to_string(),
                 priority: second.priority,
                 enabled: true,
+                automation_enabled: true,
                 usage_limit_resets_at: None,
                 blocked: false,
             },
@@ -676,6 +679,33 @@ async fn switch_to_next_imported_account_prefers_unblocked_accounts() {
 }
 
 #[tokio::test]
+async fn switch_to_next_imported_account_skips_automation_disabled_accounts() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    let third = import_test_account(&store, codex_home.path(), "third", "account-c");
+    store
+        .set_automation_enabled(&second.id, /*automation_enabled*/ false)
+        .expect("disable second automation");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let manager = test_auth_manager(codex_home.path()).await;
+    assert_eq!(manager.active_account_id(), Some(first.id));
+    manager
+        .activate_imported_account(&second.id)
+        .await
+        .expect("activate second manually");
+
+    assert_eq!(
+        manager
+            .switch_to_next_imported_account(&HashSet::from([second.id.to_string()]))
+            .await,
+        ImportedAccountSwitchOutcome::ReadyToRetry
+    );
+    assert_eq!(manager.active_account_id(), Some(third.id));
+}
+
+#[tokio::test]
 async fn switch_to_next_imported_account_selects_earliest_known_reset() {
     let codex_home = tempdir().expect("tempdir");
     let store = AccountStore::new(codex_home.path().to_path_buf());
@@ -858,6 +888,7 @@ async fn logout_clears_imported_accounts_that_startup_would_select() {
                 display_label: "first".to_string(),
                 priority: first.priority,
                 enabled: false,
+                automation_enabled: true,
                 usage_limit_resets_at: None,
                 blocked: false,
             },
@@ -866,6 +897,7 @@ async fn logout_clears_imported_accounts_that_startup_would_select() {
                 display_label: "second".to_string(),
                 priority: second.priority,
                 enabled: false,
+                automation_enabled: true,
                 usage_limit_resets_at: None,
                 blocked: false,
             },
@@ -876,7 +908,7 @@ async fn logout_clears_imported_accounts_that_startup_would_select() {
     assert_eq!(restarted.auth_mode(), None);
 }
 
-async fn test_auth_manager(codex_home: &std::path::Path) -> std::sync::Arc<AuthManager> {
+pub(super) async fn test_auth_manager(codex_home: &std::path::Path) -> std::sync::Arc<AuthManager> {
     test_auth_manager_with_forced_workspace(codex_home, Vec::new()).await
 }
 
@@ -906,7 +938,7 @@ async fn test_auth_manager_with_forced_workspace(
     .await
 }
 
-fn import_test_account(
+pub(super) fn import_test_account(
     store: &AccountStore,
     codex_home: &std::path::Path,
     label: &str,
