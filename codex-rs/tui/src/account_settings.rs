@@ -22,6 +22,13 @@ impl ChatWidget {
     pub(crate) fn automatic_account_selection_persistence_failed(&mut self, err: String) {
         self.add_error_message(persistence_error_message(err));
     }
+
+    pub(crate) fn automatic_account_selection_persistence_overridden(
+        &mut self,
+        selection: AutomaticAccountSelection,
+    ) {
+        self.add_error_message(persistence_overridden_message(selection));
+    }
 }
 
 fn account_settings_params(current: AutomaticAccountSelection) -> SelectionViewParams {
@@ -80,6 +87,13 @@ fn persistence_success_message(selection: AutomaticAccountSelection) -> String {
 
 fn persistence_error_message(err: String) -> String {
     format!("Failed to update automatic account selection: {err}")
+}
+
+fn persistence_overridden_message(selection: AutomaticAccountSelection) -> String {
+    format!(
+        "Automatic account selection remains {} because this setting is controlled elsewhere.",
+        selection_label(selection)
+    )
 }
 
 #[cfg(test)]
