@@ -3,17 +3,19 @@
 use std::time::Duration;
 
 use crate::client::ModelClientSession;
+use crate::codex_plus_plus::model_capacity_retry;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::util::backoff;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ResponsesStreamRequest {
-    Sampling,
+pub(crate) enum ResponsesStreamRequest<'a> {
+    Sampling(&'a CancellationToken),
     RemoteCompactionV2,
 }
 
@@ -26,9 +28,13 @@ pub(crate) async fn handle_retryable_response_stream_error(
     client_session: &mut ModelClientSession,
     sess: &Session,
     turn_context: &TurnContext,
-    request: ResponsesStreamRequest,
+    request: ResponsesStreamRequest<'_>,
 ) -> Result<(), CodexErr> {
-    if *retries >= max_retries
+    let capacity_retry = matches!(request, ResponsesStreamRequest::Sampling(_))
+        && model_capacity_retry::applies_to(&err);
+
+    if !capacity_retry
+        && *retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             &turn_context.model_info,
@@ -48,19 +54,34 @@ pub(crate) async fn handle_retryable_response_stream_error(
     if *retries < max_retries {
         *retries += 1;
         let retry_count = *retries;
-        let delay = match &err {
-            CodexErr::Stream(_, requested_delay) => {
-                requested_delay.unwrap_or_else(|| backoff(retry_count))
+        let delay = if capacity_retry {
+            model_capacity_retry::DELAY
+        } else {
+            match &err {
+                CodexErr::Stream(_, requested_delay) => {
+                    requested_delay.unwrap_or_else(|| backoff(retry_count))
+                }
+                _ => backoff(retry_count),
             }
-            _ => backoff(retry_count),
         };
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
+        if capacity_retry {
+            sess.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: model_capacity_retry::warning(retry_count, max_retries),
+                }),
+            )
+            .await;
+        }
+
         // In release builds, hide the first websocket retry notification to reduce noisy
         // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = retry_count > 1
-            || cfg!(debug_assertions)
-            || !sess.services.model_client.responses_websocket_enabled();
+        let report_error = !capacity_retry
+            && (retry_count > 1
+                || cfg!(debug_assertions)
+                || !sess.services.model_client.responses_websocket_enabled());
         if report_error {
             // Surface retry information to any UI/front-end so the user understands what is
             // happening instead of staring at a seemingly frozen screen.
@@ -71,6 +92,18 @@ pub(crate) async fn handle_retryable_response_stream_error(
             )
             .await;
         }
+        if capacity_retry {
+            let ResponsesStreamRequest::Sampling(cancellation_token) = request else {
+                unreachable!();
+            };
+            return tokio::select! {
+                _ = tokio::time::sleep(delay) => {
+                    client_session.reset_websocket_session();
+                    Ok(())
+                },
+                _ = cancellation_token.cancelled() => Err(CodexErr::TurnAborted),
+            };
+        }
         tokio::time::sleep(delay).await;
         return Ok(());
     }
@@ -79,7 +112,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
 }
 
 fn log_retry(
-    request: ResponsesStreamRequest,
+    request: ResponsesStreamRequest<'_>,
     turn_context: &TurnContext,
     err: &CodexErr,
     retries: u64,
@@ -87,7 +120,7 @@ fn log_retry(
     delay: Duration,
 ) {
     match request {
-        ResponsesStreamRequest::Sampling => {
+        ResponsesStreamRequest::Sampling(_) => {
             warn!(
                 "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
             );

@@ -1235,7 +1235,7 @@ async fn run_sampling_request(
             original_input = Some(prompt.input);
         }
 
-        if !err.is_retryable() {
+        if !err.is_retryable() && !crate::codex_plus_plus::model_capacity_retry::applies_to(&err) {
             return Err(err);
         }
 
@@ -1246,7 +1246,7 @@ async fn run_sampling_request(
             client_session,
             &sess,
             &turn_context,
-            ResponsesStreamRequest::Sampling,
+            ResponsesStreamRequest::Sampling(&cancellation_token),
         )
         .await?;
         turn_context.turn_timing_state.record_sampling_retry();
