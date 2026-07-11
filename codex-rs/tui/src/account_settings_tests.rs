@@ -53,6 +53,12 @@ fn account_settings_toggle_failure_snapshot() {
 }
 
 #[test]
+fn account_settings_toggle_overridden_snapshot() {
+    let message = persistence_overridden_message(AutomaticAccountSelection::Enabled);
+    insta::assert_snapshot!("account_settings_toggle_overridden", message);
+}
+
+#[test]
 fn selection_dispatches_persistence_event() {
     let mut params = account_settings_params(AutomaticAccountSelection::Enabled);
     let action = params.items[1].actions.pop().expect("selection action");
