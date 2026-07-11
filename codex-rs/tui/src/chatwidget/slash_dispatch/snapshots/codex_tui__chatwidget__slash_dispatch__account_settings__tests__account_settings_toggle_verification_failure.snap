@@ -1,5 +1,0 @@
----
-source: tui/src/chatwidget/slash_dispatch/account_settings_tests.rs
-expression: message
----
-Automatic account selection was saved, but Codex could not verify it for this project: connection closed

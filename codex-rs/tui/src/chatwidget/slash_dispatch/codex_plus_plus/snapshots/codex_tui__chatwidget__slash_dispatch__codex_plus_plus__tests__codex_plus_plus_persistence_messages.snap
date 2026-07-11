@@ -1,0 +1,8 @@
+---
+source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/codex_plus_plus_tests.rs
+expression: "[persistence_success_message(AutomaticAccountSelection::Disabled),\npersistence_error_message(\"permission denied\".to_string()),\npersistence_overridden_message(AutomaticAccountSelection::Enabled),\npersistence_verification_failed_message(\"connection closed\".to_string()),].join(\"\\n\")"
+---
+Automatic account selection disabled. Restart Codex to use this setting.
+Failed to update automatic account selection: permission denied
+Automatic account selection remains enabled because this setting is controlled elsewhere.
+Automatic account selection was saved, but Codex could not verify it for this project: connection closed
