@@ -115,17 +115,8 @@ impl<S: EventSource + Default> EventBroker<S> {
 }
 
 /// Real crossterm-backed event source.
-pub struct CrosstermEventSource(pub crossterm::event::EventStream);
-
-impl Default for CrosstermEventSource {
-    fn default() -> Self {
-        #[cfg(windows)]
-        if let Err(err) = super::windows_input::ensure_native_windows_input_mode() {
-            tracing::warn!(error = %err, "failed to restore native Windows terminal input mode");
-        }
-        Self(crossterm::event::EventStream::new())
-    }
-}
+#[derive(Default)]
+pub struct CrosstermEventSource(super::codex_plus_plus::native_windows_input::OwnedEventStream);
 
 impl EventSource for CrosstermEventSource {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventResult>> {
