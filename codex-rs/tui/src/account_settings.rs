@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use codex_config::CONFIG_TOML_FILE;
+use codex_config::TomlValue;
 use codex_config::types::AutomaticAccountSelection;
 
 use super::*;
@@ -15,11 +16,10 @@ impl ChatWidget {
             .get_user_config_file()
             .map(codex_utils_absolute_path::AbsolutePathBuf::to_path_buf)
             .unwrap_or_else(|| self.config.codex_home.join(CONFIG_TOML_FILE).to_path_buf());
+        let current = persisted_automatic_account_selection(&config_path)
+            .unwrap_or(self.config.automatic_account_selection);
         self.bottom_pane
-            .show_selection_view(account_settings_params(
-                self.config.automatic_account_selection,
-                config_path,
-            ));
+            .show_selection_view(account_settings_params(current, config_path));
         self.request_redraw();
     }
 }
@@ -32,7 +32,7 @@ fn account_settings_params(
     SelectionViewParams {
         title: Some("Accounts".to_string()),
         subtitle: Some(format!(
-            "Automatic account selection is {state}. Changes apply to new sessions."
+            "Automatic account selection is {state}. Restart Codex to use changes."
         )),
         footer_hint: Some(standard_popup_hint_line()),
         items: [
@@ -63,24 +63,18 @@ fn account_settings_params(
 
 fn selection_action(config_path: PathBuf, selection: AutomaticAccountSelection) -> SelectionAction {
     Box::new(move |tx| {
-        let config_path = config_path.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let cell = match persist_automatic_account_selection(&config_path, selection).await {
-                Ok(()) => history_cell::new_info_event(
-                    persistence_success_message(selection),
-                    /*hint*/ None,
-                ),
-                Err(err) => {
-                    history_cell::new_error_event(persistence_error_message(err.to_string()))
-                }
-            };
-            tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
-        });
+        let cell = match persist_automatic_account_selection(&config_path, selection) {
+            Ok(()) => history_cell::new_info_event(
+                persistence_success_message(selection),
+                /*hint*/ None,
+            ),
+            Err(err) => history_cell::new_error_event(persistence_error_message(err.to_string())),
+        };
+        tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
     })
 }
 
-async fn persist_automatic_account_selection(
+fn persist_automatic_account_selection(
     config_path: &std::path::Path,
     selection: AutomaticAccountSelection,
 ) -> anyhow::Result<()> {
@@ -90,8 +84,19 @@ async fn persist_automatic_account_selection(
             segments: vec!["automatic_account_selection".to_string()],
             value,
         }])
-        .apply()
-        .await
+        .apply_blocking()
+}
+
+fn persisted_automatic_account_selection(
+    config_path: &std::path::Path,
+) -> Option<AutomaticAccountSelection> {
+    let contents = std::fs::read_to_string(config_path).ok()?;
+    let config = toml::from_str::<TomlValue>(&contents).ok()?;
+    match config.get("automatic_account_selection")?.as_str()? {
+        "enabled" => Some(AutomaticAccountSelection::Enabled),
+        "disabled" => Some(AutomaticAccountSelection::Disabled),
+        _ => None,
+    }
 }
 
 fn selection_label(selection: AutomaticAccountSelection) -> &'static str {
@@ -103,7 +108,7 @@ fn selection_label(selection: AutomaticAccountSelection) -> &'static str {
 
 fn persistence_success_message(selection: AutomaticAccountSelection) -> String {
     format!(
-        "Automatic account selection {}. New sessions will use this setting.",
+        "Automatic account selection {}. Restart Codex to use this setting.",
         selection_label(selection)
     )
 }

@@ -69,8 +69,8 @@ fn account_settings_toggle_failure_snapshot() {
     insta::assert_snapshot!("account_settings_toggle_failure", error);
 }
 
-#[tokio::test]
-async fn persistence_preserves_unrelated_config() {
+#[test]
+fn persistence_preserves_unrelated_config() {
     let codex_home = tempdir().expect("tempdir");
     fs::write(codex_home.path().join("config.toml"), "model = \"gpt-5\"\n").expect("write config");
 
@@ -78,7 +78,6 @@ async fn persistence_preserves_unrelated_config() {
         &codex_home.path().join("config.toml"),
         AutomaticAccountSelection::Disabled,
     )
-    .await
     .expect("persist setting");
 
     assert_eq!(
@@ -87,16 +86,29 @@ async fn persistence_preserves_unrelated_config() {
     );
 }
 
-#[tokio::test]
-async fn persistence_failure_is_returned() {
+#[test]
+fn persisted_selection_reflects_successful_toggle() {
+    let codex_home = tempdir().expect("tempdir");
+    let config_path = codex_home.path().join("config.toml");
+
+    persist_automatic_account_selection(&config_path, AutomaticAccountSelection::Disabled)
+        .expect("persist setting");
+
+    assert_eq!(
+        persisted_automatic_account_selection(&config_path),
+        Some(AutomaticAccountSelection::Disabled)
+    );
+}
+
+#[test]
+fn persistence_failure_is_returned() {
     let codex_home = tempdir().expect("tempdir");
     fs::create_dir(codex_home.path().join("config.toml")).expect("replace config with directory");
 
     let result = persist_automatic_account_selection(
         &codex_home.path().join("config.toml"),
         AutomaticAccountSelection::Disabled,
-    )
-    .await;
+    );
 
     assert!(result.is_err());
 }
