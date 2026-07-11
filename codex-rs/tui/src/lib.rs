@@ -36,7 +36,7 @@ use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey as AppServerThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
-use codex_cloud_config::cloud_config_bundle_loader;
+use codex_cloud_config::cloud_config_bundle_loader_for_selected_account;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
@@ -45,7 +45,6 @@ use codex_config::format_config_error_with_source;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
 use codex_login::AuthConfig;
-use codex_login::AuthManager;
 use codex_login::default_client::originator;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::enforce_login_restrictions;
@@ -1119,29 +1118,9 @@ pub async fn run_main(
             }
         };
     if reload_cloud_config {
-        let auth_manager = Arc::new(
-            AuthManager::new_with_automatic_account_selection(
-                config.codex_home.to_path_buf(),
-                /*enable_codex_api_key_env*/ false,
-                config.cli_auth_credentials_store_mode,
-                /*forced_chatgpt_workspace_id*/ None,
-                Some(config.chatgpt_base_url.clone()),
-                config.auth_keyring_backend_kind(),
-                config.auth_route_config(),
-                config.automatic_account_selection,
-            )
-            .await,
-        );
-        if let Some(selected_account_id) = initial_account_id.as_ref() {
-            auth_manager
-                .activate_imported_account(selected_account_id)
+        cloud_config_bundle =
+            cloud_config_bundle_loader_for_selected_account(&config, initial_account_id.as_ref())
                 .await?;
-        }
-        cloud_config_bundle = cloud_config_bundle_loader(
-            auth_manager,
-            config.chatgpt_base_url.clone(),
-            config.codex_home.to_path_buf(),
-        );
         config = load_config_or_exit(
             cli_kv_overrides.clone(),
             overrides.clone(),
