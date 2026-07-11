@@ -1776,93 +1776,10 @@ impl App {
                 self.update_feature_flags(app_server, updates).await;
             }
             AppEvent::PersistAutomaticAccountSelection { selection } => {
-                let value = match selection {
-                    codex_config::types::AutomaticAccountSelection::Enabled => "enabled",
-                    codex_config::types::AutomaticAccountSelection::Disabled => "disabled",
-                };
-                match crate::config_update::write_config_batch(
-                    app_server.request_handle(),
-                    vec![crate::config_update::replace_config_value(
-                        "automatic_account_selection",
-                        serde_json::json!(value),
-                    )],
+                crate::codex_plus_plus::persist_automatic_account_selection(
+                    self, app_server, selection,
                 )
-                .await
-                {
-                    Ok(response) => {
-                        let overridden_selection = response
-                            .overridden_metadata
-                            .as_ref()
-                            .and_then(|metadata| metadata.effective_value.as_str())
-                            .and_then(|value| match value {
-                                "enabled" => {
-                                    Some(codex_config::types::AutomaticAccountSelection::Enabled)
-                                }
-                                "disabled" => {
-                                    Some(codex_config::types::AutomaticAccountSelection::Disabled)
-                                }
-                                _ => None,
-                            })
-                            .filter(|_| response.status == WriteStatus::OkOverridden);
-                        if let Some(effective) = overridden_selection {
-                            self.config.automatic_account_selection = effective;
-                            self.chat_widget
-                                .automatic_account_selection_persistence_overridden(effective);
-                        } else {
-                            let cwd = self.config.cwd.display().to_string();
-                            match crate::config_update::read_effective_config(
-                                app_server.request_handle(),
-                                cwd,
-                            )
-                            .await
-                            {
-                                Ok(response) => {
-                                    let effective = match response
-                                        .config
-                                        .additional
-                                        .get("automatic_account_selection")
-                                        .and_then(serde_json::Value::as_str)
-                                    {
-                                        Some("disabled") => {
-                                            codex_config::types::AutomaticAccountSelection::Disabled
-                                        }
-                                        _ => {
-                                            codex_config::types::AutomaticAccountSelection::Enabled
-                                        }
-                                    };
-                                    self.config.automatic_account_selection = effective;
-                                    if effective == selection {
-                                        self.chat_widget
-                                            .automatic_account_selection_persisted(selection);
-                                    } else {
-                                        self.chat_widget
-                                            .automatic_account_selection_persistence_overridden(
-                                                effective,
-                                            );
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::error!(
-                                        error = %err,
-                                        "failed to verify automatic account selection"
-                                    );
-                                    self.chat_widget
-                                        .automatic_account_selection_verification_failed(
-                                            err.to_string(),
-                                        );
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            error = %err,
-                            "failed to persist automatic account selection"
-                        );
-                        self.chat_widget
-                            .automatic_account_selection_persistence_failed(err.to_string());
-                    }
-                }
+                .await;
             }
             AppEvent::UpdateMemorySettings {
                 use_memories,
