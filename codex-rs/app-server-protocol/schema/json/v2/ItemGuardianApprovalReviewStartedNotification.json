@@ -462,6 +462,32 @@
         },
         {
           "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "toolInput": true,
+            "toolName": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "preToolUse"
+              ],
+              "title": "PreToolUseGuardianApprovalReviewActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "toolInput",
+            "toolName",
+            "type"
+          ],
+          "title": "PreToolUseGuardianApprovalReviewAction",
+          "type": "object"
+        },
+        {
+          "properties": {
             "permissions": {
               "$ref": "#/definitions/RequestPermissionProfile"
             },

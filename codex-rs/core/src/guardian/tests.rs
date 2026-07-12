@@ -29,6 +29,7 @@ use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_protocol::ThreadId;
+use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ContentItem;
@@ -51,6 +52,7 @@ use codex_protocol::protocol::GuardianUserAuthorization;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_utils_output_truncation::approx_token_count;
 use core_test_support::PathBufExt;
 use core_test_support::TempDirExt;
 use core_test_support::context_snapshot;
@@ -912,6 +914,36 @@ fn format_guardian_action_pretty_reports_no_truncation_for_small_payload() -> se
 }
 
 #[test]
+fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Result<()> {
+    let action = GuardianApprovalRequest::PreToolUse {
+        id: "call-1".to_string(),
+        tool_name: "nested_tool".to_string(),
+        tool_input: serde_json::json!({ "values": vec![r#"\"quoted\\path\n"#.repeat(200); 100] }),
+        reason: "Review this tool call".to_string(),
+        cwd: test_path_buf("/tmp").abs(),
+    };
+
+    let rendered = format_guardian_action_pretty(&action)?;
+    let assessment = guardian_assessment_action(&action);
+    assert!(
+        approx_token_count(&serde_json::to_string(&assessment)?) <= GUARDIAN_MAX_TOOL_ENTRY_TOKENS
+    );
+    let GuardianAssessmentAction::PreToolUse { tool_input, .. } = assessment else {
+        panic!("expected PreToolUse assessment action");
+    };
+
+    assert!(rendered.text.contains("<truncated omitted_approx_tokens="));
+    assert!(rendered.text.contains("nested_tool") && rendered.text.contains("Review"));
+    assert!(rendered.truncated);
+    assert!(serde_json::from_str::<serde_json::Value>(&rendered.text).is_ok());
+    assert!(approx_token_count(&rendered.text) <= GUARDIAN_MAX_ACTION_TOKENS);
+    assert!(tool_input.as_str().is_some_and(|input| {
+        input.contains("<truncated omitted_approx_tokens=") && input.len() < 10_000
+    }));
+    Ok(())
+}
+
+#[test]
 fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json::Result<()> {
     let action = GuardianApprovalRequest::McpToolCall {
         id: "call-1".to_string(),
@@ -1119,7 +1151,7 @@ fn guardian_request_turn_id_prefers_network_access_owner_turn() {
 }
 
 #[test]
-fn guardian_request_target_item_id_omits_network_access_trigger_call_id() {
+fn guardian_request_target_item_id_handles_absent_and_future_items() {
     let network_access = GuardianApprovalRequest::NetworkAccess {
         id: "network-1".to_string(),
         turn_id: "owner-turn".to_string(),
@@ -1138,8 +1170,19 @@ fn guardian_request_target_item_id_omits_network_access_trigger_call_id() {
             tty: None,
         }),
     };
+    let pre_tool_use = GuardianApprovalRequest::PreToolUse {
+        id: "tool-call-1".to_string(),
+        tool_name: "custom_tool".to_string(),
+        tool_input: serde_json::json!({"query": "report"}),
+        reason: "Review report access".to_string(),
+        cwd: test_path_buf("/repo").abs(),
+    };
 
     assert_eq!(guardian_request_target_item_id(&network_access), None);
+    assert_eq!(
+        guardian_request_target_item_id(&pre_tool_use),
+        Some("tool-call-1")
+    );
 }
 
 #[tokio::test]
