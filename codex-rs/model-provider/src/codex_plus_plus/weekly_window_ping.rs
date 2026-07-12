@@ -121,6 +121,7 @@ async fn ping_weekly_window_inner(
         if !unauthorized_recovery.has_next() {
             return WeeklyWindowPingOutcome::DefiniteRejection;
         }
+        // A refresh may rotate remotely, so it must outlive timeout; ambiguous forbids replay.
         let recovery_task = tokio::spawn(async move {
             let result = unauthorized_recovery.next().await;
             (unauthorized_recovery, result)
