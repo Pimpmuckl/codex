@@ -25,6 +25,7 @@ use wiremock::matchers::path;
 use super::*;
 
 const TEST_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
+const OTHER_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6Im90aGVyQGV4YW1wbGUuY29tIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X3VzZXJfaWQiOiJvdGhlci11c2VyIiwidXNlcl9pZCI6Im90aGVyLXVzZXIiLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InBybyIsImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY291bnQtMTIzIn19.c2ln";
 static NEXT_HOME: AtomicUsize = AtomicUsize::new(0);
 
 struct TestAccount {
@@ -74,9 +75,19 @@ impl Drop for TestAccount {
 }
 
 fn write_auth(home: &std::path::Path, account_id: &str, token: &str, refresh: &str) {
+    write_auth_with_id_token(home, account_id, token, refresh, TEST_ID_TOKEN);
+}
+
+fn write_auth_with_id_token(
+    home: &std::path::Path,
+    account_id: &str,
+    token: &str,
+    refresh: &str,
+    id_token: &str,
+) {
     let auth: AuthDotJson = serde_json::from_value(json!({
         "OPENAI_API_KEY": null,
-        "tokens": {"id_token": TEST_ID_TOKEN, "access_token": token,
+        "tokens": {"id_token": id_token, "access_token": token,
             "refresh_token": refresh, "account_id": account_id},
         "last_refresh": "2099-01-01T00:00:00Z"
     }))
@@ -147,10 +158,14 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
 
     let mut custom_request = account.request(&server);
     custom_request.model_provider_id = "custom".to_string();
-    assert_eq!(
-        ping_weekly_window(custom_request).await,
-        WeeklyWindowPingOutcome::DefiniteRejection
-    );
+    let mut override_request = account.request(&server);
+    override_request.model_provider.base_url = Some(server.uri());
+    for request in [custom_request, override_request] {
+        assert_eq!(
+            ping_weekly_window(request).await,
+            WeeklyWindowPingOutcome::DefiniteRejection
+        );
+    }
 }
 
 #[tokio::test]
@@ -185,7 +200,13 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
         .respond_with(move |_request: &Request| {
-            write_auth(&account_home, "other-account", "other", "other-refresh");
+            write_auth_with_id_token(
+                &account_home,
+                "account-123",
+                "other",
+                "other-refresh",
+                OTHER_ID_TOKEN,
+            );
             ResponseTemplate::new(401)
         })
         .mount(&server)

@@ -65,6 +65,8 @@ pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindo
     if request.model_provider_id != OPENAI_PROVIDER_ID
         || !request.model_provider.is_openai()
         || !provider_uses_first_party_auth_path(&request.model_provider)
+        || request.model_provider.base_url
+            != ModelProviderInfo::create_openai_provider(/*base_url*/ None).base_url
     {
         return WeeklyWindowPingOutcome::DefiniteRejection;
     }
@@ -115,7 +117,13 @@ async fn ping_weekly_window_inner(
     let Some(reloaded_auth) = auth_manager.auth_cached() else {
         return WeeklyWindowPingOutcome::RecoveryRequired;
     };
-    match send_once(&request, &auth_manager, &reloaded_auth, deadline).await {
+    if auth.get_account_id() != reloaded_auth.get_account_id()
+        || auth.get_chatgpt_user_id() != reloaded_auth.get_chatgpt_user_id()
+        || auth.is_workspace_account() != reloaded_auth.is_workspace_account()
+    {
+        return WeeklyWindowPingOutcome::RecoveryRequired;
+    }
+    match send_once(&request, &auth_manager, &auth, deadline).await {
         AttemptOutcome::Finished(outcome) => outcome,
         AttemptOutcome::Unauthorized => WeeklyWindowPingOutcome::RecoveryRequired,
     }
