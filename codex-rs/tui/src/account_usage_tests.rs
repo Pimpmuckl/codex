@@ -14,7 +14,7 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
                 resets_at: Some(1_749_950_000),
             }),
             secondary: Some(RateLimitWindow {
-                used_percent: 12.4,
+                used_percent: 0.4,
                 window_minutes: Some(10_080),
                 resets_at: Some(1_750_000_000),
             }),
@@ -34,7 +34,8 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
             five_hour_remaining_percent: Some(32),
             five_hour_exhausted: false,
             weekly_reset_at: Some(1_750_000_000),
-            weekly_remaining_percent: Some(88),
+            weekly_unused: Some(false),
+            weekly_remaining_percent: Some(100),
             weekly_exhausted: false,
         }
     );
@@ -48,6 +49,7 @@ fn exhausted_until_uses_the_later_exhausted_window_reset() {
         five_hour_remaining_percent: Some(0),
         five_hour_exhausted: true,
         weekly_reset_at: Some(1_750_000_000),
+        weekly_unused: Some(false),
         weekly_remaining_percent: Some(0),
         weekly_exhausted: true,
     };
@@ -83,6 +85,7 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
             five_hour_remaining_percent: Some(0),
             five_hour_exhausted: false,
             weekly_reset_at: None,
+            weekly_unused: None,
             weekly_remaining_percent: None,
             weekly_exhausted: false,
         }

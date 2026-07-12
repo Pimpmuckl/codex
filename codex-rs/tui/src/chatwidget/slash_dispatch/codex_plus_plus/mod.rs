@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -21,34 +22,41 @@ use crate::keymap::primary_binding;
 impl ChatWidget {
     pub(super) fn open_codex_plus_plus_popup(&mut self) {
         let list_keymap = settings_list_keymap(self.bottom_pane.list_keymap());
-        let params =
-            codex_plus_plus_settings_params(self.config.automatic_account_selection, &list_keymap);
+        let params = codex_plus_plus_settings_params(
+            self.config.automatic_account_selection,
+            self.config.weekly_usage_window_auto_start,
+            &list_keymap,
+        );
         let view = ListSelectionView::new(params, self.app_event_tx.clone(), list_keymap);
         self.bottom_pane.show_view(Box::new(view));
         self.request_redraw();
     }
 
-    pub(crate) fn automatic_account_selection_persisted(
+    pub(crate) fn codex_plus_plus_settings_persisted(
         &mut self,
-        selection: AutomaticAccountSelection,
+        automatic: AutomaticAccountSelection,
+        weekly: WeeklyUsageWindowAutoStart,
     ) {
-        self.config.automatic_account_selection = selection;
-        self.add_info_message(persistence_success_message(selection), /*hint*/ None);
+        self.config.automatic_account_selection = automatic;
+        self.config.weekly_usage_window_auto_start = weekly;
+        self.add_info_message(persistence_success_message(), /*hint*/ None);
     }
 
-    pub(crate) fn automatic_account_selection_persistence_failed(&mut self, err: String) {
+    pub(crate) fn codex_plus_plus_settings_persistence_failed(&mut self, err: String) {
         self.add_error_message(persistence_error_message(err));
     }
 
-    pub(crate) fn automatic_account_selection_persistence_overridden(
+    pub(crate) fn codex_plus_plus_settings_persistence_overridden(
         &mut self,
-        selection: AutomaticAccountSelection,
+        automatic: AutomaticAccountSelection,
+        weekly: WeeklyUsageWindowAutoStart,
     ) {
-        self.config.automatic_account_selection = selection;
-        self.add_error_message(persistence_overridden_message(selection));
+        self.config.automatic_account_selection = automatic;
+        self.config.weekly_usage_window_auto_start = weekly;
+        self.add_error_message(persistence_overridden_message());
     }
 
-    pub(crate) fn automatic_account_selection_verification_failed(&mut self, err: String) {
+    pub(crate) fn codex_plus_plus_settings_verification_failed(&mut self, err: String) {
         self.add_error_message(persistence_verification_failed_message(err));
     }
 }
@@ -64,42 +72,81 @@ fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
 }
 
 fn codex_plus_plus_settings_params(
-    current: AutomaticAccountSelection,
+    current_automatic: AutomaticAccountSelection,
+    current_weekly: WeeklyUsageWindowAutoStart,
     list_keymap: &ListKeymap,
 ) -> SelectionViewParams {
-    let enabled = Arc::new(AtomicBool::new(matches!(
-        current,
+    let automatic = Arc::new(AtomicBool::new(matches!(
+        current_automatic,
         AutomaticAccountSelection::Enabled
     )));
-    let enabled_on_toggle = Arc::clone(&enabled);
-    let enabled_on_save = enabled;
-
+    let weekly = Arc::new(AtomicBool::new(matches!(
+        current_weekly,
+        WeeklyUsageWindowAutoStart::Enabled
+    )));
     SelectionViewParams {
         title: Some("Codex++ Settings".to_string()),
         subtitle: Some("Select the settings to enable.".to_string()),
         footer_hint: Some(settings_hint_line(list_keymap)),
-        items: vec![SelectionItem {
-            name: "Automatic account selection".to_string(),
-            description: Some("Choose and switch accounts when needed.".to_string()),
-            toggle: Some(SelectionToggle {
-                is_on: enabled_on_toggle.load(Ordering::Relaxed),
-                action: Box::new(move |is_on, _tx| {
-                    enabled_on_toggle.store(is_on, Ordering::Relaxed);
-                }),
-            }),
-            actions: vec![Box::new(move |tx| {
-                tx.send(AppEvent::PersistAutomaticAccountSelection {
-                    selection: if enabled_on_save.load(Ordering::Relaxed) {
-                        AutomaticAccountSelection::Enabled
-                    } else {
-                        AutomaticAccountSelection::Disabled
-                    },
-                });
-            })],
-            dismiss_on_select: true,
-            ..Default::default()
-        }],
+        items: vec![
+            settings_item(
+                "Automatic account selection",
+                "Choose and switch accounts when needed.",
+                Arc::clone(&automatic),
+                Arc::clone(&automatic),
+                Arc::clone(&weekly),
+            ),
+            settings_item(
+                "Start unused weekly windows",
+                "Keep imported accounts ready to use.",
+                Arc::clone(&weekly),
+                automatic,
+                weekly,
+            ),
+        ],
         ..Default::default()
+    }
+}
+
+fn settings_item(
+    name: &str,
+    description: &str,
+    toggle: Arc<AtomicBool>,
+    automatic: Arc<AtomicBool>,
+    weekly: Arc<AtomicBool>,
+) -> SelectionItem {
+    let toggle_action = Arc::clone(&toggle);
+    SelectionItem {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        toggle: Some(SelectionToggle {
+            is_on: toggle.load(Ordering::Relaxed),
+            action: Box::new(move |is_on, _tx| toggle_action.store(is_on, Ordering::Relaxed)),
+        }),
+        actions: vec![Box::new(move |tx| {
+            tx.send(AppEvent::PersistCodexPlusPlusSettings {
+                automatic_account_selection: automatic_setting(automatic.load(Ordering::Relaxed)),
+                weekly_usage_window_auto_start: weekly_setting(weekly.load(Ordering::Relaxed)),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn automatic_setting(enabled: bool) -> AutomaticAccountSelection {
+    if enabled {
+        AutomaticAccountSelection::Enabled
+    } else {
+        AutomaticAccountSelection::Disabled
+    }
+}
+
+fn weekly_setting(enabled: bool) -> WeeklyUsageWindowAutoStart {
+    if enabled {
+        WeeklyUsageWindowAutoStart::Enabled
+    } else {
+        WeeklyUsageWindowAutoStart::Disabled
     }
 }
 
@@ -118,35 +165,20 @@ fn settings_hint_line(list_keymap: &ListKeymap) -> Line<'static> {
     spans.into()
 }
 
-fn selection_label(selection: AutomaticAccountSelection) -> &'static str {
-    match selection {
-        AutomaticAccountSelection::Enabled => "enabled",
-        AutomaticAccountSelection::Disabled => "disabled",
-    }
-}
-
-fn persistence_success_message(selection: AutomaticAccountSelection) -> String {
-    format!(
-        "Automatic account selection {}. Restart Codex to use this setting.",
-        selection_label(selection)
-    )
+fn persistence_success_message() -> String {
+    "Codex++ settings updated. Automatic account selection applies after restart.".to_string()
 }
 
 fn persistence_error_message(err: String) -> String {
-    format!("Failed to update automatic account selection: {err}")
+    format!("Failed to update Codex++ settings: {err}")
 }
 
-fn persistence_overridden_message(selection: AutomaticAccountSelection) -> String {
-    format!(
-        "Automatic account selection remains {} because this setting is controlled elsewhere.",
-        selection_label(selection)
-    )
+fn persistence_overridden_message() -> String {
+    "Some Codex++ settings are controlled elsewhere and were not changed.".to_string()
 }
 
 fn persistence_verification_failed_message(err: String) -> String {
-    format!(
-        "Automatic account selection was saved, but Codex could not verify it for this project: {err}"
-    )
+    format!("Codex++ settings were saved, but Codex could not verify them for this project: {err}")
 }
 
 #[cfg(test)]

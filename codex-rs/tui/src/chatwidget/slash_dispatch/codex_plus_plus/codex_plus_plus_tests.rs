@@ -12,7 +12,8 @@ use crate::keymap::RuntimeKeymap;
 use crate::test_backend::VT100Backend;
 
 fn settings_view(
-    current: AutomaticAccountSelection,
+    automatic: AutomaticAccountSelection,
+    weekly: WeeklyUsageWindowAutoStart,
 ) -> (
     ListSelectionView,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
@@ -21,7 +22,7 @@ fn settings_view(
     let keymap = settings_list_keymap(RuntimeKeymap::defaults().list);
     (
         ListSelectionView::new(
-            codex_plus_plus_settings_params(current, &keymap),
+            codex_plus_plus_settings_params(automatic, weekly, &keymap),
             AppEventSender::new(tx),
             keymap,
         ),
@@ -29,8 +30,11 @@ fn settings_view(
     )
 }
 
-fn render_settings(current: AutomaticAccountSelection) -> String {
-    let (view, _rx) = settings_view(current);
+fn render_settings(
+    automatic: AutomaticAccountSelection,
+    weekly: WeeklyUsageWindowAutoStart,
+) -> String {
+    let (view, _rx) = settings_view(automatic, weekly);
     let mut terminal =
         Terminal::new(VT100Backend::new(/*width*/ 84, /*height*/ 10)).expect("terminal");
     terminal
@@ -43,7 +47,10 @@ fn render_settings(current: AutomaticAccountSelection) -> String {
 fn settings_enabled_snapshot() {
     insta::assert_snapshot!(
         "codex_plus_plus_settings_enabled",
-        render_settings(AutomaticAccountSelection::Enabled)
+        render_settings(
+            AutomaticAccountSelection::Enabled,
+            WeeklyUsageWindowAutoStart::Enabled,
+        )
     );
 }
 
@@ -51,28 +58,58 @@ fn settings_enabled_snapshot() {
 fn settings_disabled_snapshot() {
     insta::assert_snapshot!(
         "codex_plus_plus_settings_disabled",
-        render_settings(AutomaticAccountSelection::Disabled)
+        render_settings(
+            AutomaticAccountSelection::Disabled,
+            WeeklyUsageWindowAutoStart::Disabled,
+        )
     );
 }
 
 #[test]
 fn enter_saves_full_selection() {
-    let (mut view, mut rx) = settings_view(AutomaticAccountSelection::Enabled);
+    let (mut view, mut rx) = settings_view(
+        AutomaticAccountSelection::Enabled,
+        WeeklyUsageWindowAutoStart::Enabled,
+    );
 
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::PersistAutomaticAccountSelection {
-            selection: AutomaticAccountSelection::Disabled,
+        Ok(AppEvent::PersistCodexPlusPlusSettings {
+            automatic_account_selection: AutomaticAccountSelection::Disabled,
+            weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart::Enabled,
+        })
+    );
+}
+
+#[test]
+fn weekly_setting_saves_full_selection() {
+    let (mut view, mut rx) = settings_view(
+        AutomaticAccountSelection::Enabled,
+        WeeklyUsageWindowAutoStart::Enabled,
+    );
+
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
+    view.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PersistCodexPlusPlusSettings {
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
+            weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart::Disabled,
         })
     );
 }
 
 #[test]
 fn escape_cancels_without_writing() {
-    let (mut view, mut rx) = settings_view(AutomaticAccountSelection::Enabled);
+    let (mut view, mut rx) = settings_view(
+        AutomaticAccountSelection::Enabled,
+        WeeklyUsageWindowAutoStart::Enabled,
+    );
 
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Esc));
@@ -101,9 +138,9 @@ fn persistence_messages_snapshot() {
     insta::assert_snapshot!(
         "codex_plus_plus_persistence_messages",
         [
-            persistence_success_message(AutomaticAccountSelection::Disabled),
+            persistence_success_message(),
             persistence_error_message("permission denied".to_string()),
-            persistence_overridden_message(AutomaticAccountSelection::Enabled),
+            persistence_overridden_message(),
             persistence_verification_failed_message("connection closed".to_string()),
         ]
         .join("\n")

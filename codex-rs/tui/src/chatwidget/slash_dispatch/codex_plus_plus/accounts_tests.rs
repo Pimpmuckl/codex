@@ -32,6 +32,7 @@ fn account_row(
         login_required,
         is_current,
         in_use,
+        weekly_window_status: None,
     }
 }
 
@@ -56,7 +57,7 @@ fn accounts_view(
 
 #[test]
 fn mixed_account_automation_snapshot() {
-    let rows = vec![
+    let mut rows = vec![
         account_row("acct_1", "one@example.com", true, true, false, true, true),
         account_row("acct_2", "two@example.com", true, false, true, false, false),
         account_row("acct_3", "three@example.com", true, true, true, false, true),
@@ -70,6 +71,10 @@ fn mixed_account_automation_snapshot() {
             false,
         ),
     ];
+    rows[0].weekly_window_status = Some(WeeklyWindowStatus {
+        last_error: Some(WeeklyWindowError::Ambiguous),
+        ..WeeklyWindowStatus::default()
+    });
     let (view, _rx) = accounts_view(rows, PathBuf::new());
     let mut terminal =
         Terminal::new(VT100Backend::new(/*width*/ 92, /*height*/ 12)).expect("terminal");
@@ -151,18 +156,34 @@ fn unchanged_accounts_are_not_written() {
 
 #[test]
 fn account_status_is_concise() {
-    assert_eq!(account_status(true, false, false), None);
+    assert_eq!(account_status(true, false, false, None), None);
     assert_eq!(
-        account_status(true, true, false).as_deref(),
+        account_status(true, true, false, None).as_deref(),
         Some("Login required")
     );
-    assert_eq!(account_status(true, false, true).as_deref(), Some("In use"));
     assert_eq!(
-        account_status(true, true, true).as_deref(),
+        account_status(true, false, true, None).as_deref(),
+        Some("In use")
+    );
+    assert_eq!(
+        account_status(true, true, true, None).as_deref(),
         Some("Login required · In use")
     );
     assert_eq!(
-        account_status(false, true, true).as_deref(),
+        account_status(false, true, true, None).as_deref(),
         Some("Account disabled · Login required · In use")
+    );
+    assert_eq!(
+        account_status(
+            true,
+            false,
+            false,
+            Some(WeeklyWindowStatus {
+                last_error: Some(WeeklyWindowError::LoginRequired),
+                ..WeeklyWindowStatus::default()
+            }),
+        )
+        .as_deref(),
+        Some("Sign-in required")
     );
 }

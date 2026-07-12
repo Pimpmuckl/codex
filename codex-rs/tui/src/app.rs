@@ -550,6 +550,7 @@ pub(crate) struct App {
     feedback_audience: FeedbackAudience,
     environment_manager: Arc<EnvironmentManager>,
     app_server_target: AppServerTarget,
+    pub(crate) weekly_window_scheduler: Option<crate::codex_plus_plus::WeeklyWindowScheduler>,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
 
@@ -1014,6 +1015,12 @@ See the Codex keymap documentation for supported actions and examples."
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
+        let weekly_window_scheduler = (app_server.uses_embedded_app_server()
+            && config.weekly_usage_window_auto_start
+                == codex_config::WeeklyUsageWindowAutoStart::Enabled)
+            .then(|| {
+                crate::codex_plus_plus::WeeklyWindowScheduler::spawn(config.clone(), model.clone())
+            });
         let mut app = Self {
             model_catalog,
             session_telemetry: session_telemetry.clone(),
@@ -1047,6 +1054,7 @@ See the Codex keymap documentation for supported actions and examples."
             feedback_audience,
             environment_manager,
             app_server_target,
+            weekly_window_scheduler,
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),

@@ -43,6 +43,7 @@ use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
+use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AutomaticAccountSelection;
 use codex_features::Feature;
@@ -845,9 +846,10 @@ pub(crate) enum AppEvent {
         updates: Vec<(Feature, bool)>,
     },
 
-    /// Persist the automatic account-selection policy for future Codex launches.
-    PersistAutomaticAccountSelection {
-        selection: AutomaticAccountSelection,
+    /// Persist the Codex++ global settings selected in `/codexplusplus`.
+    PersistCodexPlusPlusSettings {
+        automatic_account_selection: AutomaticAccountSelection,
+        weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
     },
 
     /// Update memory settings and persist them to config.toml.

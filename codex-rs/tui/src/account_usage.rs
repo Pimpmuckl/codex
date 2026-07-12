@@ -29,6 +29,7 @@ pub(crate) struct AccountUsage {
     pub(crate) five_hour_remaining_percent: Option<u8>,
     pub(crate) five_hour_exhausted: bool,
     pub(crate) weekly_reset_at: Option<i64>,
+    pub(crate) weekly_unused: Option<bool>,
     pub(crate) weekly_remaining_percent: Option<u8>,
     pub(crate) weekly_exhausted: bool,
 }
@@ -70,6 +71,29 @@ pub(crate) async fn load(
     accounts: &[(AccountId, PathBuf)],
     store: &AccountStore,
 ) -> AccountUsageLoad {
+    load_with_recovery(config, accounts, store, UnauthorizedRecovery::Refresh).await
+}
+
+pub(crate) async fn load_without_refresh(
+    config: &Config,
+    accounts: &[(AccountId, PathBuf)],
+    store: &AccountStore,
+) -> AccountUsageLoad {
+    load_with_recovery(config, accounts, store, UnauthorizedRecovery::ReloadOnly).await
+}
+
+#[derive(Clone, Copy)]
+enum UnauthorizedRecovery {
+    Refresh,
+    ReloadOnly,
+}
+
+async fn load_with_recovery(
+    config: &Config,
+    accounts: &[(AccountId, PathBuf)],
+    store: &AccountStore,
+    recovery: UnauthorizedRecovery,
+) -> AccountUsageLoad {
     let mut tasks = JoinSet::new();
     for (account_id, account_home) in accounts {
         let account_id = account_id.clone();
@@ -79,7 +103,7 @@ pub(crate) async fn load(
         tasks.spawn(async move {
             let result = tokio::time::timeout(
                 FETCH_TIMEOUT,
-                fetch(account_home, chatgpt_base_url, auth_route_config),
+                fetch(account_home, chatgpt_base_url, auth_route_config, recovery),
             )
             .await
             .map_err(|_| AccountUsageFetchError::new(anyhow!("rate-limit request timed out")))
@@ -123,6 +147,7 @@ async fn fetch(
     account_home: PathBuf,
     chatgpt_base_url: String,
     auth_route_config: Option<codex_login::AuthRouteConfig>,
+    recovery: UnauthorizedRecovery,
 ) -> std::result::Result<AccountUsage, AccountUsageFetchError> {
     let auth = CodexAuth::from_auth_storage(
         &account_home,
@@ -138,7 +163,7 @@ async fn fetch(
     .map_err(AccountUsageFetchError::new)?;
 
     match fetch_with_auth(&auth, &chatgpt_base_url).await {
-        Err(err) if is_unauthorized(&err) => {
+        Err(err) if is_unauthorized(&err) && matches!(recovery, UnauthorizedRecovery::Refresh) => {
             let auth = match refresh_auth_from_storage(
                 &account_home,
                 AuthCredentialsStoreMode::File,
@@ -231,6 +256,10 @@ fn account_usage_from_snapshot(snapshot: &RateLimitSnapshot) -> AccountUsage {
             .secondary
             .as_ref()
             .and_then(|window| window.resets_at),
+        weekly_unused: snapshot
+            .secondary
+            .as_ref()
+            .map(|window| window.used_percent == 0.0),
         weekly_remaining_percent: snapshot
             .secondary
             .as_ref()

@@ -1,13 +1,13 @@
 ---
 source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/codex_plus_plus_tests.rs
-expression: "render_settings(AutomaticAccountSelection::Disabled)"
+expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWindowAutoStart::Disabled,)"
 ---
 
   Codex++ Settings
   Select the settings to enable.
 
 › 1. [ ] Automatic account selection  Choose and switch accounts when needed.
-
+  2. [ ] Start unused weekly windows  Keep imported accounts ready to use.
 
 
 
