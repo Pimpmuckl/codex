@@ -85,6 +85,13 @@ In the codex-rs folder where the rust code lives:
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
+Coordinate heavyweight Rust validation before running it. Crate-wide or workspace-wide tests,
+Clippy, Bazel, and Review Suite may compile or execute thousands of targets even when the command
+looks scoped. Run only one heavyweight Rust job at a time, use bounded concurrency where the tool
+supports it, and require explicit user approval before starting a validation run that could
+materially load the workstation. Prefer the narrowest relevant tests and record broader validation
+as skipped for resource safety when focused evidence is sufficient.
+
 Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
 1. Do not run `cargo test` directly. Use `just test` so test execution follows the repo defaults.
