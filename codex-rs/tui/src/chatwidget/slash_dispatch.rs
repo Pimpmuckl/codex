@@ -1046,7 +1046,10 @@ impl ChatWidget {
     }
 
     fn queued_command_drain_result(&self, cmd: SlashCommand) -> QueueDrain {
-        if self.is_user_turn_pending_or_running() || !self.bottom_pane.no_modal_or_popup_active() {
+        if self.is_user_turn_pending_or_running()
+            || self.input_queue.suppress_queue_autosend
+            || !self.bottom_pane.no_modal_or_popup_active()
+        {
             return QueueDrain::Stop;
         }
         match cmd {

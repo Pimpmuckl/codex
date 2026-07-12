@@ -32,6 +32,7 @@ struct AccountAutomationChoice {
 
 impl ChatWidget {
     pub(in crate::chatwidget::slash_dispatch) fn open_accounts_popup(&mut self) {
+        self.set_queue_autosend_suppressed(/*suppressed*/ true);
         self.app_event_tx.send(AppEvent::OpenCodexPlusPlusAccounts);
     }
 

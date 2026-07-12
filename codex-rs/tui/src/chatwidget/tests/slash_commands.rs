@@ -337,6 +337,18 @@ async fn queued_bang_shell_waits_for_user_shell_completion_before_next_input() {
     assert!(chat.input_queue.queued_user_messages.is_empty());
 }
 
+#[tokio::test]
+async fn queued_accounts_waits_for_deferred_popup() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut chat, "turn-1");
+    queue_composer_text_with_tab(&mut chat, "/accounts");
+    queue_composer_text_with_tab(&mut chat, "hello after menu");
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
 async fn assert_cancelled_queued_menu_drains_next_input(
     command: &str,
     expected_popup_text: &str,
