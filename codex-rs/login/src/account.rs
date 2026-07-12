@@ -14,6 +14,9 @@ use std::path::PathBuf;
 use crate::AuthDotJson;
 use crate::AuthKeyringBackendKind;
 use crate::account_lease::AccountLease;
+use crate::account_lease::AuthRefreshGuard;
+use crate::auth::load_auth_dot_json_with_guard;
+use crate::auth::save_auth_with_guard;
 use crate::load_auth_dot_json;
 use crate::save_auth;
 
@@ -104,17 +107,19 @@ impl AccountStore {
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> std::io::Result<AccountProfile> {
-        let _root_refresh_guard = AccountLease::acquire_auth_refresh(&self.codex_home)?;
-        let root_auth =
-            load_auth_dot_json(&self.codex_home, root_store_mode, root_keyring_backend_kind)?
-                .ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotFound, "not logged in")
-                })?;
+        let root_refresh_guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        let root_auth = load_auth_dot_json_with_guard(
+            &self.codex_home,
+            root_store_mode,
+            root_keyring_backend_kind,
+            &root_refresh_guard,
+        )?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not logged in"))?;
         let mut auth = root_auth.clone();
         let imported_from_root_marker = is_root_account_marker(&auth);
         let source_account_id = account_id_for_auth(&auth)?;
         let account_home = self.account_home(&source_account_id);
-        let _account_refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
+        let _account_refresh_guard = AuthRefreshGuard::acquire(&account_home)?;
         if imported_from_root_marker {
             auth = load_auth_dot_json(
                 &account_home,
@@ -209,6 +214,7 @@ impl AccountStore {
             &auth,
             root_store_mode,
             root_keyring_backend_kind,
+            &root_refresh_guard,
         ) {
             let mut rollback_errors = Vec::new();
             if let Err(rollback_err) = self.save_index(&previous_index) {
@@ -219,11 +225,12 @@ impl AccountStore {
             {
                 rollback_errors.push(format!("restore account auth: {rollback_err}"));
             }
-            if let Err(rollback_err) = save_auth(
+            if let Err(rollback_err) = save_auth_with_guard(
                 &self.codex_home,
                 &root_auth,
                 root_store_mode,
                 root_keyring_backend_kind,
+                &root_refresh_guard,
             ) {
                 rollback_errors.push(format!("restore root auth: {rollback_err}"));
             }
@@ -299,7 +306,7 @@ impl AccountStore {
         expected_auth: &AuthDotJson,
     ) -> std::io::Result<bool> {
         let account_home = self.account_home(account_id);
-        let _refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
+        let _refresh_guard = AuthRefreshGuard::acquire(&account_home)?;
         let current_auth = load_auth_dot_json(
             &account_home,
             AuthCredentialsStoreMode::File,
@@ -337,8 +344,8 @@ impl AccountStore {
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> std::io::Result<AccountProfile> {
         let account_home = self.account_home(account_id);
-        let _root_refresh_guard = AccountLease::acquire_auth_refresh(&self.codex_home)?;
-        let _account_refresh_guard = AccountLease::acquire_auth_refresh(&account_home)?;
+        let root_refresh_guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        let _account_refresh_guard = AuthRefreshGuard::acquire(&account_home)?;
         let _index_guard = self.acquire_index_lock()?;
         let (profile, account_home) = self
             .file_account_profiles()?
@@ -367,6 +374,7 @@ impl AccountStore {
             &auth,
             root_store_mode,
             root_keyring_backend_kind,
+            &root_refresh_guard,
         )?;
         Ok(profile)
     }
@@ -641,12 +649,13 @@ fn save_root_account_marker(
     auth: &AuthDotJson,
     store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
+    guard: &AuthRefreshGuard,
 ) -> std::io::Result<()> {
     let mut marker = auth.clone();
     if let Some(tokens) = marker.tokens.as_mut() {
         tokens.refresh_token.clear();
     }
-    save_auth(codex_home, &marker, store_mode, keyring_backend_kind)
+    save_auth_with_guard(codex_home, &marker, store_mode, keyring_backend_kind, guard)
 }
 
 fn restore_file_auth(auth_home: &Path, auth: Option<&AuthDotJson>) -> std::io::Result<()> {
