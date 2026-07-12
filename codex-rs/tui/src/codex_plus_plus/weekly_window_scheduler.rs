@@ -114,10 +114,6 @@ async fn scan(
     control: watch::Receiver<bool>,
     status_sink: Arc<Mutex<HashMap<AccountId, WeeklyWindowStatus>>>,
 ) {
-    status_sink
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
     let http_client_factory = config.http_client_factory();
     if let Err(outcome) = preflight_weekly_window_ping(
         &config.model_provider_id,
