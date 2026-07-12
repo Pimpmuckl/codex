@@ -104,7 +104,7 @@ async fn ping_weekly_window_inner(
     .map(Arc::new) else {
         return WeeklyWindowPingOutcome::LoginRequired;
     };
-    let Some(auth) = auth_manager.auth().await else {
+    let Some(auth) = auth_manager.auth_cached() else {
         return WeeklyWindowPingOutcome::LoginRequired;
     };
     if auth_manager.refresh_failure_for_auth(&auth).is_some() {
@@ -121,22 +121,27 @@ async fn ping_weekly_window_inner(
         if !unauthorized_recovery.has_next() {
             return WeeklyWindowPingOutcome::DefiniteRejection;
         }
-        // A refresh may rotate remotely, so it must outlive timeout; ambiguous forbids replay.
+        // A refresh may rotate remotely, so it gets bounded grace; ambiguous forbids replay.
         let recovery_task = tokio::spawn(async move {
-            let result = unauthorized_recovery.next().await;
+            let result = tokio::time::timeout(PING_TIMEOUT, unauthorized_recovery.next()).await;
             (unauthorized_recovery, result)
         });
         let Ok((next_recovery, result)) = recovery_task.await else {
             return WeeklyWindowPingOutcome::Ambiguous;
         };
         unauthorized_recovery = next_recovery;
+        let Ok(result) = result else {
+            return WeeklyWindowPingOutcome::Ambiguous;
+        };
         match result {
             Ok(_) => {}
             Err(RefreshTokenError::Transient(_)) => {
                 return WeeklyWindowPingOutcome::DefiniteRejection;
             }
             Err(RefreshTokenError::Permanent(_)) => {
-                mark_login_required_if_identity_matches(&request, &auth_manager, &auth).await;
+                let failed_auth = auth_manager.auth_cached().unwrap_or_else(|| auth.clone());
+                mark_login_required_if_identity_matches(&request, &auth_manager, &failed_auth)
+                    .await;
                 return WeeklyWindowPingOutcome::LoginRequired;
             }
         }
@@ -251,21 +256,15 @@ async fn mark_login_required_if_identity_matches(
     auth_manager: &AuthManager,
     expected_auth: &CodexAuth,
 ) {
-    let Some(current_auth) = auth_manager.auth_cached() else {
-        return;
-    };
-    if expected_auth.get_account_id() != current_auth.get_account_id()
-        || expected_auth.get_chatgpt_user_id() != current_auth.get_chatgpt_user_id()
-        || expected_auth.is_workspace_account() != current_auth.is_workspace_account()
-    {
+    if auth_manager.auth_cached().as_ref() != Some(expected_auth) {
         return;
     }
     let account_home = request.account_codex_home.clone();
     let root_codex_home = request.root_codex_home.clone();
     let account_id = request.account_id.clone();
-    let expected_account_id = expected_auth.get_account_id();
-    let expected_user_id = expected_auth.get_chatgpt_user_id();
-    let expected_workspace = expected_auth.is_workspace_account();
+    let Ok(expected_tokens) = expected_auth.get_token_data() else {
+        return;
+    };
     let error = tokio::task::spawn_blocking(move || {
         let Ok(Some(current_auth_json)) = load_auth_dot_json(
             &account_home,
@@ -275,10 +274,7 @@ async fn mark_login_required_if_identity_matches(
             return None;
         };
         let tokens = current_auth_json.tokens.as_ref()?;
-        if tokens.account_id != expected_account_id
-            || tokens.id_token.chatgpt_user_id != expected_user_id
-            || tokens.id_token.is_workspace_account() != expected_workspace
-        {
+        if tokens != &expected_tokens {
             return None;
         }
         AccountStore::new(root_codex_home)
