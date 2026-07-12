@@ -714,9 +714,6 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
-    /// Keep the Codex++ weekly-window worker aligned with the widget's effective model.
-    SyncWeeklyWindowSchedulerModel(String),
-
     /// Update the current personality in the running app and widget.
     UpdatePersonality(Personality),
 

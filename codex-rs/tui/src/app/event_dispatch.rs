@@ -1008,11 +1008,6 @@ impl App {
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
             }
-            AppEvent::SyncWeeklyWindowSchedulerModel(model) => {
-                if let Some(scheduler) = &self.weekly_window_scheduler {
-                    scheduler.set_model(&model);
-                }
-            }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
                 self.sync_active_thread_personality_setting(app_server, personality)

@@ -2,8 +2,6 @@
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::Arc;
-use std::sync::RwLock;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -27,7 +25,6 @@ use crate::legacy_core::config::Config;
 const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct WeeklyWindowScheduler {
-    model: Arc<RwLock<String>>,
     task: JoinHandle<()>,
 }
 
@@ -37,23 +34,9 @@ impl WeeklyWindowScheduler {
             config.weekly_usage_window_auto_start,
             WeeklyUsageWindowAutoStart::Enabled
         );
-        let model = Arc::new(RwLock::new(model));
-        let task_model = Arc::clone(&model);
-        let task = tokio::spawn(run_schedule(move || {
-            let model = task_model
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            scan(config.clone(), model)
-        }));
-        Self { model, task }
-    }
-
-    pub(crate) fn set_model(&self, model: &str) {
-        *self
-            .model
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = model.to_string();
+        // Keep the validated model/provider pair isolated from foreground thread changes.
+        let task = tokio::spawn(run_schedule(move || scan(config.clone(), model.clone())));
+        Self { task }
     }
 }
 
