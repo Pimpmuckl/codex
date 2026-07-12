@@ -1816,8 +1816,17 @@ impl App {
                 self.update_feature_flags(app_server, updates).await;
             }
             AppEvent::PersistAutomaticAccountSelection { selection } => {
-                crate::codex_plus_plus::persist_automatic_account_selection(
-                    self, app_server, selection,
+                crate::codex_plus_plus::persist_settings(self, app_server, selection, None).await;
+            }
+            AppEvent::PersistCodexPlusPlusSettings {
+                automatic_account_selection,
+                weekly_usage_window_auto_start,
+            } => {
+                crate::codex_plus_plus::persist_settings(
+                    self,
+                    app_server,
+                    automatic_account_selection,
+                    Some(weekly_usage_window_auto_start),
                 )
                 .await;
             }

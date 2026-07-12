@@ -39,6 +39,7 @@ impl RefreshAuthFromStorageError {
 pub async fn refresh_auth_from_storage(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
+    forced_chatgpt_workspace_id: Option<&[String]>,
     chatgpt_base_url: Option<&str>,
     keyring_backend_kind: AuthKeyringBackendKind,
     auth_route_config: Option<&AuthRouteConfig>,
@@ -47,7 +48,7 @@ pub async fn refresh_auth_from_storage(
         codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
         auth_credentials_store_mode,
-        /*forced_chatgpt_workspace_id*/ None,
+        forced_chatgpt_workspace_id.map(<[String]>::to_vec),
         chatgpt_base_url.map(str::to_string),
         keyring_backend_kind,
         auth_route_config.cloned(),
