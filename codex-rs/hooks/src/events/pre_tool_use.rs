@@ -212,6 +212,7 @@ fn command_input_json(request: &PreToolUseRequest) -> Result<String, serde_json:
         hook_event_name: "PreToolUse".to_string(),
         model: request.model.clone(),
         permission_mode: request.permission_mode.clone(),
+        permission_decision_ask_supported: true,
         tool_name: request.tool_name.clone(),
         tool_input: request.tool_input.clone(),
         tool_use_id: request.tool_use_id.clone(),
@@ -390,7 +391,7 @@ mod tests {
     use crate::events::common;
 
     #[test]
-    fn command_input_uses_request_tool_name() {
+    fn command_input_uses_request_tool_name_and_advertises_ask_support() {
         let mut request = request_for_tool_use("call-apply-patch");
         request.tool_name = "apply_patch".to_string();
 
@@ -399,6 +400,7 @@ mod tests {
             serde_json::from_str(&input_json).expect("parse command input");
 
         assert_eq!(input["tool_name"], "apply_patch");
+        assert_eq!(input["permission_decision_ask_supported"], true);
     }
 
     #[test]

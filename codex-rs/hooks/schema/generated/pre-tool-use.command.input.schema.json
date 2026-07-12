@@ -26,6 +26,10 @@
     "model": {
       "type": "string"
     },
+    "permission_decision_ask_supported": {
+      "description": "Codex++ extension: advertise support for `permissionDecision: \"ask\"`.",
+      "type": "boolean"
+    },
     "permission_mode": {
       "enum": [
         "default",
@@ -58,6 +62,7 @@
     "cwd",
     "hook_event_name",
     "model",
+    "permission_decision_ask_supported",
     "permission_mode",
     "session_id",
     "tool_input",
