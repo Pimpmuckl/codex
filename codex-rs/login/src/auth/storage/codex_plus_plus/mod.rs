@@ -1,0 +1,7 @@
+mod auto_auth;
+mod file_authority;
+
+pub(super) use auto_auth::delete as delete_auto_auth;
+pub(super) use auto_auth::load as load_auto_auth;
+pub(super) use auto_auth::save as save_auto_auth;
+pub(super) use file_authority::FileAuthorityMarker;

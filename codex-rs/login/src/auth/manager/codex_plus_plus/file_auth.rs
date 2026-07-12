@@ -13,6 +13,8 @@ use super::super::CodexAuth;
 use super::super::agent_identity_authapi_base_url;
 use super::super::chatgpt_auth_workspace_allowed;
 use super::super::load_auth_from_storage;
+use super::super::load_auth_from_storage_with_guard;
+use crate::account_lease::AuthRefreshGuard;
 use crate::outbound_proxy::AuthRouteConfig;
 
 pub(in crate::auth::manager) async fn new_manager(
@@ -50,9 +52,12 @@ pub(in crate::auth::manager) async fn new_manager(
     Ok(Some(manager))
 }
 
-pub(in crate::auth::manager) async fn load(manager: &AuthManager) -> Option<CodexAuth> {
+pub(in crate::auth::manager) async fn load(
+    manager: &AuthManager,
+    guard: Option<&AuthRefreshGuard>,
+) -> Option<CodexAuth> {
     let forced_chatgpt_workspace_id = manager.forced_chatgpt_workspace_id();
-    load_auth_from_storage(
+    load_auth_from_storage_with_guard(
         &manager.active_auth_home(),
         manager.active_auth_credentials_store_mode(),
         forced_chatgpt_workspace_id.as_deref(),
@@ -60,6 +65,7 @@ pub(in crate::auth::manager) async fn load(manager: &AuthManager) -> Option<Code
         manager.active_keyring_backend_kind(),
         manager.agent_identity_authapi_base_url.as_deref(),
         manager.auth_route_config.as_ref(),
+        guard,
     )
     .await
     .ok()
