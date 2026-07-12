@@ -20,9 +20,10 @@ fn settings_view(
 ) {
     let (tx, rx) = unbounded_channel();
     let keymap = settings_list_keymap(RuntimeKeymap::defaults().list);
+    let weekly_supported = automatic == AutomaticAccountSelection::Enabled;
     (
         ListSelectionView::new(
-            codex_plus_plus_settings_params(automatic, weekly, &keymap),
+            codex_plus_plus_settings_params(automatic, weekly, weekly_supported, &keymap),
             AppEventSender::new(tx),
             keymap,
         ),
@@ -55,9 +56,9 @@ fn settings_enabled_snapshot() {
 }
 
 #[test]
-fn settings_disabled_snapshot() {
+fn settings_unsupported_snapshot() {
     insta::assert_snapshot!(
-        "codex_plus_plus_settings_disabled",
+        "codex_plus_plus_settings_unsupported",
         render_settings(
             AutomaticAccountSelection::Disabled,
             WeeklyUsageWindowAutoStart::Disabled,

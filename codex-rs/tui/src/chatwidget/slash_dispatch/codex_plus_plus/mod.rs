@@ -6,6 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use AutomaticAccountSelection::Disabled as AutomaticOff;
+use AutomaticAccountSelection::Enabled as AutomaticOn;
+use WeeklyUsageWindowAutoStart::Disabled as WeeklyOff;
+use WeeklyUsageWindowAutoStart::Enabled as WeeklyOn;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
 use crossterm::event::KeyCode;
@@ -25,6 +29,7 @@ impl ChatWidget {
         let params = codex_plus_plus_settings_params(
             self.config.automatic_account_selection,
             self.config.weekly_usage_window_auto_start,
+            self.weekly_start_supported,
             &list_keymap,
         );
         let view = ListSelectionView::new(params, self.app_event_tx.clone(), list_keymap);
@@ -74,36 +79,32 @@ fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
 fn codex_plus_plus_settings_params(
     current_automatic: AutomaticAccountSelection,
     current_weekly: WeeklyUsageWindowAutoStart,
+    weekly_supported: bool,
     list_keymap: &ListKeymap,
 ) -> SelectionViewParams {
-    let automatic = Arc::new(AtomicBool::new(matches!(
-        current_automatic,
-        AutomaticAccountSelection::Enabled
-    )));
-    let weekly = Arc::new(AtomicBool::new(matches!(
-        current_weekly,
-        WeeklyUsageWindowAutoStart::Enabled
-    )));
+    let automatic = Arc::new(AtomicBool::new(current_automatic == AutomaticOn));
+    let weekly = Arc::new(AtomicBool::new(current_weekly == WeeklyOn));
+    let mut items = vec![settings_item(
+        "Automatic account selection",
+        "Choose and switch accounts when needed.",
+        Arc::clone(&automatic),
+        Arc::clone(&automatic),
+        Arc::clone(&weekly),
+    )];
+    if weekly_supported {
+        items.push(settings_item(
+            "Start unused weekly windows",
+            "Keep imported accounts ready to use.",
+            Arc::clone(&weekly),
+            automatic,
+            weekly,
+        ));
+    }
     SelectionViewParams {
         title: Some("Codex++ Settings".to_string()),
         subtitle: Some("Select the settings to enable.".to_string()),
         footer_hint: Some(settings_hint_line(list_keymap)),
-        items: vec![
-            settings_item(
-                "Automatic account selection",
-                "Choose and switch accounts when needed.",
-                Arc::clone(&automatic),
-                Arc::clone(&automatic),
-                Arc::clone(&weekly),
-            ),
-            settings_item(
-                "Start unused weekly windows",
-                "Keep imported accounts ready to use.",
-                Arc::clone(&weekly),
-                automatic,
-                weekly,
-            ),
-        ],
+        items,
         ..Default::default()
     }
 }
@@ -125,28 +126,18 @@ fn settings_item(
         }),
         actions: vec![Box::new(move |tx| {
             tx.send(AppEvent::PersistCodexPlusPlusSettings {
-                automatic_account_selection: automatic_setting(automatic.load(Ordering::Relaxed)),
-                weekly_usage_window_auto_start: weekly_setting(weekly.load(Ordering::Relaxed)),
+                automatic_account_selection: automatic
+                    .load(Ordering::Relaxed)
+                    .then_some(AutomaticOn)
+                    .unwrap_or(AutomaticOff),
+                weekly_usage_window_auto_start: weekly
+                    .load(Ordering::Relaxed)
+                    .then_some(WeeklyOn)
+                    .unwrap_or(WeeklyOff),
             });
         })],
         dismiss_on_select: true,
         ..Default::default()
-    }
-}
-
-fn automatic_setting(enabled: bool) -> AutomaticAccountSelection {
-    if enabled {
-        AutomaticAccountSelection::Enabled
-    } else {
-        AutomaticAccountSelection::Disabled
-    }
-}
-
-fn weekly_setting(enabled: bool) -> WeeklyUsageWindowAutoStart {
-    if enabled {
-        WeeklyUsageWindowAutoStart::Enabled
-    } else {
-        WeeklyUsageWindowAutoStart::Disabled
     }
 }
 

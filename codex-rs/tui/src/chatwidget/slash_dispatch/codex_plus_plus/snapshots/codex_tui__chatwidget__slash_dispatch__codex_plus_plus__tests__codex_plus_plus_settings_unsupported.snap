@@ -7,7 +7,7 @@ expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWi
   Select the settings to enable.
 
 › 1. [ ] Automatic account selection  Choose and switch accounts when needed.
-  2. [ ] Start unused weekly windows  Keep imported accounts ready to use.
+
 
 
 
