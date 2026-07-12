@@ -1,7 +1,9 @@
 use super::*;
 use crate::auth::storage::FileAuthStorage;
+use crate::auth::storage::create_auth_storage_with_store;
 use crate::auth::storage::get_auth_file;
 use crate::token_data::IdTokenInfo;
+use anyhow::Context;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::auth::KnownPlan as InternalKnownPlan;
@@ -9,6 +11,7 @@ use codex_protocol::auth::PlanType as InternalPlanType;
 use codex_protocol::protocol::SessionSource;
 
 use base64::Engine;
+use codex_keyring_store::tests::MockKeyringStore;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use pretty_assertions::assert_eq;
@@ -32,7 +35,8 @@ const WORKSPACE_ID_SECOND_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174001"
 const WORKSPACE_ID_DISALLOWED: &str = "123e4567-e89b-42d3-a456-426614174002";
 
 #[tokio::test]
-async fn refresh_without_id_token() {
+#[serial(codex_auth_env)]
+async fn refresh_without_id_token() -> anyhow::Result<()> {
     let codex_home = tempdir().unwrap();
     let fake_jwt = write_auth_file(
         AuthFileParams {
@@ -43,24 +47,75 @@ async fn refresh_without_id_token() {
         codex_home.path(),
     )
     .expect("failed to write auth file");
-
-    let storage = create_auth_storage(
-        codex_home.path().to_path_buf(),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let _refresh_url = EnvVarGuard::set(
+        REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+        &format!("{}/oauth/token", server.uri()),
     );
-    let updated = super::persist_tokens(
-        &storage,
-        /*id_token*/ None,
-        Some("new-access-token".to_string()),
-        Some("new-refresh-token".to_string()),
-    )
-    .expect("update_tokens should succeed");
+    let file_storage = FileAuthStorage::new(codex_home.path().to_path_buf());
+    let mut initial_auth = file_storage.load()?.expect("auth file should exist");
+    initial_auth
+        .tokens
+        .as_mut()
+        .context("auth tokens should exist")?
+        .account_id = Some("account-123".to_string());
+    file_storage.save(&initial_auth)?;
+    const MARKER: &str = ".codex-plus-plus-auth-file-authority";
+    let marker = codex_home.path().join(MARKER);
+    std::fs::write(&marker, "")?;
+    let mock_keyring = MockKeyringStore::default();
+    let storage = create_auth_storage_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Auto,
+        Arc::new(mock_keyring),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let state = ChatgptAuthState {
+        auth_dot_json: Arc::new(Mutex::new(Some(initial_auth))),
+        client: create_default_auth_client(
+            &refresh_token_endpoint(),
+            /*auth_route_config*/ None,
+        )?,
+    };
+    let auth = CodexAuth::Chatgpt(ChatgptAuth {
+        state,
+        storage: Arc::clone(&storage),
+    });
+    let manager =
+        AuthManager::from_auth_for_testing_with_home(auth, codex_home.path().to_path_buf());
+    assert!(matches!(
+        manager
+            .reload_if_account_id_matches(Some("account-123"), /*guard*/ None)
+            .await,
+        ReloadOutcome::ReloadedNoChange
+    ));
+    let cached = manager.auth_cached().context("auth should remain cached")?;
+    let CodexAuth::Chatgpt(cached_chatgpt) = cached else {
+        anyhow::bail!("cached auth should remain ChatGPT auth");
+    };
+    assert!(Arc::ptr_eq(cached_chatgpt.storage(), &storage));
 
+    manager.refresh_token().await?;
+
+    let updated = file_storage.load()?.expect("authoritative auth file");
     let tokens = updated.tokens.expect("tokens should exist");
     assert_eq!(tokens.id_token.raw_jwt, fake_jwt);
     assert_eq!(tokens.access_token, "new-access-token");
     assert_eq!(tokens.refresh_token, "new-refresh-token");
+    assert!(marker.exists());
+    let cached = manager.auth_cached().context("auth should remain cached")?;
+    assert_eq!(cached.get_token_data()?, tokens);
+    server.verify().await;
+    Ok(())
 }
 
 #[test]
