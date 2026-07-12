@@ -1066,6 +1066,9 @@ async fn external_bearer_only_auth_manager_disables_auto_refresh_when_interval_i
 
     assert_eq!(first.as_deref(), Some("provider-token"));
     assert_eq!(second.as_deref(), Some("provider-token"));
+    manager.refresh_token().await.expect("external refresh");
+    let refreshed = manager.auth().await.expect("refreshed auth");
+    assert_eq!(refreshed.api_key(), Some("next-token"));
 }
 
 #[tokio::test]
