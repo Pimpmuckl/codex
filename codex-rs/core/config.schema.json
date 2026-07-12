@@ -4587,6 +4587,14 @@
       },
       "type": "object"
     },
+    "WeeklyUsageWindowAutoStart": {
+      "description": "Controls whether Codex++ starts unused weekly usage windows automatically.",
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "type": "string"
+    },
     "WindowsSandboxModeToml": {
       "enum": [
         "elevated",
@@ -5550,6 +5558,14 @@
         }
       ],
       "description": "Controls the web search tool mode: disabled, cached, indexed, or live."
+    },
+    "weekly_usage_window_auto_start": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WeeklyUsageWindowAutoStart"
+        }
+      ],
+      "description": "Whether Codex++ starts unused weekly usage windows automatically."
     },
     "windows": {
       "allOf": [
