@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use super::super::AuthDotJson;
 use super::super::AuthStorageBackend;
 use super::super::FileAuthStorage;
+use crate::account_lease::AuthRefreshGuard;
 
 #[derive(Clone, Debug)]
 pub(in super::super) struct FileAuthorityMarker {
@@ -35,11 +36,12 @@ impl FileAuthorityMarker {
     pub(in super::super) fn load_authoritative(
         &self,
         file_storage: &FileAuthStorage,
+        guard: &AuthRefreshGuard,
     ) -> io::Result<Option<AuthDotJson>> {
         if !self.is_active()? {
             return Ok(None);
         }
-        let auth = file_storage.load()?.ok_or_else(|| {
+        let auth = file_storage.load_with_guard(guard)?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "authoritative auth file is missing",
@@ -52,11 +54,12 @@ impl FileAuthorityMarker {
         &self,
         file_storage: &FileAuthStorage,
         auth: &AuthDotJson,
+        guard: &AuthRefreshGuard,
     ) -> io::Result<bool> {
         if !self.is_active()? {
             return Ok(false);
         }
-        file_storage.save(auth)?;
+        file_storage.save_with_guard(auth, guard)?;
         Ok(true)
     }
 
@@ -64,15 +67,20 @@ impl FileAuthorityMarker {
         &self,
         file_storage: &FileAuthStorage,
         auth: &AuthDotJson,
+        guard: &AuthRefreshGuard,
     ) -> io::Result<()> {
         self.activate()?;
-        file_storage.save(auth)
+        file_storage.save_with_guard(auth, guard)
     }
 
-    pub(in super::super) fn prepare_keyring_save(&self, auth: &AuthDotJson) -> io::Result<()> {
+    pub(in super::super) fn prepare_keyring_save(
+        &self,
+        auth: &AuthDotJson,
+        guard: &AuthRefreshGuard,
+    ) -> io::Result<()> {
         if self.is_active()? {
             let codex_home = self.path.parent().ok_or(io::ErrorKind::InvalidInput)?;
-            FileAuthStorage::new(codex_home.to_path_buf()).save(auth)?;
+            FileAuthStorage::new(codex_home.to_path_buf()).save_with_guard(auth, guard)?;
         }
         Ok(())
     }

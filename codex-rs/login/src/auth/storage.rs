@@ -6,12 +6,6 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::io::Read;
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,6 +33,7 @@ mod codex_plus_plus;
 
 use crate::account_lease::AuthRefreshGuard;
 use codex_plus_plus::FileAuthorityMarker;
+use codex_plus_plus::atomic_file;
 
 /// Expected structure for $CODEX_HOME/auth.json.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -187,56 +182,60 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct FileAuthStorage {
     codex_home: PathBuf,
+    atomic: atomic_file::AtomicFileStorage,
 }
 
 impl FileAuthStorage {
     pub(super) fn new(codex_home: PathBuf) -> Self {
-        Self { codex_home }
+        Self {
+            atomic: atomic_file::AtomicFileStorage::new(codex_home.clone()),
+            codex_home,
+        }
     }
 
     /// Attempt to read and parse the `auth.json` file in the given `CODEX_HOME` directory.
     /// Returns the full AuthDotJson structure.
+    #[cfg(test)]
     pub(super) fn try_read_auth_json(&self, auth_file: &Path) -> std::io::Result<AuthDotJson> {
-        let mut file = File::open(auth_file)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        let auth_dot_json: AuthDotJson = serde_json::from_str(&contents)?;
-
-        Ok(auth_dot_json)
+        let contents = std::fs::read_to_string(auth_file)?;
+        serde_json::from_str(&contents).map_err(std::io::Error::other)
     }
 }
 
 impl AuthStorageBackend for FileAuthStorage {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        let auth_file = get_auth_file(&self.codex_home);
-        let auth_dot_json = match self.try_read_auth_json(&auth_file) {
-            Ok(auth) => auth,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        match self.atomic.load_without_recovery() {
+            Ok(auth) => return Ok(auth),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(err) => return Err(err),
-        };
-        Ok(Some(auth_dot_json))
+        }
+        match AuthRefreshGuard::acquire(&self.codex_home) {
+            Ok(guard) => self.load_with_guard(&guard),
+            Err(err) if read_only_lock_error(&err) => self.atomic.load_without_recovery(),
+            Err(err) => Err(err),
+        }
     }
 
     fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
-        let auth_file = get_auth_file(&self.codex_home);
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.save_with_guard(auth_dot_json, &guard)
+    }
 
-        if let Some(parent) = auth_file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let json_data = serde_json::to_string_pretty(auth_dot_json)?;
-        let mut options = OpenOptions::new();
-        options.truncate(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            options.mode(0o600);
-        }
-        let mut file = options.open(auth_file)?;
-        file.write_all(json_data.as_bytes())?;
-        file.flush()?;
-        Ok(())
+    fn load_with_guard(&self, guard: &AuthRefreshGuard) -> std::io::Result<Option<AuthDotJson>> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.atomic.load()
+    }
+
+    fn save_with_guard(
+        &self,
+        auth_dot_json: &AuthDotJson,
+        guard: &AuthRefreshGuard,
+    ) -> std::io::Result<()> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.atomic.save(auth_dot_json)
     }
 
     fn delete(&self) -> std::io::Result<bool> {
@@ -244,6 +243,13 @@ impl AuthStorageBackend for FileAuthStorage {
         let marker_removed = FileAuthorityMarker::new(&self.codex_home).clear()?;
         Ok(marker_removed || file_removed)
     }
+}
+
+fn read_only_lock_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
 }
 
 static CODEX_AUTH_SECRET_NAME: Lazy<SecretName> =
@@ -310,9 +316,9 @@ impl DirectKeyringAuthStorage {
         }
     }
 
-    fn save_guarded(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+    fn save_guarded(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
         let marker = FileAuthorityMarker::new(&self.codex_home);
-        marker.prepare_keyring_save(auth)?;
+        marker.prepare_keyring_save(auth, guard)?;
         self.save_preserving_file(auth)?;
         delete_file_if_exists(&self.codex_home)?;
         marker.clear()?;
@@ -351,7 +357,7 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
 
     fn save_with_guard(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
         guard.ensure_matches(&self.codex_home)?;
-        self.save_guarded(auth)
+        self.save_guarded(auth, guard)
     }
 
     fn save_preserving_file(&self, auth: &AuthDotJson) -> std::io::Result<()> {
@@ -416,9 +422,9 @@ impl SecretsKeyringAuthStorage {
             })
     }
 
-    fn save_guarded(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+    fn save_guarded(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
         let marker = FileAuthorityMarker::new(&self.codex_home);
-        marker.prepare_keyring_save(auth)?;
+        marker.prepare_keyring_save(auth, guard)?;
         self.save_to_keyring(auth)?;
         delete_file_if_exists(&self.codex_home)?;
         marker.clear()?;
@@ -470,7 +476,7 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
 
     fn save_with_guard(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
         guard.ensure_matches(&self.codex_home)?;
-        self.save_guarded(auth)
+        self.save_guarded(auth, guard)
     }
 
     fn save_preserving_file(&self, auth: &AuthDotJson) -> std::io::Result<()> {
@@ -515,8 +521,8 @@ impl AutoAuthStorage {
         }
     }
 
-    fn load_guarded(&self) -> std::io::Result<Option<AuthDotJson>> {
-        codex_plus_plus::load_auto_auth(self)
+    fn load_guarded(&self, guard: &AuthRefreshGuard) -> std::io::Result<Option<AuthDotJson>> {
+        codex_plus_plus::load_auto_auth(self, guard)
     }
 
     fn save_guarded(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
@@ -536,7 +542,7 @@ impl AuthStorageBackend for AutoAuthStorage {
 
     fn load_with_guard(&self, guard: &AuthRefreshGuard) -> std::io::Result<Option<AuthDotJson>> {
         guard.ensure_matches(&self.codex_home)?;
-        self.load_guarded()
+        self.load_guarded(guard)
     }
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
