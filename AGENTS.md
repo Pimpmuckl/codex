@@ -86,8 +86,8 @@ In the codex-rs folder where the rust code lives:
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
 Coordinate heavyweight Rust validation before running it. Crate-wide or workspace-wide tests,
-Clippy, Bazel, and Review Suite may compile or execute thousands of targets even when the command
-looks scoped. Run only one heavyweight Rust job at a time, use bounded concurrency where the tool
+Clippy and Bazel may compile or execute thousands of targets even when the command looks scoped.
+Run only one heavyweight Rust job at a time, use bounded concurrency where the tool
 supports it, and require explicit user approval before starting a validation run that could
 materially load the workstation. Prefer the narrowest relevant tests and record broader validation
 as skipped for resource safety when focused evidence is sufficient.
