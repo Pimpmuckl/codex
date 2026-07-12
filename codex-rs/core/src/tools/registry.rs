@@ -13,6 +13,7 @@ use crate::memory_usage::emit_metric_for_tool_read;
 use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
+use crate::tools::codex_plus_plus::pre_tool_use_review;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -25,6 +26,7 @@ use crate::tools::lifecycle::notify_tool_start;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
@@ -46,6 +48,10 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+    fn approvals_reviewer(&self, invocation: &ToolInvocation) -> ApprovalsReviewer {
+        invocation.turn.config.approvals_reviewer
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(
             payload,
@@ -278,6 +284,10 @@ impl ToolExecutor<ToolInvocation> for ExposureOverride {
 }
 
 impl CoreToolRuntime for ExposureOverride {
+    fn approvals_reviewer(&self, invocation: &ToolInvocation) -> ApprovalsReviewer {
+        self.handler.approvals_reviewer(invocation)
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         self.handler.matches_kind(payload)
     }
@@ -512,6 +522,26 @@ impl ToolRegistry {
                     )
                     .await;
                     return Err(err);
+                }
+                PreToolUseHookResult::Review { reason } => {
+                    if let Err(message) = pre_tool_use_review::review(
+                        &invocation,
+                        &pre_tool_use_payload,
+                        reason,
+                        tool.approvals_reviewer(&invocation),
+                    )
+                    .await
+                    {
+                        let err = FunctionCallError::RespondToModel(message);
+                        dispatch_trace.record_failed(&err);
+                        notify_tool_finish_if_unclaimed(
+                            &invocation,
+                            terminal_outcome_reached.as_deref(),
+                            ToolCallOutcome::Blocked,
+                        )
+                        .await;
+                        return Err(err);
+                    }
                 }
                 PreToolUseHookResult::Continue {
                     updated_input: Some(updated_input),
