@@ -11,6 +11,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::GUARDIAN_MAX_ACTION_STRING_TOKENS;
+use super::GUARDIAN_MAX_ACTION_SUMMARY_TOKENS;
+use super::GUARDIAN_MAX_ACTION_TOKENS;
+use super::GUARDIAN_MAX_ASSESSMENT_INPUT_TOKENS;
+use super::GUARDIAN_MAX_ASSESSMENT_REASON_TOKENS;
 use super::prompt::guardian_truncate_text;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +72,13 @@ pub(crate) enum GuardianApprovalRequest {
         tool_title: Option<String>,
         tool_description: Option<String>,
         annotations: Option<GuardianMcpAnnotations>,
+    },
+    PreToolUse {
+        id: String,
+        tool_name: String,
+        tool_input: Value,
+        reason: String,
+        cwd: AbsolutePathBuf,
     },
     RequestPermissions {
         id: String,
@@ -149,6 +160,15 @@ struct McpToolCallApprovalAction<'a> {
     tool_description: Option<&'a String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     annotations: Option<&'a GuardianMcpAnnotations>,
+}
+
+#[derive(Serialize)]
+struct PreToolUseApprovalAction<'a> {
+    tool: &'static str,
+    tool_name: &'a str,
+    tool_input: &'a Value,
+    reason: &'a str,
+    cwd: &'a Path,
 }
 
 #[derive(Serialize)]
@@ -250,6 +270,16 @@ fn truncate_guardian_action_value(value: Value) -> (Value, bool) {
             (Value::Object(values), truncated)
         }
         other => (other, false),
+    }
+}
+
+fn bounded_guardian_assessment_input(value: &Value) -> Value {
+    let (summary, truncated) =
+        guardian_truncate_text(&value.to_string(), GUARDIAN_MAX_ASSESSMENT_INPUT_TOKENS);
+    if truncated {
+        Value::String(summary)
+    } else {
+        value.clone()
     }
 }
 
@@ -363,6 +393,19 @@ pub(crate) fn guardian_approval_request_to_json(
             tool_description: tool_description.as_ref(),
             annotations: annotations.as_ref(),
         }),
+        GuardianApprovalRequest::PreToolUse {
+            id: _,
+            tool_name,
+            tool_input,
+            reason,
+            cwd,
+        } => serialize_guardian_action(PreToolUseApprovalAction {
+            tool: "pre_tool_use",
+            tool_name,
+            tool_input,
+            reason,
+            cwd,
+        }),
         GuardianApprovalRequest::RequestPermissions {
             id: _,
             turn_id,
@@ -434,6 +477,16 @@ pub(crate) fn guardian_assessment_action(
             connector_name: connector_name.clone(),
             tool_title: tool_title.clone(),
         },
+        GuardianApprovalRequest::PreToolUse {
+            tool_name,
+            tool_input,
+            reason,
+            ..
+        } => GuardianAssessmentAction::PreToolUse {
+            tool_name: guardian_truncate_text(tool_name, GUARDIAN_MAX_ASSESSMENT_REASON_TOKENS).0,
+            tool_input: bounded_guardian_assessment_input(tool_input),
+            reason: guardian_truncate_text(reason, GUARDIAN_MAX_ASSESSMENT_REASON_TOKENS).0,
+        },
         GuardianApprovalRequest::RequestPermissions {
             reason,
             permissions,
@@ -499,6 +552,11 @@ pub(crate) fn guardian_reviewed_action(
             connector_name: connector_name.clone(),
             tool_title: tool_title.clone(),
         },
+        GuardianApprovalRequest::PreToolUse { tool_name, .. } => {
+            GuardianReviewedAction::PreToolUse {
+                tool_name: tool_name.clone(),
+            }
+        }
         GuardianApprovalRequest::RequestPermissions { .. } => {
             GuardianReviewedAction::RequestPermissions {}
         }
@@ -512,6 +570,9 @@ pub(crate) fn guardian_request_target_item_id(request: &GuardianApprovalRequest)
         | GuardianApprovalRequest::ApplyPatch { id, .. }
         | GuardianApprovalRequest::McpToolCall { id, .. }
         | GuardianApprovalRequest::RequestPermissions { id, .. } => Some(id),
+        // PreToolUse targets the model tool call even though its ThreadItem is
+        // emitted only after Guardian allows the handler to run.
+        GuardianApprovalRequest::PreToolUse { id, .. } => Some(id),
         GuardianApprovalRequest::NetworkAccess { .. } => None,
         #[cfg(unix)]
         GuardianApprovalRequest::Execve { id, .. } => Some(id),
@@ -528,7 +589,8 @@ pub(crate) fn guardian_request_turn_id<'a>(
         GuardianApprovalRequest::Shell { .. }
         | GuardianApprovalRequest::ExecCommand { .. }
         | GuardianApprovalRequest::ApplyPatch { .. }
-        | GuardianApprovalRequest::McpToolCall { .. } => default_turn_id,
+        | GuardianApprovalRequest::McpToolCall { .. }
+        | GuardianApprovalRequest::PreToolUse { .. } => default_turn_id,
         #[cfg(unix)]
         GuardianApprovalRequest::Execve { .. } => default_turn_id,
     }
@@ -538,9 +600,22 @@ pub(crate) fn format_guardian_action_pretty(
     action: &GuardianApprovalRequest,
 ) -> serde_json::Result<FormattedGuardianAction> {
     let value = guardian_approval_request_to_json(action)?;
-    let (value, truncated) = truncate_guardian_action_value(value);
+    let (value, fields_truncated) = truncate_guardian_action_value(value);
+    let text = serde_json::to_string_pretty(&value)?;
+    let (_, action_truncated) = guardian_truncate_text(&text, GUARDIAN_MAX_ACTION_TOKENS);
+    let text = if action_truncated {
+        let summary = guardian_truncate_text(&text, GUARDIAN_MAX_ACTION_SUMMARY_TOKENS).0;
+        serde_json::to_string_pretty(&serde_json::json!({
+            "tool": value.get("tool"),
+            "tool_name": value.get("tool_name").map(bounded_guardian_assessment_input),
+            "reason": value.get("reason").map(bounded_guardian_assessment_input),
+            "summary": summary,
+        }))?
+    } else {
+        text
+    };
     Ok(FormattedGuardianAction {
-        text: serde_json::to_string_pretty(&value)?,
-        truncated,
+        text,
+        truncated: fields_truncated || action_truncated,
     })
 }
