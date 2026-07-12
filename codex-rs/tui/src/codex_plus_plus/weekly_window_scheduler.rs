@@ -24,7 +24,7 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct WeeklyWindowScheduler {
     state: watch::Sender<bool>,
-    task: JoinHandle<()>,
+    _task: JoinHandle<()>,
 }
 
 impl WeeklyWindowScheduler {
@@ -35,19 +35,13 @@ impl WeeklyWindowScheduler {
             move |scan_control| scan(config.clone(), model.clone(), scan_control),
             receiver,
         ));
-        Self { state, task }
+        Self { state, _task: task }
     }
 
     pub(crate) fn set_enabled(&self, on: bool) {
         let _ = self
             .state
             .send_if_modified(|v| std::mem::replace(v, on) != on);
-    }
-}
-
-impl Drop for WeeklyWindowScheduler {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 
@@ -85,6 +79,14 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
         return;
     }
     let store = AccountStore::new(config.codex_home.to_path_buf());
+    let _scan_lease = match store.try_acquire_weekly_window_scan() {
+        Ok(Some(lease)) => lease,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(%err, "weekly-window scheduler could not acquire scan lease");
+            return;
+        }
+    };
     let eligible = match store.list() {
         Ok(accounts) => accounts
             .into_iter()

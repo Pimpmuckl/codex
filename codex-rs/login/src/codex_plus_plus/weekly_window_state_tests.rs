@@ -86,6 +86,15 @@ fn reset_windows_baseline_dedupe_and_recover_dropped_dispatch() {
 }
 
 #[test]
+fn weekly_scan_lease_is_nonblocking_and_released_on_drop() {
+    let (_home, store, _id) = test_store(/*automation_enabled*/ true);
+    let lease = store.try_acquire_weekly_window_scan().unwrap().unwrap();
+    assert!(store.try_acquire_weekly_window_scan().unwrap().is_none());
+    drop(lease);
+    assert!(store.try_acquire_weekly_window_scan().unwrap().is_some());
+}
+
+#[test]
 fn retry_backoff_reuses_identity_and_caps() {
     let (home, store, id) = test_store(/*automation_enabled*/ true);
     let mut now = 10;
