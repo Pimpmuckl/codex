@@ -285,6 +285,8 @@ pub(crate) struct PreToolUseCommandInput {
     pub model: String,
     #[schemars(schema_with = "permission_mode_schema")]
     pub permission_mode: String,
+    /// Codex++ extension: advertise support for `permissionDecision: "ask"`.
+    pub permission_decision_ask_supported: bool,
     pub tool_name: String,
     pub tool_input: Value,
     pub tool_use_id: String,
@@ -1122,6 +1124,7 @@ mod tests {
             hook_event_name: "PreToolUse".to_string(),
             model: "gpt-test".to_string(),
             permission_mode: "default".to_string(),
+            permission_decision_ask_supported: true,
             tool_name: "Bash".to_string(),
             tool_input: json!({ "command": "echo hello" }),
             tool_use_id: "tool-1".to_string(),
@@ -1139,6 +1142,7 @@ mod tests {
                 "hook_event_name": "PreToolUse",
                 "model": "gpt-test",
                 "permission_mode": "default",
+                "permission_decision_ask_supported": true,
                 "tool_name": "Bash",
                 "tool_input": { "command": "echo hello" },
                 "tool_use_id": "tool-1",
@@ -1155,6 +1159,7 @@ mod tests {
             hook_event_name: "PreToolUse".to_string(),
             model: "gpt-test".to_string(),
             permission_mode: "default".to_string(),
+            permission_decision_ask_supported: true,
             tool_name: "Bash".to_string(),
             tool_input: json!({ "command": "echo hello" }),
             tool_use_id: "tool-1".to_string(),
