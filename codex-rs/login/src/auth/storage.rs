@@ -35,6 +35,11 @@ use codex_secrets::SecretsBackendKind;
 use codex_secrets::SecretsManager;
 use once_cell::sync::Lazy;
 
+mod codex_plus_plus;
+
+use crate::account_lease::AuthRefreshGuard;
+use codex_plus_plus::FileAuthorityMarker;
+
 /// Expected structure for $CODEX_HOME/auth.json.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AuthDotJson {
@@ -162,8 +167,24 @@ pub(super) fn delete_file_if_exists(codex_home: &Path) -> std::io::Result<bool> 
 
 pub(super) trait AuthStorageBackend: Debug + Send + Sync {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>>;
+    fn load_with_guard(&self, _guard: &AuthRefreshGuard) -> std::io::Result<Option<AuthDotJson>> {
+        self.load()
+    }
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()>;
+    fn save_with_guard(
+        &self,
+        auth: &AuthDotJson,
+        _guard: &AuthRefreshGuard,
+    ) -> std::io::Result<()> {
+        self.save(auth)
+    }
+    fn save_preserving_file(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.save(auth)
+    }
     fn delete(&self) -> std::io::Result<bool>;
+    fn delete_with_guard(&self, _guard: &AuthRefreshGuard) -> std::io::Result<bool> {
+        self.delete()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -219,7 +240,9 @@ impl AuthStorageBackend for FileAuthStorage {
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        delete_file_if_exists(&self.codex_home)
+        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        let marker_removed = FileAuthorityMarker::new(&self.codex_home).clear()?;
+        Ok(marker_removed || file_removed)
     }
 }
 
@@ -286,6 +309,33 @@ impl DirectKeyringAuthStorage {
             }
         }
     }
+
+    fn save_guarded(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        let marker = FileAuthorityMarker::new(&self.codex_home);
+        marker.prepare_keyring_save(auth)?;
+        self.save_preserving_file(auth)?;
+        delete_file_if_exists(&self.codex_home)?;
+        marker.clear()?;
+        Ok(())
+    }
+
+    fn delete_guarded(&self) -> std::io::Result<bool> {
+        let file_removed = delete_file_if_exists(&self.codex_home);
+        let keyring_removed = self.delete_keyring();
+        let file_removed = file_removed?;
+        let keyring_removed = keyring_removed?;
+        let marker_removed = FileAuthorityMarker::new(&self.codex_home).clear()?;
+        Ok(keyring_removed || marker_removed || file_removed)
+    }
+
+    fn delete_keyring(&self) -> std::io::Result<bool> {
+        let key = compute_store_key(&self.codex_home)?;
+        self.keyring_store
+            .delete(KEYRING_SERVICE, &key)
+            .map_err(|err| {
+                std::io::Error::other(format!("failed to delete auth from keyring: {err}"))
+            })
+    }
 }
 
 impl AuthStorageBackend for DirectKeyringAuthStorage {
@@ -295,26 +345,30 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
     }
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.save_with_guard(auth, &guard)
+    }
+
+    fn save_with_guard(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.save_guarded(auth)
+    }
+
+    fn save_preserving_file(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         let key = compute_store_key(&self.codex_home)?;
         // Simpler error mapping per style: prefer method reference over closure
         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
-        self.save_to_keyring(&key, &serialized)?;
-        if let Err(err) = delete_file_if_exists(&self.codex_home) {
-            warn!("failed to remove CLI auth fallback file: {err}");
-        }
-        Ok(())
+        self.save_to_keyring(&key, &serialized)
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        let key = compute_store_key(&self.codex_home)?;
-        let keyring_removed = self
-            .keyring_store
-            .delete(KEYRING_SERVICE, &key)
-            .map_err(|err| {
-                std::io::Error::other(format!("failed to delete auth from keyring: {err}"))
-            })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        Ok(keyring_removed || file_removed)
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.delete_with_guard(&guard)
+    }
+
+    fn delete_with_guard(&self, guard: &AuthRefreshGuard) -> std::io::Result<bool> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.delete_guarded()
     }
 }
 
@@ -349,6 +403,45 @@ impl SecretsKeyringAuthStorage {
             secrets_manager,
         }
     }
+
+    fn save_to_keyring(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
+        self.secrets_manager
+            .set(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME, &serialized)
+            .map_err(|err| {
+                let message =
+                    format!("failed to write OAuth tokens to encrypted auth storage: {err}");
+                warn!("{message}");
+                std::io::Error::other(message)
+            })
+    }
+
+    fn save_guarded(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        let marker = FileAuthorityMarker::new(&self.codex_home);
+        marker.prepare_keyring_save(auth)?;
+        self.save_to_keyring(auth)?;
+        delete_file_if_exists(&self.codex_home)?;
+        marker.clear()?;
+        Ok(())
+    }
+
+    fn delete_guarded(&self) -> std::io::Result<bool> {
+        let file_removed = delete_file_if_exists(&self.codex_home);
+        let keyring_removed = self
+            .secrets_manager
+            .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
+            .map_err(|err| {
+                std::io::Error::other(format!(
+                    "failed to delete auth from encrypted auth storage: {err}"
+                ))
+            });
+        let direct_removed = self.direct_storage.delete_keyring();
+        let file_removed = file_removed?;
+        let keyring_removed = keyring_removed?;
+        let direct_removed = direct_removed?;
+        let marker_removed = FileAuthorityMarker::new(&self.codex_home).clear()?;
+        Ok(keyring_removed || direct_removed || marker_removed || file_removed)
+    }
 }
 
 impl AuthStorageBackend for SecretsKeyringAuthStorage {
@@ -371,40 +464,36 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
     }
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
-        let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
-        self.secrets_manager
-            .set(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME, &serialized)
-            .map_err(|err| {
-                let message =
-                    format!("failed to write OAuth tokens to encrypted auth storage: {err}");
-                warn!("{message}");
-                std::io::Error::other(message)
-            })?;
-        if let Err(err) = delete_file_if_exists(&self.codex_home) {
-            warn!("failed to remove CLI auth fallback file: {err}");
-        }
-        Ok(())
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.save_with_guard(auth, &guard)
+    }
+
+    fn save_with_guard(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.save_guarded(auth)
+    }
+
+    fn save_preserving_file(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        self.save_to_keyring(auth)
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        let keyring_removed = self
-            .secrets_manager
-            .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
-            .map_err(|err| {
-                std::io::Error::other(format!(
-                    "failed to delete auth from encrypted auth storage: {err}"
-                ))
-            })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        let direct_removed = self.direct_storage.delete()?;
-        Ok(keyring_removed || file_removed || direct_removed)
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.delete_with_guard(&guard)
+    }
+
+    fn delete_with_guard(&self, guard: &AuthRefreshGuard) -> std::io::Result<bool> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.delete_guarded()
     }
 }
 
 #[derive(Clone, Debug)]
 struct AutoAuthStorage {
+    codex_home: PathBuf,
     keyring_storage: Arc<dyn AuthStorageBackend>,
     file_storage: Arc<FileAuthStorage>,
+    file_authority: FileAuthorityMarker,
 }
 
 impl AutoAuthStorage {
@@ -413,42 +502,61 @@ impl AutoAuthStorage {
         keyring_store: Arc<dyn KeyringStore>,
         keyring_backend_kind: AuthKeyringBackendKind,
     ) -> Self {
+        let file_authority = FileAuthorityMarker::new(&codex_home);
         Self {
             keyring_storage: create_keyring_auth_storage(
                 codex_home.clone(),
                 keyring_store,
                 keyring_backend_kind,
             ),
-            file_storage: Arc::new(FileAuthStorage::new(codex_home)),
+            file_storage: Arc::new(FileAuthStorage::new(codex_home.clone())),
+            file_authority,
+            codex_home,
         }
+    }
+
+    fn load_guarded(&self) -> std::io::Result<Option<AuthDotJson>> {
+        codex_plus_plus::load_auto_auth(self)
+    }
+
+    fn save_guarded(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
+        codex_plus_plus::save_auto_auth(self, auth, guard)
+    }
+
+    fn delete_guarded(&self, guard: &AuthRefreshGuard) -> std::io::Result<bool> {
+        codex_plus_plus::delete_auto_auth(self, guard)
     }
 }
 
 impl AuthStorageBackend for AutoAuthStorage {
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        match self.keyring_storage.load() {
-            Ok(Some(auth)) => Ok(Some(auth)),
-            Ok(None) => self.file_storage.load(),
-            Err(err) => {
-                warn!("failed to load CLI auth from keyring, falling back to file storage: {err}");
-                self.file_storage.load()
-            }
-        }
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.load_with_guard(&guard)
+    }
+
+    fn load_with_guard(&self, guard: &AuthRefreshGuard) -> std::io::Result<Option<AuthDotJson>> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.load_guarded()
     }
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
-        match self.keyring_storage.save(auth) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                warn!("failed to save auth to keyring, falling back to file storage: {err}");
-                self.file_storage.save(auth)
-            }
-        }
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.save_with_guard(auth, &guard)
+    }
+
+    fn save_with_guard(&self, auth: &AuthDotJson, guard: &AuthRefreshGuard) -> std::io::Result<()> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.save_guarded(auth, guard)
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        // Keyring storage will delete from disk as well
-        self.keyring_storage.delete()
+        let guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+        self.delete_with_guard(&guard)
+    }
+
+    fn delete_with_guard(&self, guard: &AuthRefreshGuard) -> std::io::Result<bool> {
+        guard.ensure_matches(&self.codex_home)?;
+        self.delete_guarded(guard)
     }
 }
 
@@ -504,7 +612,7 @@ pub(super) fn create_auth_storage(
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
 }
 
-fn create_auth_storage_with_store(
+pub(super) fn create_auth_storage_with_store(
     codex_home: PathBuf,
     mode: AuthCredentialsStoreMode,
     keyring_store: Arc<dyn KeyringStore>,

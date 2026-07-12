@@ -9,6 +9,7 @@ use codex_secrets::SecretsManager;
 use codex_secrets::compute_keyring_account;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::time::Duration;
 use tempfile::tempdir;
 
 use codex_keyring_store::tests::MockKeyringStore;
@@ -274,10 +275,13 @@ fn file_storage_delete_removes_auth_file() -> anyhow::Result<()> {
     );
     storage.save(&auth_dot_json)?;
     assert!(dir.path().join("auth.json").exists());
+    let marker = FileAuthorityMarker::new(dir.path());
+    marker.activate()?;
     let storage = FileAuthStorage::new(dir.path().to_path_buf());
     let removed = storage.delete()?;
     assert!(removed);
     assert!(!dir.path().join("auth.json").exists());
+    assert!(!marker.is_active()?);
     Ok(())
 }
 
@@ -485,10 +489,13 @@ fn direct_keyring_auth_storage_saves_legacy_keyring_entry() -> anyhow::Result<()
     );
     let auth_file = get_auth_file(codex_home.path());
     std::fs::write(&auth_file, "stale")?;
+    let marker = FileAuthorityMarker::new(codex_home.path());
+    marker.activate()?;
     let auth = auth_with_prefix("direct");
 
     storage.save(&auth)?;
 
+    assert!(!marker.is_active()?);
     let legacy_key = compute_store_key(codex_home.path())?;
     let saved_value = mock_keyring
         .saved_value(&legacy_key)
@@ -500,6 +507,25 @@ fn direct_keyring_auth_storage_saves_legacy_keyring_entry() -> anyhow::Result<()
         "fallback auth.json should be removed after keyring save"
     );
     assert_eq!(storage.load()?, Some(auth));
+    Ok(())
+}
+
+#[test]
+fn keyring_auth_storage_save_propagates_fallback_cleanup_failure() -> anyhow::Result<()> {
+    for backend in [
+        AuthKeyringBackendKind::Direct,
+        AuthKeyringBackendKind::Secrets,
+    ] {
+        let codex_home = tempdir()?;
+        std::fs::create_dir(get_auth_file(codex_home.path()))?;
+        let storage = create_auth_storage_with_store(
+            codex_home.path().to_path_buf(),
+            AuthCredentialsStoreMode::Keyring,
+            Arc::new(MockKeyringStore::default()),
+            backend,
+        );
+        assert!(storage.save(&auth_with_prefix("cleanup-failure")).is_err());
+    }
     Ok(())
 }
 
@@ -531,6 +557,26 @@ fn direct_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Resu
         "fallback auth.json should be removed after keyring delete"
     );
     assert!(!encrypted_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn direct_keyring_auth_storage_delete_propagates_marker_clear_failure() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = DirectKeyringAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(MockKeyringStore::default()),
+    );
+    let auth_file = get_auth_file(codex_home.path());
+    std::fs::write(&auth_file, "fallback")?;
+    std::fs::create_dir(
+        codex_home
+            .path()
+            .join(".codex-plus-plus-auth-file-authority"),
+    )?;
+
+    assert!(storage.delete().is_err());
+    assert!(!auth_file.exists());
     Ok(())
 }
 
@@ -582,6 +628,8 @@ fn secrets_keyring_auth_storage_save_persists_and_removes_fallback_file() -> any
     );
     let auth_file = get_auth_file(codex_home.path());
     std::fs::write(&auth_file, "stale")?;
+    let marker = FileAuthorityMarker::new(codex_home.path());
+    marker.activate()?;
     let auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
@@ -599,6 +647,7 @@ fn secrets_keyring_auth_storage_save_persists_and_removes_fallback_file() -> any
 
     storage.save(&auth)?;
 
+    assert!(!marker.is_active()?);
     assert_keyring_saved_auth_and_removed_fallback(&mock_keyring, codex_home.path(), &auth)?;
     Ok(())
 }
@@ -662,6 +711,35 @@ fn secrets_keyring_auth_storage_delete_removes_legacy_direct_keyring_entry() -> 
         !auth_file.exists(),
         "fallback auth.json should be removed after keyring delete"
     );
+    Ok(())
+}
+
+#[test]
+fn secrets_keyring_auth_storage_delete_attempts_keyring_cleanup_after_file_error()
+-> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let auth = auth_with_prefix("delete-error");
+    let direct_storage = DirectKeyringAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+    );
+    direct_storage.save(&auth)?;
+    let storage = SecretsKeyringAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+    );
+    seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &auth)?;
+    let auth_file = get_auth_file(codex_home.path());
+    std::fs::create_dir(&auth_file)?;
+    let marker = FileAuthorityMarker::new(codex_home.path());
+    marker.activate()?;
+
+    assert!(storage.delete().is_err());
+    assert_eq!(storage.load()?, None);
+    assert_eq!(direct_storage.load()?, None);
+    assert!(auth_file.is_dir());
+    assert!(marker.is_active()?);
     Ok(())
 }
 
@@ -801,5 +879,107 @@ fn auto_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
         !auth_file.exists(),
         "fallback auth.json should be removed after delete"
     );
+    Ok(())
+}
+
+fn auto_auth_storage_with_mock(codex_home: &Path) -> (AutoAuthStorage, MockKeyringStore) {
+    let mock_keyring = MockKeyringStore::default();
+    let storage = AutoAuthStorage::new(
+        codex_home.to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Secrets,
+    );
+    (storage, mock_keyring)
+}
+
+fn set_auto_keyring_error(mock_keyring: &MockKeyringStore, codex_home: &Path, operation: &str) {
+    mock_keyring.set_error(
+        &compute_keyring_account(codex_home),
+        KeyringError::Invalid("error".into(), operation.into()),
+    );
+}
+
+#[test]
+fn auto_auth_storage_marks_file_authoritative_before_fallback_save() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let (storage, mock_keyring) = auto_auth_storage_with_mock(codex_home.path());
+    set_auto_keyring_error(&mock_keyring, codex_home.path(), "save");
+    std::fs::create_dir(get_auth_file(codex_home.path()))?;
+    assert!(storage.save(&auth_with_prefix("fallback")).is_err());
+    assert!(storage.file_authority.is_active()?);
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_load_preserves_file_authority() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let (storage, _) = auto_auth_storage_with_mock(codex_home.path());
+    let expected = auth_with_prefix("file");
+    storage.file_authority.activate()?;
+    storage.file_storage.save(&expected)?;
+    assert_eq!(storage.load()?, Some(expected));
+    assert!(storage.file_authority.is_active()?);
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_save_preserves_file_authority() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let (storage, _) = auto_auth_storage_with_mock(codex_home.path());
+    let expected = auth_with_prefix("file");
+    storage.file_authority.activate()?;
+    storage.save(&expected)?;
+    assert_eq!(storage.load()?, Some(expected));
+    assert!(storage.file_authority.is_active()?);
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_marked_file_errors_never_return_keyring_auth() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let (storage, mock_keyring) = auto_auth_storage_with_mock(codex_home.path());
+    seed_secrets_backend_with_auth(
+        &mock_keyring,
+        codex_home.path(),
+        &auth_with_prefix("stale-keyring"),
+    )?;
+    storage.file_authority.activate()?;
+    std::fs::write(get_auth_file(codex_home.path()), "not json")?;
+    assert!(storage.load().is_err());
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_concurrent_load_waits_for_refresh_guard() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let (storage, mock_keyring) = auto_auth_storage_with_mock(codex_home.path());
+    let expected = auth_with_prefix("keyring");
+    seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &expected)?;
+    let guard = AuthRefreshGuard::acquire(codex_home.path())?;
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let loader = std::thread::spawn(move || result_tx.send(storage.load()));
+    assert!(result_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    drop(guard);
+
+    let loaded = result_rx.recv_timeout(Duration::from_secs(2))??;
+    assert_eq!(loaded, Some(expected));
+    assert!(loader.join().is_ok());
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_delete_clears_marker_last() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let (storage, mock_keyring) = auto_auth_storage_with_mock(codex_home.path());
+    seed_secrets_backend_and_fallback_auth_file_for_delete(
+        &mock_keyring,
+        codex_home.path(),
+        &auth_with_prefix("delete"),
+    )?;
+    storage.file_authority.activate()?;
+    set_auto_keyring_error(&mock_keyring, codex_home.path(), "delete");
+
+    assert!(storage.delete().is_err());
+    assert!(storage.file_authority.is_active()?);
     Ok(())
 }
