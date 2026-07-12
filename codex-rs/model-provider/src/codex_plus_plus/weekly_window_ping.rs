@@ -64,22 +64,37 @@ pub enum WeeklyWindowPingOutcome {
     UnsupportedRouting,
 }
 
-pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
-    if request.model_provider_id != OPENAI_PROVIDER_ID
-        || !request.model_provider.is_openai()
-        || !provider_uses_first_party_auth_path(&request.model_provider)
-        || request.model_provider.base_url
+pub fn preflight_weekly_window_ping(
+    model_provider_id: &str,
+    model_provider: &ModelProviderInfo,
+    chatgpt_base_url: &str,
+    http_client_factory: &HttpClientFactory,
+) -> Result<(), WeeklyWindowPingOutcome> {
+    if model_provider_id != OPENAI_PROVIDER_ID
+        || !model_provider.is_openai()
+        || !provider_uses_first_party_auth_path(model_provider)
+        || model_provider.base_url
             != ModelProviderInfo::create_openai_provider(/*base_url*/ None).base_url
     {
-        return WeeklyWindowPingOutcome::DefiniteRejection;
+        return Err(WeeklyWindowPingOutcome::DefiniteRejection);
     }
-    if request.chatgpt_base_url.trim_end_matches('/')
-        != ChatGptEnvironment::default().chatgpt_base_url()
-    {
-        return WeeklyWindowPingOutcome::UnsupportedConfiguration;
+    if chatgpt_base_url.trim_end_matches('/') != ChatGptEnvironment::default().chatgpt_base_url() {
+        return Err(WeeklyWindowPingOutcome::UnsupportedConfiguration);
     }
-    if request.http_client_factory.outbound_proxy_policy() != OutboundProxyPolicy::ReqwestDefault {
-        return WeeklyWindowPingOutcome::UnsupportedRouting;
+    if http_client_factory.outbound_proxy_policy() != OutboundProxyPolicy::ReqwestDefault {
+        return Err(WeeklyWindowPingOutcome::UnsupportedRouting);
+    }
+    Ok(())
+}
+
+pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
+    if let Err(outcome) = preflight_weekly_window_ping(
+        &request.model_provider_id,
+        &request.model_provider,
+        &request.chatgpt_base_url,
+        &request.http_client_factory,
+    ) {
+        return outcome;
     }
 
     ping_weekly_window_with_timeout(request, PING_TIMEOUT).await

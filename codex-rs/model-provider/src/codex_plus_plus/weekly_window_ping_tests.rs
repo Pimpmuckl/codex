@@ -178,6 +178,15 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
     let mut configured_url_request = account.request(&server);
     configured_url_request.chatgpt_base_url = "https://attacker.example/backend-api".to_string();
     assert_eq!(
+        preflight_weekly_window_ping(
+            &configured_url_request.model_provider_id,
+            &configured_url_request.model_provider,
+            &configured_url_request.chatgpt_base_url,
+            &configured_url_request.http_client_factory,
+        ),
+        Err(WeeklyWindowPingOutcome::UnsupportedConfiguration)
+    );
+    assert_eq!(
         ping_weekly_window(configured_url_request).await,
         WeeklyWindowPingOutcome::UnsupportedConfiguration
     );
