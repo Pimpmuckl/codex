@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::HooksToml;
+use crate::WeeklyUsageWindowAutoStart;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
@@ -262,6 +263,8 @@ pub struct ConfigToml {
     /// Whether Codex may automatically select or switch imported accounts.
     #[serde(default)]
     pub automatic_account_selection: Option<AutomaticAccountSelection>,
+    /// Whether Codex++ starts unused weekly usage windows automatically.
+    pub weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.
@@ -974,6 +977,23 @@ pub fn validate_oss_provider(provider: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weekly_auto_start_defaults_enabled_and_accepts_override() {
+        let parsed = ["", "weekly_usage_window_auto_start = \"disabled\""].map(|value| {
+            toml::from_str::<ConfigToml>(value)
+                .unwrap()
+                .weekly_usage_window_auto_start
+                .unwrap_or_default()
+        });
+        assert_eq!(
+            parsed,
+            [
+                WeeklyUsageWindowAutoStart::Enabled,
+                WeeklyUsageWindowAutoStart::Disabled,
+            ]
+        );
+    }
     use pretty_assertions::assert_eq;
 
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";

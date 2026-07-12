@@ -95,6 +95,7 @@ fn cloud_config_layers_from_fragments_impl(
             })?;
         if let Some(table) = value.as_table_mut() {
             table.remove("automatic_account_selection");
+            table.remove("weekly_usage_window_auto_start");
         }
         if strict_config {
             validate_fragment_strictly(&source_ref, &raw_toml, &value, base_dir)?;

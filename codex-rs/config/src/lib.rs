@@ -1,5 +1,6 @@
 mod cloud_config_bundle;
 mod cloud_config_layers;
+mod codex_plus_plus;
 mod config_layer_source;
 mod config_requirements;
 pub mod config_toml;
@@ -45,6 +46,7 @@ pub use cloud_config_layers::CloudConfigFragment;
 pub use cloud_config_layers::CloudConfigFragmentSource;
 pub use cloud_config_layers::CloudConfigLayerError;
 pub use cloud_config_layers::cloud_config_layers_from_fragments;
+pub use codex_plus_plus::WeeklyUsageWindowAutoStart;
 pub use codex_protocol::config_types::ProfileV2Name;
 pub use codex_protocol::config_types::ProfileV2NameParseError;
 pub use codex_utils_absolute_path::AbsolutePathBuf;
