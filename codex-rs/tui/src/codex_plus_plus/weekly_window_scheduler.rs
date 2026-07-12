@@ -130,34 +130,38 @@ async fn scan(config: Config, model: String) {
             http_client_factory: config.http_client_factory(),
         })
         .await;
-        let outcome = match outcome {
-            WeeklyWindowPingOutcome::Completed => WeeklyWindowAttemptOutcome::Completed {
-                refreshed_usage: WeeklyWindowUsage::Missing,
-            },
-            WeeklyWindowPingOutcome::DefiniteRejection => WeeklyWindowAttemptOutcome::Retryable {
-                error: WeeklyWindowRetryableError::Rejected,
-            },
-            WeeklyWindowPingOutcome::LoginRequired => WeeklyWindowAttemptOutcome::Retryable {
-                error: WeeklyWindowRetryableError::LoginRequired,
-            },
-            WeeklyWindowPingOutcome::RecoveryRequired => {
-                tracing::warn!(%account_id, "weekly-window ping requires account recovery");
-                WeeklyWindowAttemptOutcome::Retryable {
-                    error: WeeklyWindowRetryableError::LoginRequired,
-                }
-            }
-            WeeklyWindowPingOutcome::Ambiguous => WeeklyWindowAttemptOutcome::Ambiguous,
+        if outcome == WeeklyWindowPingOutcome::RecoveryRequired {
+            tracing::warn!(%account_id, "weekly-window ping requires account recovery");
+        } else if matches!(
+            outcome,
             WeeklyWindowPingOutcome::UnsupportedConfiguration
-            | WeeklyWindowPingOutcome::UnsupportedRouting => {
-                tracing::warn!(%account_id, ?outcome, "weekly-window ping is unsupported");
-                WeeklyWindowAttemptOutcome::Retryable {
-                    error: WeeklyWindowRetryableError::Rejected,
-                }
-            }
-        };
+                | WeeklyWindowPingOutcome::UnsupportedRouting
+        ) {
+            tracing::warn!(%account_id, ?outcome, "weekly-window ping is unsupported");
+        }
+        let outcome = attempt_outcome(outcome);
         if let Err(err) = attempt.finish(outcome, Utc::now().timestamp()) {
             tracing::warn!(%account_id, %err, "weekly-window scheduler could not finish attempt");
         }
+    }
+}
+
+fn attempt_outcome(outcome: WeeklyWindowPingOutcome) -> WeeklyWindowAttemptOutcome {
+    match outcome {
+        WeeklyWindowPingOutcome::Completed
+        | WeeklyWindowPingOutcome::UnsupportedConfiguration
+        | WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowAttemptOutcome::Completed {
+            refreshed_usage: WeeklyWindowUsage::Missing,
+        },
+        WeeklyWindowPingOutcome::DefiniteRejection => WeeklyWindowAttemptOutcome::Retryable {
+            error: WeeklyWindowRetryableError::Rejected,
+        },
+        WeeklyWindowPingOutcome::LoginRequired | WeeklyWindowPingOutcome::RecoveryRequired => {
+            WeeklyWindowAttemptOutcome::Retryable {
+                error: WeeklyWindowRetryableError::LoginRequired,
+            }
+        }
+        WeeklyWindowPingOutcome::Ambiguous => WeeklyWindowAttemptOutcome::Ambiguous,
     }
 }
 

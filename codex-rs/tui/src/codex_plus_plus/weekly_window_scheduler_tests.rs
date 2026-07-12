@@ -26,3 +26,18 @@ async fn schedule_scans_immediately_and_each_interval_until_dropped() {
     tokio::task::yield_now().await;
     assert_eq!(scans.load(Ordering::Relaxed), 2);
 }
+
+#[test]
+fn unsupported_routing_closes_without_retry() {
+    for outcome in [
+        WeeklyWindowPingOutcome::UnsupportedConfiguration,
+        WeeklyWindowPingOutcome::UnsupportedRouting,
+    ] {
+        assert_eq!(
+            attempt_outcome(outcome),
+            WeeklyWindowAttemptOutcome::Completed {
+                refreshed_usage: WeeklyWindowUsage::Missing,
+            }
+        );
+    }
+}
