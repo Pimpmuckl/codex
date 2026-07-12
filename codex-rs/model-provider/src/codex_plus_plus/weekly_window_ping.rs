@@ -23,25 +23,26 @@ use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
-use codex_login::default_client::build_default_reqwest_client_for_route;
+use codex_login::default_client::build_default_reqwest_client_for_route_async;
 use codex_login::load_auth_dot_json;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use http::HeaderMap;
 use serde_json::json;
+use tokio::time::Instant;
 
 use crate::auth::auth_provider_from_auth_manager;
 use crate::provider::provider_uses_first_party_auth_path;
 
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
-struct TimeoutTransport(ReqwestTransport);
-impl HttpTransport for TimeoutTransport {
+struct DeadlineTransport(ReqwestTransport, Instant);
+impl HttpTransport for DeadlineTransport {
     async fn execute(&self, request: Request) -> Result<Response, TransportError> {
         self.0.execute(request).await
     }
     async fn stream(&self, mut request: Request) -> Result<StreamResponse, TransportError> {
-        request.timeout = Some(PING_TIMEOUT);
+        request.timeout = Some(self.1.saturating_duration_since(Instant::now()));
         self.0.stream(request).await
     }
 }
@@ -82,13 +83,17 @@ async fn ping_weekly_window_with_timeout(
     request: WeeklyWindowPingRequest,
     timeout: Duration,
 ) -> WeeklyWindowPingOutcome {
-    match tokio::time::timeout(timeout, ping_weekly_window_inner(request)).await {
+    let deadline = Instant::now() + timeout;
+    match tokio::time::timeout_at(deadline, ping_weekly_window_inner(request, deadline)).await {
         Ok(outcome) => outcome,
         Err(_) => WeeklyWindowPingOutcome::Ambiguous,
     }
 }
 
-async fn ping_weekly_window_inner(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
+async fn ping_weekly_window_inner(
+    request: WeeklyWindowPingRequest,
+    deadline: Instant,
+) -> WeeklyWindowPingOutcome {
     let Some(auth_manager) = AuthManager::new_from_file_auth(
         request.account_codex_home.clone(),
         request.forced_chatgpt_workspace_id.clone(),
@@ -103,26 +108,34 @@ async fn ping_weekly_window_inner(request: WeeklyWindowPingRequest) -> WeeklyWin
         return WeeklyWindowPingOutcome::LoginRequired;
     };
     if auth_manager.refresh_failure_for_auth(&auth).is_some() {
-        mark_login_required_if_identity_matches(&request, &auth_manager, &auth);
+        mark_login_required_if_identity_matches(&request, &auth_manager, &auth).await;
         return WeeklyWindowPingOutcome::LoginRequired;
     }
 
     let mut unauthorized_recovery = auth_manager.unauthorized_recovery();
     loop {
-        match send_once(&request, &auth_manager, &auth).await {
+        match send_once(&request, &auth_manager, &auth, deadline).await {
             AttemptOutcome::Finished(outcome) => return outcome,
             AttemptOutcome::Unauthorized => {}
         }
         if !unauthorized_recovery.has_next() {
             return WeeklyWindowPingOutcome::DefiniteRejection;
         }
-        match unauthorized_recovery.next().await {
+        let recovery_task = tokio::spawn(async move {
+            let result = unauthorized_recovery.next().await;
+            (unauthorized_recovery, result)
+        });
+        let Ok((next_recovery, result)) = recovery_task.await else {
+            return WeeklyWindowPingOutcome::Ambiguous;
+        };
+        unauthorized_recovery = next_recovery;
+        match result {
             Ok(_) => {}
             Err(RefreshTokenError::Transient(_)) => {
                 return WeeklyWindowPingOutcome::DefiniteRejection;
             }
             Err(RefreshTokenError::Permanent(_)) => {
-                mark_login_required_if_identity_matches(&request, &auth_manager, &auth);
+                mark_login_required_if_identity_matches(&request, &auth_manager, &auth).await;
                 return WeeklyWindowPingOutcome::LoginRequired;
             }
         }
@@ -138,6 +151,7 @@ async fn send_once(
     request: &WeeklyWindowPingRequest,
     auth_manager: &Arc<AuthManager>,
     expected_auth: &CodexAuth,
+    deadline: Instant,
 ) -> AttemptOutcome {
     let root = request.chatgpt_base_url.trim_end_matches('/');
     let base_url = root.trim_end_matches("/codex");
@@ -154,15 +168,17 @@ async fn send_once(
         retry_transport: false,
     };
     let request_url = provider.url_for_path("responses");
-    let Ok(client) = build_default_reqwest_client_for_route(
-        &request.http_client_factory,
-        &request_url,
+    let Ok(client) = build_default_reqwest_client_for_route_async(
+        request.http_client_factory.clone(),
+        request_url,
         ClientRouteClass::Api,
-    ) else {
+    )
+    .await
+    else {
         return AttemptOutcome::Finished(WeeklyWindowPingOutcome::DefiniteRejection);
     };
     let auth = auth_provider_from_auth_manager(Arc::clone(auth_manager), expected_auth);
-    let transport = TimeoutTransport(ReqwestTransport::new(client));
+    let transport = DeadlineTransport(ReqwestTransport::new(client), deadline);
     let client = ResponsesClient::new(transport, provider, auth);
     let body = json!({
         "model": request.model,
@@ -229,7 +245,7 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
     }
 }
 
-fn mark_login_required_if_identity_matches(
+async fn mark_login_required_if_identity_matches(
     request: &WeeklyWindowPingRequest,
     auth_manager: &AuthManager,
     expected_auth: &CodexAuth,
@@ -243,25 +259,33 @@ fn mark_login_required_if_identity_matches(
     {
         return;
     }
-    let Ok(Some(current_auth_json)) = load_auth_dot_json(
-        &request.account_codex_home,
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    ) else {
-        return;
-    };
-    let Some(tokens) = current_auth_json.tokens.as_ref() else {
-        return;
-    };
-    if tokens.account_id != expected_auth.get_account_id()
-        || tokens.id_token.chatgpt_user_id != expected_auth.get_chatgpt_user_id()
-        || tokens.id_token.is_workspace_account() != expected_auth.is_workspace_account()
-    {
-        return;
-    }
-    if let Err(error) = AccountStore::new(request.root_codex_home.clone())
-        .record_login_required_if_auth_matches(&request.account_id, &current_auth_json)
-    {
+    let account_home = request.account_codex_home.clone();
+    let root_codex_home = request.root_codex_home.clone();
+    let account_id = request.account_id.clone();
+    let expected_account_id = expected_auth.get_account_id();
+    let expected_user_id = expected_auth.get_chatgpt_user_id();
+    let expected_workspace = expected_auth.is_workspace_account();
+    let error = tokio::task::spawn_blocking(move || {
+        let Ok(Some(current_auth_json)) = load_auth_dot_json(
+            &account_home,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        ) else {
+            return None;
+        };
+        let tokens = current_auth_json.tokens.as_ref()?;
+        if tokens.account_id != expected_account_id
+            || tokens.id_token.chatgpt_user_id != expected_user_id
+            || tokens.id_token.is_workspace_account() != expected_workspace
+        {
+            return None;
+        }
+        AccountStore::new(root_codex_home)
+            .record_login_required_if_auth_matches(&account_id, &current_auth_json)
+            .err()
+    })
+    .await;
+    if let Ok(Some(error)) = error {
         tracing::warn!(%error, account_id = %request.account_id, "failed to mark weekly-window account as login required");
     }
 }

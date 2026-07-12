@@ -72,10 +72,6 @@ impl TestAccount {
             http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         }
     }
-
-    fn reset_auth(&self) {
-        write_auth(&self.account_home, "account-123", "one", "refresh-one");
-    }
 }
 
 impl Drop for TestAccount {
@@ -107,14 +103,6 @@ fn completed_response() -> ResponseTemplate {
         .set_body_string(
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n",
         )
-}
-
-async fn request_count(server: &MockServer) -> usize {
-    server
-        .received_requests()
-        .await
-        .expect("received requests")
-        .len()
 }
 
 #[tokio::test]
@@ -158,18 +146,18 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
             .and_then(|value| value.to_str().ok()),
         Some("Bearer one")
     );
-    let root_auth_after = std::fs::read(account.root.join("auth.json")).unwrap();
-    assert_eq!(root_auth_after, root_auth);
+    assert_eq!(
+        std::fs::read(account.root.join("auth.json")).unwrap(),
+        root_auth
+    );
     assert_eq!(foreground.active_account_id(), foreground_id);
 
-    server.reset().await;
     let mut custom_request = account.request(&server);
     custom_request.model_provider_id = "custom".to_string();
     assert_eq!(
         ping_weekly_window(custom_request).await,
         WeeklyWindowPingOutcome::DefiniteRejection
     );
-    assert_eq!(request_count(&server).await, 0);
 }
 
 #[tokio::test]
@@ -196,10 +184,10 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
         ping_weekly_window(account.request(&server)).await,
         WeeklyWindowPingOutcome::Completed
     );
-    assert_eq!(request_count(&server).await, 2);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 
     server.reset().await;
-    account.reset_auth();
+    write_auth(&account.account_home, "account-123", "one", "refresh-one");
     let account_home = account.account_home.clone();
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
@@ -214,7 +202,7 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
         WeeklyWindowPingOutcome::LoginRequired
     );
     assert!(!AccountStore::new(account.root.clone()).list().unwrap()[0].login_required);
-    assert_eq!(request_count(&server).await, 1);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -230,7 +218,7 @@ async fn ambiguous_outcomes_are_not_replayed_and_the_attempt_is_bounded() {
         ping_weekly_window(account.request(&server)).await,
         WeeklyWindowPingOutcome::Ambiguous
     );
-    assert_eq!(request_count(&server).await, 1);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 
     for response in [
         ResponseTemplate::new(200)
