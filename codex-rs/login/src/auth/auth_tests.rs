@@ -1289,7 +1289,6 @@ exit 1
     }
 }
 
-#[derive(Default)]
 struct AuthFileParams {
     openai_api_key: Option<String>,
     chatgpt_plan_type: Option<String>,
@@ -1534,13 +1533,22 @@ async fn load_auth_reads_personal_access_token_from_env() {
 
 #[tokio::test]
 #[serial(codex_auth_env)]
-async fn auth_manager_storage_only_ignores_environment_credentials_on_reload() {
+async fn auth_manager_file_auth_ignores_environment_and_reapplies_workspace_policy() {
     let codex_home = tempdir().unwrap();
-    write_auth_file(AuthFileParams::default(), codex_home.path()).unwrap();
+    let auth_params = |chatgpt_account_id| AuthFileParams {
+        openai_api_key: None,
+        chatgpt_plan_type: None,
+        chatgpt_account_id: Some(chatgpt_account_id),
+    };
+    write_auth_file(
+        auth_params(WORKSPACE_ID_ALLOWED.to_string()),
+        codex_home.path(),
+    )
+    .unwrap();
     let _access_token_guard = EnvVarGuard::set(CODEX_ACCESS_TOKEN_ENV_VAR, "at-env");
     let manager = AuthManager::new_from_file_auth(
         codex_home.path().to_path_buf(),
-        /*forced_chatgpt_workspace_id*/ None,
+        Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         /*chatgpt_base_url*/ None,
         /*auth_route_config*/ None,
     )
@@ -1551,6 +1559,13 @@ async fn auth_manager_storage_only_ignores_environment_credentials_on_reload() {
     assert_eq!(current_token(), "test-access-token");
     manager.reload().await;
     assert_eq!(current_token(), "test-access-token");
+    write_auth_file(
+        auth_params(WORKSPACE_ID_DISALLOWED.to_string()),
+        codex_home.path(),
+    )
+    .unwrap();
+    manager.reload().await;
+    assert_eq!(manager.auth_cached(), None);
 }
 
 #[tokio::test]

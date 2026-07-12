@@ -63,4 +63,8 @@ pub(in crate::auth::manager) async fn load(manager: &AuthManager) -> Option<Code
     .await
     .ok()
     .flatten()
+    .filter(|auth| {
+        !auth.is_chatgpt_auth()
+            || chatgpt_auth_workspace_allowed(auth, forced_chatgpt_workspace_id.as_deref())
+    })
 }

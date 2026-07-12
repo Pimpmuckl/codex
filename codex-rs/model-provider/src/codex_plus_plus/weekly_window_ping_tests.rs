@@ -29,7 +29,6 @@ static NEXT_HOME: AtomicUsize = AtomicUsize::new(0);
 
 struct TestAccount {
     root: PathBuf,
-    account_id: AccountId,
     account_home: PathBuf,
 }
 
@@ -51,17 +50,11 @@ impl TestAccount {
             )
             .expect("import account");
         let account_home = root.join("accounts").join(profile.id.as_str());
-        Self {
-            root,
-            account_id: profile.id,
-            account_home,
-        }
+        Self { root, account_home }
     }
 
     fn request(&self, server: &MockServer) -> WeeklyWindowPingRequest {
         WeeklyWindowPingRequest {
-            root_codex_home: self.root.clone(),
-            account_id: self.account_id.clone(),
             account_codex_home: self.account_home.clone(),
             model: "gpt-test".to_string(),
             model_provider_id: OPENAI_PROVIDER_ID.to_string(),
@@ -161,7 +154,7 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
 }
 
 #[tokio::test]
-async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
+async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
     let server = MockServer::start().await;
     let account = TestAccount::new();
     let account_home = account.account_home.clone();
@@ -199,7 +192,7 @@ async fn unauthorized_recovery_preserves_identity_and_login_required_state() {
         .await;
     assert_eq!(
         ping_weekly_window(account.request(&server)).await,
-        WeeklyWindowPingOutcome::LoginRequired
+        WeeklyWindowPingOutcome::RecoveryRequired
     );
     assert!(!AccountStore::new(account.root.clone()).list().unwrap()[0].login_required);
     assert_eq!(server.received_requests().await.unwrap().len(), 1);

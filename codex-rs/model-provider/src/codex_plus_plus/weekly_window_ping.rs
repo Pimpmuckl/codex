@@ -15,16 +15,10 @@ use codex_http_client::Request;
 use codex_http_client::ReqwestTransport;
 use codex_http_client::Response;
 use codex_http_client::StreamResponse;
-use codex_login::AccountId;
-use codex_login::AccountStore;
-use codex_login::AuthCredentialsStoreMode;
-use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CodexAuth;
-use codex_login::RefreshTokenError;
 use codex_login::default_client::build_default_reqwest_client_for_route_async;
-use codex_login::load_auth_dot_json;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use http::HeaderMap;
@@ -48,8 +42,6 @@ impl HttpTransport for DeadlineTransport {
 }
 
 pub struct WeeklyWindowPingRequest {
-    pub root_codex_home: PathBuf,
-    pub account_id: AccountId,
     pub account_codex_home: PathBuf,
     pub model: String,
     pub model_provider_id: String,
@@ -66,6 +58,7 @@ pub enum WeeklyWindowPingOutcome {
     DefiniteRejection,
     Ambiguous,
     LoginRequired,
+    RecoveryRequired,
 }
 
 pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
@@ -107,44 +100,24 @@ async fn ping_weekly_window_inner(
     let Some(auth) = auth_manager.auth_cached() else {
         return WeeklyWindowPingOutcome::LoginRequired;
     };
-    if auth_manager.refresh_failure_for_auth(&auth).is_some() {
-        mark_login_required_if_identity_matches(&request, &auth_manager, &auth).await;
-        return WeeklyWindowPingOutcome::LoginRequired;
-    }
-
     let mut unauthorized_recovery = auth_manager.unauthorized_recovery();
-    loop {
-        match send_once(&request, &auth_manager, &auth, deadline).await {
-            AttemptOutcome::Finished(outcome) => return outcome,
-            AttemptOutcome::Unauthorized => {}
-        }
-        if !unauthorized_recovery.has_next() {
-            return WeeklyWindowPingOutcome::DefiniteRejection;
-        }
-        // A refresh may rotate remotely, so it gets bounded grace; ambiguous forbids replay.
-        let recovery_task = tokio::spawn(async move {
-            let result = tokio::time::timeout(PING_TIMEOUT, unauthorized_recovery.next()).await;
-            (unauthorized_recovery, result)
-        });
-        let Ok((next_recovery, result)) = recovery_task.await else {
-            return WeeklyWindowPingOutcome::Ambiguous;
-        };
-        unauthorized_recovery = next_recovery;
-        let Ok(result) = result else {
-            return WeeklyWindowPingOutcome::Ambiguous;
-        };
-        match result {
-            Ok(_) => {}
-            Err(RefreshTokenError::Transient(_)) => {
-                return WeeklyWindowPingOutcome::DefiniteRejection;
-            }
-            Err(RefreshTokenError::Permanent(_)) => {
-                let failed_auth = auth_manager.auth_cached().unwrap_or_else(|| auth.clone());
-                mark_login_required_if_identity_matches(&request, &auth_manager, &failed_auth)
-                    .await;
-                return WeeklyWindowPingOutcome::LoginRequired;
-            }
-        }
+    if let AttemptOutcome::Finished(outcome) =
+        send_once(&request, &auth_manager, &auth, deadline).await
+    {
+        return outcome;
+    }
+    let Ok(reload) = unauthorized_recovery.next().await else {
+        return WeeklyWindowPingOutcome::RecoveryRequired;
+    };
+    if reload.auth_state_changed() != Some(true) {
+        return WeeklyWindowPingOutcome::RecoveryRequired;
+    }
+    let Some(reloaded_auth) = auth_manager.auth_cached() else {
+        return WeeklyWindowPingOutcome::RecoveryRequired;
+    };
+    match send_once(&request, &auth_manager, &reloaded_auth, deadline).await {
+        AttemptOutcome::Finished(outcome) => outcome,
+        AttemptOutcome::Unauthorized => WeeklyWindowPingOutcome::RecoveryRequired,
     }
 }
 
@@ -248,42 +221,6 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
         | ApiError::ServerOverloaded
         | ApiError::ContextWindowExceeded
         | ApiError::UsageNotIncluded => WeeklyWindowPingOutcome::Ambiguous,
-    }
-}
-
-async fn mark_login_required_if_identity_matches(
-    request: &WeeklyWindowPingRequest,
-    auth_manager: &AuthManager,
-    expected_auth: &CodexAuth,
-) {
-    if auth_manager.auth_cached().as_ref() != Some(expected_auth) {
-        return;
-    }
-    let account_home = request.account_codex_home.clone();
-    let root_codex_home = request.root_codex_home.clone();
-    let account_id = request.account_id.clone();
-    let Ok(expected_tokens) = expected_auth.get_token_data() else {
-        return;
-    };
-    let error = tokio::task::spawn_blocking(move || {
-        let Ok(Some(current_auth_json)) = load_auth_dot_json(
-            &account_home,
-            AuthCredentialsStoreMode::File,
-            AuthKeyringBackendKind::default(),
-        ) else {
-            return None;
-        };
-        let tokens = current_auth_json.tokens.as_ref()?;
-        if tokens != &expected_tokens {
-            return None;
-        }
-        AccountStore::new(root_codex_home)
-            .record_login_required_if_auth_matches(&account_id, &current_auth_json)
-            .err()
-    })
-    .await;
-    if let Ok(Some(error)) = error {
-        tracing::warn!(%error, account_id = %request.account_id, "failed to mark weekly-window account as login required");
     }
 }
 
