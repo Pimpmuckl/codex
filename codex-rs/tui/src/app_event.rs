@@ -868,6 +868,7 @@ pub(crate) enum AppEvent {
         weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
     },
 
+    OpenCodexPlusPlusAccounts,
     /// Update memory settings and persist them to config.toml.
     UpdateMemorySettings {
         use_memories: bool,

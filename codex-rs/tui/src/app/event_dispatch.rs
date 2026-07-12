@@ -1830,6 +1830,15 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::OpenCodexPlusPlusAccounts => {
+                let statuses = self
+                    .weekly_window_scheduler
+                    .as_ref()
+                    .filter(|_| self.chat_widget.weekly_start_supported)
+                    .map(crate::codex_plus_plus::WeeklyWindowScheduler::statuses);
+                self.chat_widget
+                    .open_accounts_popup_with_statuses(statuses.as_ref());
+            }
             AppEvent::UpdateMemorySettings {
                 use_memories,
                 generate_memories,
