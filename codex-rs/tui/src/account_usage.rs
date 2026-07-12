@@ -138,6 +138,7 @@ async fn fetch(
             let auth = match refresh_auth_from_storage(
                 &account_home,
                 AuthCredentialsStoreMode::File,
+                config.forced_chatgpt_workspace_id.as_deref(),
                 Some(&config.chatgpt_base_url),
                 config.auth_keyring_backend_kind(),
                 auth_route_config.as_ref(),

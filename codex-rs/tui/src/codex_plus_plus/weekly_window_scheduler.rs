@@ -112,6 +112,11 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
         return;
     }
     let loaded = account_usage::load(&config, &accounts, &store).await;
+    for (account_id, attempted_auth) in &loaded.login_required {
+        if let Err(err) = store.record_login_required_if_auth_matches(account_id, attempted_auth) {
+            tracing::warn!(%account_id, %err, "weekly-window scheduler could not record login failure");
+        }
+    }
 
     for (account_id, account_home) in accounts {
         if control.has_changed().unwrap_or(true) {

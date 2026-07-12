@@ -999,7 +999,14 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(forked))
             }
         };
-        chat_widget.weekly_start_supported = app_server.uses_embedded_app_server();
+        chat_widget.weekly_start_supported = app_server.uses_embedded_app_server()
+            && codex_model_provider::preflight_weekly_window_ping(
+                &config.model_provider_id,
+                &config.model_provider,
+                &config.chatgpt_base_url,
+                &config.http_client_factory(),
+            )
+            .is_ok();
         chat_widget.remote_connection = remote_connection;
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
         chat_widget
