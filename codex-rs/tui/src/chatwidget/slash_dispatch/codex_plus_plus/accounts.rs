@@ -7,8 +7,6 @@ use std::sync::atomic::Ordering;
 
 use codex_login::AccountId;
 use codex_login::AccountStore;
-use codex_login::WeeklyWindowError;
-use codex_login::WeeklyWindowStatus;
 use tracing::warn;
 
 use super::*;
@@ -21,7 +19,6 @@ struct AccountAutomationRow {
     login_required: bool,
     is_current: bool,
     in_use: bool,
-    weekly_window_status: Option<WeeklyWindowStatus>,
 }
 
 struct AccountAutomationChoice {
@@ -60,7 +57,6 @@ impl ChatWidget {
             .into_iter()
             .map(|account| {
                 let in_use = store.account_in_use(&account.id).unwrap_or(false);
-                let weekly_window_status = store.weekly_window_status(&account.id).ok();
                 AccountAutomationRow {
                     is_current: current_account_id.as_ref() == Some(&account.id),
                     id: account.id,
@@ -69,7 +65,6 @@ impl ChatWidget {
                     automation_enabled: account.automation_enabled,
                     login_required: account.login_required,
                     in_use,
-                    weekly_window_status,
                 }
             })
             .collect();
@@ -107,12 +102,7 @@ fn accounts_settings_params(
             let codex_home = codex_home.clone();
             SelectionItem {
                 name: row.label,
-                description: account_status(
-                    row.enabled,
-                    row.login_required,
-                    row.in_use,
-                    row.weekly_window_status,
-                ),
+                description: account_status(row.enabled, row.login_required, row.in_use),
                 is_current: row.is_current,
                 toggle: Some(SelectionToggle {
                     is_on: row.automation_enabled,
@@ -150,12 +140,7 @@ fn accounts_settings_params(
     }
 }
 
-fn account_status(
-    enabled: bool,
-    login_required: bool,
-    in_use: bool,
-    scheduler: Option<WeeklyWindowStatus>,
-) -> Option<String> {
+fn account_status(enabled: bool, login_required: bool, in_use: bool) -> Option<String> {
     let mut statuses = Vec::new();
     if !enabled {
         statuses.push("Account disabled");
@@ -165,15 +150,6 @@ fn account_status(
     }
     if in_use {
         statuses.push("In use");
-    }
-    match scheduler.and_then(|status| status.last_error) {
-        Some(WeeklyWindowError::LoginRequired) => statuses.push("Sign-in required"),
-        Some(WeeklyWindowError::Transient | WeeklyWindowError::Rejected) => {
-            statuses.push("Weekly start retrying");
-        }
-        Some(WeeklyWindowError::Ambiguous) => statuses.push("Weekly start sent"),
-        Some(WeeklyWindowError::StateQuarantined) => statuses.push("Weekly start waiting"),
-        None => {}
     }
     (!statuses.is_empty()).then(|| statuses.join(" · "))
 }

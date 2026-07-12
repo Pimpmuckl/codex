@@ -90,6 +90,7 @@ fn codex_plus_plus_settings_params(
         Arc::clone(&automatic),
         Arc::clone(&automatic),
         Arc::clone(&weekly),
+        weekly_supported,
     )];
     if weekly_supported {
         items.push(settings_item(
@@ -98,6 +99,7 @@ fn codex_plus_plus_settings_params(
             Arc::clone(&weekly),
             automatic,
             weekly,
+            true,
         ));
     }
     SelectionViewParams {
@@ -115,6 +117,7 @@ fn settings_item(
     toggle: Arc<AtomicBool>,
     automatic: Arc<AtomicBool>,
     weekly: Arc<AtomicBool>,
+    save_weekly: bool,
 ) -> SelectionItem {
     let toggle_action = Arc::clone(&toggle);
     SelectionItem {
@@ -125,16 +128,23 @@ fn settings_item(
             action: Box::new(move |is_on, _tx| toggle_action.store(is_on, Ordering::Relaxed)),
         }),
         actions: vec![Box::new(move |tx| {
-            tx.send(AppEvent::PersistCodexPlusPlusSettings {
-                automatic_account_selection: automatic
-                    .load(Ordering::Relaxed)
-                    .then_some(AutomaticOn)
-                    .unwrap_or(AutomaticOff),
-                weekly_usage_window_auto_start: weekly
-                    .load(Ordering::Relaxed)
-                    .then_some(WeeklyOn)
-                    .unwrap_or(WeeklyOff),
-            });
+            let automatic = automatic
+                .load(Ordering::Relaxed)
+                .then_some(AutomaticOn)
+                .unwrap_or(AutomaticOff);
+            if save_weekly {
+                tx.send(AppEvent::PersistCodexPlusPlusSettings {
+                    automatic_account_selection: automatic,
+                    weekly_usage_window_auto_start: weekly
+                        .load(Ordering::Relaxed)
+                        .then_some(WeeklyOn)
+                        .unwrap_or(WeeklyOff),
+                });
+            } else {
+                tx.send(AppEvent::PersistAutomaticAccountSelection {
+                    selection: automatic,
+                });
+            }
         })],
         dismiss_on_select: true,
         ..Default::default()

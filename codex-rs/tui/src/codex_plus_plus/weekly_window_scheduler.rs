@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use codex_config::WeeklyUsageWindowAutoStart;
-use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AccountStore;
-use codex_login::CodexAuth;
 use codex_login::WeeklyWindowAttemptDecision;
 use codex_login::WeeklyWindowAttemptOutcome;
 use codex_login::WeeklyWindowRetryableError;
@@ -65,7 +63,10 @@ where
             _ = interval.tick(), if *control.borrow() => scan(control.clone()).await,
             changed = control.changed() => match changed {
                 Err(_) => return,
-                Ok(()) if *control.borrow_and_update() => scan(control.clone()).await,
+                Ok(()) if *control.borrow_and_update() => {
+                    scan(control.clone()).await;
+                    interval.reset();
+                }
                 Ok(()) => {}
             }
         }
@@ -107,11 +108,10 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
             return;
         }
     };
-    let accounts = accounts_matching_workspace(&config, accounts).await;
     if control.has_changed().unwrap_or(true) {
         return;
     }
-    let loaded = account_usage::load_without_refresh(&config, &accounts, &store).await;
+    let loaded = account_usage::load(&config, &accounts, &store).await;
 
     for (account_id, account_home) in accounts {
         if control.has_changed().unwrap_or(true) {
@@ -120,18 +120,7 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
         if loaded.login_required.contains_key(&account_id) {
             continue;
         }
-        let usage = loaded
-            .usage
-            .get(&account_id)
-            .map_or(WeeklyWindowUsage::Missing, |usage| {
-                match usage.weekly_unused {
-                    Some(unused) => WeeklyWindowUsage::Present {
-                        unused,
-                        resets_at: usage.weekly_reset_at,
-                    },
-                    None => WeeklyWindowUsage::Missing,
-                }
-            });
+        let usage = weekly_usage(loaded.usage.get(&account_id));
         let attempt = match store.begin_weekly_window_attempt(
             &account_id,
             usage,
@@ -149,7 +138,7 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
             }
         };
         let outcome = ping_weekly_window(WeeklyWindowPingRequest {
-            account_codex_home: account_home,
+            account_codex_home: account_home.clone(),
             model: model.clone(),
             model_provider_id: config.model_provider_id.clone(),
             model_provider: config.model_provider.clone(),
@@ -159,27 +148,43 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
             http_client_factory: http_client_factory.clone(),
         })
         .await;
-        if let Err(err) = attempt.finish(attempt_outcome(outcome, usage), Utc::now().timestamp()) {
+        let refreshed_usage = if outcome == WeeklyWindowPingOutcome::Completed {
+            let refreshed =
+                account_usage::load(&config, &[(account_id.clone(), account_home)], &store).await;
+            weekly_usage(refreshed.usage.get(&account_id))
+        } else {
+            WeeklyWindowUsage::Missing
+        };
+        if let Err(err) = attempt.finish(
+            attempt_outcome(outcome, refreshed_usage),
+            Utc::now().timestamp(),
+        ) {
             tracing::warn!(%account_id, %err, "weekly-window scheduler could not finish attempt");
         }
     }
 }
 
+fn weekly_usage(usage: Option<&account_usage::AccountUsage>) -> WeeklyWindowUsage {
+    let Some(usage) = usage else {
+        return WeeklyWindowUsage::Missing;
+    };
+    match usage.weekly_unused {
+        Some(unused) => WeeklyWindowUsage::Present {
+            unused,
+            resets_at: usage.weekly_reset_at,
+        },
+        None => WeeklyWindowUsage::Missing,
+    }
+}
+
 fn attempt_outcome(
     outcome: WeeklyWindowPingOutcome,
-    usage: WeeklyWindowUsage,
+    refreshed_usage: WeeklyWindowUsage,
 ) -> WeeklyWindowAttemptOutcome {
-    let active_usage = match usage {
-        WeeklyWindowUsage::Present { resets_at, .. } => WeeklyWindowUsage::Present {
-            unused: false,
-            resets_at,
-        },
-        WeeklyWindowUsage::Missing => WeeklyWindowUsage::Missing,
-    };
     match outcome {
-        WeeklyWindowPingOutcome::Completed => WeeklyWindowAttemptOutcome::Completed {
-            refreshed_usage: active_usage,
-        },
+        WeeklyWindowPingOutcome::Completed => {
+            WeeklyWindowAttemptOutcome::Completed { refreshed_usage }
+        }
         WeeklyWindowPingOutcome::UnsupportedConfiguration
         | WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowAttemptOutcome::Completed {
             refreshed_usage: WeeklyWindowUsage::Missing,
@@ -194,34 +199,6 @@ fn attempt_outcome(
         }
         WeeklyWindowPingOutcome::Ambiguous => WeeklyWindowAttemptOutcome::Ambiguous,
     }
-}
-
-async fn accounts_matching_workspace(
-    config: &Config,
-    accounts: Vec<(codex_login::AccountId, std::path::PathBuf)>,
-) -> Vec<(codex_login::AccountId, std::path::PathBuf)> {
-    if config.forced_chatgpt_workspace_id.is_none() {
-        return accounts;
-    }
-    let mut matching = Vec::with_capacity(accounts.len());
-    let auth_route_config = config.auth_route_config();
-    for (account_id, account_home) in accounts {
-        let auth = CodexAuth::from_auth_storage(
-            &account_home,
-            AuthCredentialsStoreMode::File,
-            config.forced_chatgpt_workspace_id.as_deref(),
-            Some(&config.chatgpt_base_url),
-            config.auth_keyring_backend_kind(),
-            auth_route_config.as_ref(),
-        )
-        .await
-        .ok()
-        .flatten();
-        if auth.as_ref().is_some_and(CodexAuth::is_chatgpt_auth) {
-            matching.push((account_id, account_home));
-        }
-    }
-    matching
 }
 
 #[cfg(test)]

@@ -30,11 +30,14 @@ async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     scheduler.set_enabled(false);
     scheduler.set_enabled(true);
     assert!(active_scan.has_changed().unwrap());
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert_eq!(scans.load(Ordering::Relaxed), 3);
 
     drop(scheduler);
     tokio::time::advance(SCAN_INTERVAL).await;
     tokio::task::yield_now().await;
-    assert_eq!(scans.load(Ordering::Relaxed), 2);
+    assert_eq!(scans.load(Ordering::Relaxed), 3);
 }
 
 #[test]
@@ -51,7 +54,8 @@ fn completed_ping_records_active_usage_and_unsupported_routing_closes() {
         unused,
         resets_at: Some(42),
     };
-    assert_completed(Completed, usage(true), usage(false));
+    assert_completed(Completed, usage(true), usage(true));
+    assert_completed(Completed, Missing, Missing);
     assert_completed(UnsupportedConfiguration, Missing, Missing);
     assert_completed(UnsupportedRouting, Missing, Missing);
 }

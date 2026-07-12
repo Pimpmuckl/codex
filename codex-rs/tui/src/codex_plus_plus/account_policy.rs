@@ -9,26 +9,25 @@ pub(crate) async fn persist_settings(
     app: &mut App,
     app_server: &AppServerSession,
     automatic_account_selection: AutomaticAccountSelection,
-    weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
+    weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
 ) {
     let automatic = match automatic_account_selection {
         AutomaticAccountSelection::Enabled => "enabled",
         AutomaticAccountSelection::Disabled => "disabled",
     };
-    let weekly = match weekly_usage_window_auto_start {
-        WeeklyUsageWindowAutoStart::Enabled => "enabled",
-        WeeklyUsageWindowAutoStart::Disabled => "disabled",
-    };
-    let writes = vec![
-        crate::config_update::replace_config_value(
-            "automatic_account_selection",
-            serde_json::json!(automatic),
-        ),
-        crate::config_update::replace_config_value(
+    let mut writes = vec![crate::config_update::replace_config_value(
+        "automatic_account_selection",
+        serde_json::json!(automatic),
+    )];
+    if let Some(weekly) = weekly_usage_window_auto_start {
+        writes.push(crate::config_update::replace_config_value(
             "weekly_usage_window_auto_start",
-            serde_json::json!(weekly),
-        ),
-    ];
+            serde_json::json!(match weekly {
+                WeeklyUsageWindowAutoStart::Enabled => "enabled",
+                WeeklyUsageWindowAutoStart::Disabled => "disabled",
+            }),
+        ));
+    }
     if let Err(err) =
         crate::config_update::write_config_batch(app_server.request_handle(), writes).await
     {
@@ -44,7 +43,7 @@ pub(crate) async fn persist_settings(
             Ok(response) => response,
             Err(err) => {
                 tracing::error!(error = %err, "failed to verify Codex++ settings");
-                if weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Disabled
+                if weekly_usage_window_auto_start == Some(WeeklyUsageWindowAutoStart::Disabled)
                     && let Some(scheduler) = &app.weekly_window_scheduler
                 {
                     scheduler.set_enabled(false);
@@ -78,7 +77,7 @@ pub(crate) async fn persist_settings(
         scheduler.set_enabled(effective_weekly == WeeklyUsageWindowAutoStart::Enabled);
     }
     if effective_automatic == automatic_account_selection
-        && effective_weekly == weekly_usage_window_auto_start
+        && weekly_usage_window_auto_start.is_none_or(|weekly| effective_weekly == weekly)
     {
         app.chat_widget
             .codex_plus_plus_settings_persisted(effective_automatic, effective_weekly);

@@ -67,9 +67,9 @@ fn settings_unsupported_snapshot() {
 }
 
 #[test]
-fn enter_saves_full_selection() {
+fn unsupported_settings_save_only_the_visible_setting() {
     let (mut view, mut rx) = settings_view(
-        AutomaticAccountSelection::Enabled,
+        AutomaticAccountSelection::Disabled,
         WeeklyUsageWindowAutoStart::Enabled,
     );
 
@@ -78,9 +78,8 @@ fn enter_saves_full_selection() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::PersistCodexPlusPlusSettings {
-            automatic_account_selection: AutomaticAccountSelection::Disabled,
-            weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart::Enabled,
+        Ok(AppEvent::PersistAutomaticAccountSelection {
+            selection: AutomaticAccountSelection::Enabled,
         })
     );
 }

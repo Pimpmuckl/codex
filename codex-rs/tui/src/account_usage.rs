@@ -9,7 +9,6 @@ use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
-use codex_login::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
 use codex_login::refresh_auth_from_storage;
 use codex_protocol::auth::RefreshTokenFailedError;
@@ -71,43 +70,16 @@ pub(crate) async fn load(
     accounts: &[(AccountId, PathBuf)],
     store: &AccountStore,
 ) -> AccountUsageLoad {
-    load_with_recovery(config, accounts, store, UnauthorizedRecovery::Refresh).await
-}
-
-pub(crate) async fn load_without_refresh(
-    config: &Config,
-    accounts: &[(AccountId, PathBuf)],
-    store: &AccountStore,
-) -> AccountUsageLoad {
-    load_with_recovery(config, accounts, store, UnauthorizedRecovery::ReloadOnly).await
-}
-
-#[derive(Clone, Copy)]
-enum UnauthorizedRecovery {
-    Refresh,
-    ReloadOnly,
-}
-
-async fn load_with_recovery(
-    config: &Config,
-    accounts: &[(AccountId, PathBuf)],
-    store: &AccountStore,
-    recovery: UnauthorizedRecovery,
-) -> AccountUsageLoad {
     let mut tasks = JoinSet::new();
     for (account_id, account_home) in accounts {
         let account_id = account_id.clone();
         let account_home = account_home.clone();
-        let chatgpt_base_url = config.chatgpt_base_url.clone();
-        let auth_route_config = config.auth_route_config();
+        let config = config.clone();
         tasks.spawn(async move {
-            let result = tokio::time::timeout(
-                FETCH_TIMEOUT,
-                fetch(account_home, chatgpt_base_url, auth_route_config, recovery),
-            )
-            .await
-            .map_err(|_| AccountUsageFetchError::new(anyhow!("rate-limit request timed out")))
-            .and_then(std::convert::identity);
+            let result = tokio::time::timeout(FETCH_TIMEOUT, fetch(account_home, config))
+                .await
+                .map_err(|_| AccountUsageFetchError::new(anyhow!("rate-limit request timed out")))
+                .and_then(std::convert::identity);
             (account_id, result)
         });
     }
@@ -145,16 +117,15 @@ async fn load_with_recovery(
 
 async fn fetch(
     account_home: PathBuf,
-    chatgpt_base_url: String,
-    auth_route_config: Option<codex_login::AuthRouteConfig>,
-    recovery: UnauthorizedRecovery,
+    config: Config,
 ) -> std::result::Result<AccountUsage, AccountUsageFetchError> {
+    let auth_route_config = config.auth_route_config();
     let auth = CodexAuth::from_auth_storage(
         &account_home,
         AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
-        Some(&chatgpt_base_url),
-        AuthKeyringBackendKind::default(),
+        config.forced_chatgpt_workspace_id.as_deref(),
+        Some(&config.chatgpt_base_url),
+        config.auth_keyring_backend_kind(),
         auth_route_config.as_ref(),
     )
     .await
@@ -162,13 +133,13 @@ async fn fetch(
     .context("imported account is not authenticated")
     .map_err(AccountUsageFetchError::new)?;
 
-    match fetch_with_auth(&auth, &chatgpt_base_url).await {
-        Err(err) if is_unauthorized(&err) && matches!(recovery, UnauthorizedRecovery::Refresh) => {
+    match fetch_with_auth(&auth, &config.chatgpt_base_url).await {
+        Err(err) if is_unauthorized(&err) => {
             let auth = match refresh_auth_from_storage(
                 &account_home,
                 AuthCredentialsStoreMode::File,
-                Some(&chatgpt_base_url),
-                AuthKeyringBackendKind::default(),
+                Some(&config.chatgpt_base_url),
+                config.auth_keyring_backend_kind(),
                 auth_route_config.as_ref(),
             )
             .await
@@ -184,7 +155,7 @@ async fn fetch(
             }
             .context("imported account is not authenticated")
             .map_err(AccountUsageFetchError::new)?;
-            fetch_with_auth(&auth, &chatgpt_base_url)
+            fetch_with_auth(&auth, &config.chatgpt_base_url)
                 .await
                 .map_err(AccountUsageFetchError::new)
         }

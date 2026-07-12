@@ -1,6 +1,26 @@
 use super::*;
+use crate::legacy_core::config::ConfigBuilder;
 use codex_protocol::auth::RefreshTokenFailedError;
 use codex_protocol::protocol::RateLimitWindow;
+use wiremock::MockServer;
+
+const TEST_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
+
+#[tokio::test]
+async fn fetch_enforces_forced_workspace_before_network() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("auth.json"), format!(r#"{{"OPENAI_API_KEY":null,"tokens":{{"id_token":"{TEST_ID_TOKEN}","access_token":"token","refresh_token":"refresh","account_id":"account-123"}},"last_refresh":"2099-01-01T00:00:00Z"}}"#)).unwrap();
+    let server = MockServer::start().await;
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().into())
+        .build()
+        .await
+        .unwrap();
+    config.chatgpt_base_url = server.uri();
+    config.forced_chatgpt_workspace_id = Some(vec!["other".to_string()]);
+    assert!(fetch(home.path().into(), config).await.is_err());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
 
 #[test]
 fn maps_five_hour_and_weekly_windows_to_picker_usage() {

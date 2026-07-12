@@ -846,7 +846,12 @@ pub(crate) enum AppEvent {
         updates: Vec<(Feature, bool)>,
     },
 
-    /// Persist the Codex++ global settings selected in `/codexplusplus`.
+    /// Persist automatic account selection without touching hidden settings.
+    PersistAutomaticAccountSelection {
+        selection: AutomaticAccountSelection,
+    },
+
+    /// Persist all Codex++ global settings selected in `/codexplusplus`.
     PersistCodexPlusPlusSettings {
         automatic_account_selection: AutomaticAccountSelection,
         weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
