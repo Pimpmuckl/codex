@@ -16,6 +16,7 @@ use codex_login::WeeklyWindowUsage;
 use codex_model_provider::WeeklyWindowPingOutcome;
 use codex_model_provider::WeeklyWindowPingRequest;
 use codex_model_provider::ping_weekly_window;
+use codex_model_provider::preflight_weekly_window_ping;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
@@ -60,6 +61,19 @@ where
 }
 
 async fn scan(config: Config, model: String) {
+    let http_client_factory = config.http_client_factory();
+    if let Err(outcome) = preflight_weekly_window_ping(
+        &config.model_provider_id,
+        &config.model_provider,
+        &config.chatgpt_base_url,
+        &http_client_factory,
+    ) {
+        tracing::warn!(
+            ?outcome,
+            "weekly-window scheduler configuration is unsupported"
+        );
+        return;
+    }
     let store = AccountStore::new(config.codex_home.to_path_buf());
     let eligible = match store.list() {
         Ok(accounts) => accounts
@@ -127,7 +141,7 @@ async fn scan(config: Config, model: String) {
             chatgpt_base_url: config.chatgpt_base_url.clone(),
             auth_route_config: config.auth_route_config(),
             forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
-            http_client_factory: config.http_client_factory(),
+            http_client_factory: http_client_factory.clone(),
         })
         .await;
         if outcome == WeeklyWindowPingOutcome::RecoveryRequired {
