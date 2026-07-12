@@ -6,20 +6,21 @@ use tracing::warn;
 
 pub(in crate::auth::storage) fn load(
     storage: &AutoAuthStorage,
+    guard: &AuthRefreshGuard,
 ) -> std::io::Result<Option<AuthDotJson>> {
     if let Some(auth) = storage
         .file_authority
-        .load_authoritative(&storage.file_storage)?
+        .load_authoritative(&storage.file_storage, guard)?
     {
         return Ok(Some(auth));
     }
 
     match storage.keyring_storage.load() {
         Ok(Some(auth)) => Ok(Some(auth)),
-        Ok(None) => storage.file_storage.load(),
+        Ok(None) => storage.file_storage.load_with_guard(guard),
         Err(err) => {
             warn!("failed to load CLI auth from keyring, falling back to file storage: {err}");
-            storage.file_storage.load()
+            storage.file_storage.load_with_guard(guard)
         }
     }
 }
@@ -31,7 +32,7 @@ pub(in crate::auth::storage) fn save(
 ) -> std::io::Result<()> {
     if storage
         .file_authority
-        .save_if_authoritative(&storage.file_storage, auth)?
+        .save_if_authoritative(&storage.file_storage, auth, guard)?
     {
         return Ok(());
     }
@@ -42,7 +43,7 @@ pub(in crate::auth::storage) fn save(
             warn!("failed to save auth to keyring, falling back to file storage: {err}");
             storage
                 .file_authority
-                .save_fallback(&storage.file_storage, auth)
+                .save_fallback(&storage.file_storage, auth, guard)
         }
     }
 }
