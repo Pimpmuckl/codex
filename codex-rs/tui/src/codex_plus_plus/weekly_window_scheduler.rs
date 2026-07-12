@@ -3,6 +3,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use chrono::Utc;
+use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AccountStore;
 use codex_login::CodexAuth;
@@ -24,24 +25,25 @@ use crate::legacy_core::config::Config;
 const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct WeeklyWindowScheduler {
-    tx: watch::Sender<bool>,
+    state: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
 
 impl WeeklyWindowScheduler {
     pub(crate) fn spawn(config: Config, model: String) -> Self {
-        let (tx, receiver) = watch::channel(true);
+        let enabled = config.weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Enabled;
+        let (state, receiver) = watch::channel(enabled);
         let task = tokio::spawn(run_schedule(
             move |scan_control| scan(config.clone(), model.clone(), scan_control),
             receiver,
         ));
-        Self { tx, task }
+        Self { state, task }
     }
 
     pub(crate) fn set_enabled(&self, on: bool) {
         let _ = self
-            .tx
-            .send_if_modified(|value| std::mem::replace(value, on) != on);
+            .state
+            .send_if_modified(|v| std::mem::replace(v, on) != on);
     }
 }
 
@@ -49,10 +51,6 @@ impl Drop for WeeklyWindowScheduler {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-fn scan_stopped(control: &watch::Receiver<bool>) -> bool {
-    control.has_changed().unwrap_or(true)
 }
 
 async fn run_schedule<F, Fut>(mut scan: F, mut control: watch::Receiver<bool>)
@@ -65,13 +63,10 @@ where
     loop {
         tokio::select! {
             _ = interval.tick(), if *control.borrow() => scan(control.clone()).await,
-            changed = control.changed() => {
-                if changed.is_err() {
-                    return;
-                }
-                if *control.borrow_and_update() {
-                    scan(control.clone()).await;
-                }
+            changed = control.changed() => match changed {
+                Err(_) => return,
+                Ok(()) if *control.borrow_and_update() => scan(control.clone()).await,
+                Ok(()) => {}
             }
         }
     }
@@ -113,13 +108,13 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
         }
     };
     let accounts = accounts_matching_workspace(&config, accounts).await;
-    if scan_stopped(&control) {
+    if control.has_changed().unwrap_or(true) {
         return;
     }
     let loaded = account_usage::load_without_refresh(&config, &accounts, &store).await;
 
     for (account_id, account_home) in accounts {
-        if scan_stopped(&control) {
+        if control.has_changed().unwrap_or(true) {
             return;
         }
         if loaded.login_required.contains_key(&account_id) {
@@ -164,20 +159,28 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
             http_client_factory: http_client_factory.clone(),
         })
         .await;
-        if outcome == WeeklyWindowPingOutcome::RecoveryRequired {
-            tracing::warn!(%account_id, "weekly-window ping requires account recovery");
-        }
-        let outcome = attempt_outcome(outcome);
-        if let Err(err) = attempt.finish(outcome, Utc::now().timestamp()) {
+        if let Err(err) = attempt.finish(attempt_outcome(outcome, usage), Utc::now().timestamp()) {
             tracing::warn!(%account_id, %err, "weekly-window scheduler could not finish attempt");
         }
     }
 }
 
-fn attempt_outcome(outcome: WeeklyWindowPingOutcome) -> WeeklyWindowAttemptOutcome {
+fn attempt_outcome(
+    outcome: WeeklyWindowPingOutcome,
+    usage: WeeklyWindowUsage,
+) -> WeeklyWindowAttemptOutcome {
+    let active_usage = match usage {
+        WeeklyWindowUsage::Present { resets_at, .. } => WeeklyWindowUsage::Present {
+            unused: false,
+            resets_at,
+        },
+        WeeklyWindowUsage::Missing => WeeklyWindowUsage::Missing,
+    };
     match outcome {
-        WeeklyWindowPingOutcome::Completed
-        | WeeklyWindowPingOutcome::UnsupportedConfiguration
+        WeeklyWindowPingOutcome::Completed => WeeklyWindowAttemptOutcome::Completed {
+            refreshed_usage: active_usage,
+        },
+        WeeklyWindowPingOutcome::UnsupportedConfiguration
         | WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowAttemptOutcome::Completed {
             refreshed_usage: WeeklyWindowUsage::Missing,
         },

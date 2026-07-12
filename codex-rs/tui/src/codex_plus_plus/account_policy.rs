@@ -44,6 +44,11 @@ pub(crate) async fn persist_settings(
             Ok(response) => response,
             Err(err) => {
                 tracing::error!(error = %err, "failed to verify Codex++ settings");
+                if weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Disabled
+                    && let Some(scheduler) = &app.weekly_window_scheduler
+                {
+                    scheduler.set_enabled(false);
+                }
                 app.chat_widget
                     .codex_plus_plus_settings_verification_failed(err.to_string());
                 return;
@@ -71,14 +76,6 @@ pub(crate) async fn persist_settings(
     app.config.weekly_usage_window_auto_start = effective_weekly;
     if let Some(scheduler) = &app.weekly_window_scheduler {
         scheduler.set_enabled(effective_weekly == WeeklyUsageWindowAutoStart::Enabled);
-    } else if effective_weekly == WeeklyUsageWindowAutoStart::Enabled
-        && app_server.uses_embedded_app_server()
-    {
-        let model = app.chat_widget.current_model().to_string();
-        app.weekly_window_scheduler = Some(super::WeeklyWindowScheduler::spawn(
-            app.config.clone(),
-            model,
-        ));
     }
     if effective_automatic == automatic_account_selection
         && effective_weekly == weekly_usage_window_auto_start
