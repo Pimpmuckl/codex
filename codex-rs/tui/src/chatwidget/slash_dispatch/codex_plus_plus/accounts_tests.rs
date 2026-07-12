@@ -23,6 +23,7 @@ fn account_row(
     login_required: bool,
     is_current: bool,
     in_use: bool,
+    weekly_status: Option<WeeklyWindowStatus>,
 ) -> AccountAutomationRow {
     AccountAutomationRow {
         id: account_id(id),
@@ -32,6 +33,7 @@ fn account_row(
         login_required,
         is_current,
         in_use,
+        weekly_status,
     }
 }
 
@@ -57,9 +59,36 @@ fn accounts_view(
 #[test]
 fn mixed_account_automation_snapshot() {
     let rows = vec![
-        account_row("acct_1", "one@example.com", true, true, false, true, true),
-        account_row("acct_2", "two@example.com", true, false, true, false, false),
-        account_row("acct_3", "three@example.com", true, true, true, false, true),
+        account_row(
+            "acct_1",
+            "one@example.com",
+            true,
+            true,
+            false,
+            true,
+            true,
+            Some(WeeklyWindowStatus::Waiting(Some(100))),
+        ),
+        account_row(
+            "acct_2",
+            "two@example.com",
+            true,
+            false,
+            true,
+            false,
+            false,
+            Some(WeeklyWindowStatus::Started(Some(80))),
+        ),
+        account_row(
+            "acct_3",
+            "three@example.com",
+            true,
+            true,
+            true,
+            false,
+            true,
+            Some(WeeklyWindowStatus::Retrying(Some(9))),
+        ),
         account_row(
             "acct_4",
             "four@example.com",
@@ -68,6 +97,7 @@ fn mixed_account_automation_snapshot() {
             false,
             false,
             false,
+            Some(WeeklyWindowStatus::SignInRequired),
         ),
     ];
     let (view, _rx) = accounts_view(rows, PathBuf::new());
@@ -94,6 +124,7 @@ fn space_stages_and_escape_cancels_without_writing() {
         false,
         false,
         false,
+        None,
     )];
     let (mut view, mut rx) = accounts_view(rows, temp.path().to_path_buf());
 
@@ -114,6 +145,7 @@ fn enter_surfaces_save_failure_snapshot() {
         false,
         false,
         false,
+        None,
     )];
     let (mut view, mut rx) = accounts_view(rows, temp.path().to_path_buf());
 
@@ -151,18 +183,21 @@ fn unchanged_accounts_are_not_written() {
 
 #[test]
 fn account_status_is_concise() {
-    assert_eq!(account_status(true, false, false), None);
+    assert_eq!(account_status(true, false, false, None), None);
     assert_eq!(
-        account_status(true, true, false).as_deref(),
+        account_status(true, true, false, None).as_deref(),
         Some("Login required")
     );
-    assert_eq!(account_status(true, false, true).as_deref(), Some("In use"));
     assert_eq!(
-        account_status(true, true, true).as_deref(),
+        account_status(true, false, true, None).as_deref(),
+        Some("In use")
+    );
+    assert_eq!(
+        account_status(true, true, true, None).as_deref(),
         Some("Login required · In use")
     );
     assert_eq!(
-        account_status(false, true, true).as_deref(),
+        account_status(false, true, true, None).as_deref(),
         Some("Account disabled · Login required · In use")
     );
 }

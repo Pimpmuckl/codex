@@ -16,6 +16,7 @@ async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     let (state, receiver) = watch::channel(true);
     let scheduler = WeeklyWindowScheduler {
         state,
+        statuses: Arc::new(Mutex::new(HashMap::new())),
         _task: tokio::spawn(run_schedule(
             move |_control| {
                 let scan = task_scans.fetch_add(1, Ordering::Relaxed);
@@ -53,6 +54,19 @@ async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     tokio::time::advance(SCAN_INTERVAL).await;
     tokio::task::yield_now().await;
     assert_eq!(scans.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn scheduler_status_is_bounded() {
+    let mut statuses = HashMap::new();
+    for index in 0..=MAX_STATUS_ACCOUNTS {
+        record_status(
+            &mut statuses,
+            &serde_json::from_str(&format!("\"acct_{index}\"")).expect("account id"),
+            WeeklyWindowStatus::Waiting(Some(100)),
+        );
+    }
+    assert_eq!(statuses.len(), MAX_STATUS_ACCOUNTS);
 }
 
 #[test]
