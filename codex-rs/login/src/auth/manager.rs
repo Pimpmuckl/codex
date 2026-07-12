@@ -2735,6 +2735,9 @@ impl AuthManager {
                 REFRESH_TOKEN_UNKNOWN_MESSAGE.to_string(),
             ))
         })?;
+        if self.has_external_auth() {
+            return self.refresh_token_from_authority_impl().await;
+        }
         if self
             .auth_cached()
             .as_ref()
