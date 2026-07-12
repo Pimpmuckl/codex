@@ -165,20 +165,10 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
     server.reset().await;
     let mut custom_request = account.request(&server);
     custom_request.model_provider_id = "custom".to_string();
-    AccountStore::new(account.account_home.clone())
-        .import_current(
-            Some("nested".into()),
-            AuthCredentialsStoreMode::File,
-            AuthKeyringBackendKind::default(),
-        )
-        .expect("import nested account");
-    account.reset_auth();
-    for request in [custom_request, account.request(&server)] {
-        assert_eq!(
-            ping_weekly_window(request).await,
-            WeeklyWindowPingOutcome::DefiniteRejection
-        );
-    }
+    assert_eq!(
+        ping_weekly_window(custom_request).await,
+        WeeklyWindowPingOutcome::DefiniteRejection
+    );
     assert_eq!(request_count(&server).await, 0);
 }
 

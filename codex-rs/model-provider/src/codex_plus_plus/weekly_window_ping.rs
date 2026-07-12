@@ -89,21 +89,16 @@ async fn ping_weekly_window_with_timeout(
 }
 
 async fn ping_weekly_window_inner(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
-    let auth_manager = Arc::new(
-        AuthManager::new(
-            request.account_codex_home.clone(),
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            request.forced_chatgpt_workspace_id.clone(),
-            Some(request.chatgpt_base_url.clone()),
-            AuthKeyringBackendKind::default(),
-            request.auth_route_config.clone(),
-        )
-        .await,
-    );
-    if auth_manager.active_account_id().is_some() {
-        return WeeklyWindowPingOutcome::DefiniteRejection;
-    }
+    let Some(auth_manager) = AuthManager::new_from_file_auth(
+        request.account_codex_home.clone(),
+        request.forced_chatgpt_workspace_id.clone(),
+        Some(request.chatgpt_base_url.clone()),
+        request.auth_route_config.clone(),
+    )
+    .await
+    .map(Arc::new) else {
+        return WeeklyWindowPingOutcome::LoginRequired;
+    };
     let Some(auth) = auth_manager.auth().await else {
         return WeeklyWindowPingOutcome::LoginRequired;
     };
