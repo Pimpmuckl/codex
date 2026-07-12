@@ -2121,32 +2121,13 @@ impl AuthManager {
         chatgpt_base_url: Option<String>,
         auth_route_config: Option<AuthRouteConfig>,
     ) -> Option<Self> {
-        let agent_identity_authapi_base_url =
-            agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
-        let auth = load_auth_from_storage(
-            &codex_home,
-            AuthCredentialsStoreMode::File,
-            forced_chatgpt_workspace_id.as_deref(),
-            chatgpt_base_url.as_deref(),
-            AuthKeyringBackendKind::default(),
-            agent_identity_authapi_base_url.as_deref(),
-            auth_route_config.as_ref(),
+        codex_plus_plus::file_auth::new_manager(
+            codex_home,
+            forced_chatgpt_workspace_id,
+            chatgpt_base_url,
+            auth_route_config,
         )
         .await
-        .ok()
-        .flatten()
-        .filter(|auth| {
-            !auth.is_chatgpt_auth()
-                || chatgpt_auth_workspace_allowed(auth, forced_chatgpt_workspace_id.as_deref())
-        })?;
-        let mut manager = Arc::into_inner(Self::from_auth_with_home(auth, codex_home))?;
-        manager.auth_storage_only = true;
-        manager.automatic_account_selection = AutomaticAccountSelection::Disabled;
-        manager.forced_chatgpt_workspace_id = RwLock::new(forced_chatgpt_workspace_id);
-        manager.chatgpt_base_url = chatgpt_base_url;
-        manager.agent_identity_authapi_base_url = agent_identity_authapi_base_url;
-        manager.auth_route_config = auth_route_config;
-        Some(manager)
     }
 
     /// Create an AuthManager with a specific CodexAuth, for testing only.
@@ -2525,32 +2506,21 @@ impl AuthManager {
             return LoadedAuth::from_current_source(auth);
         }
 
-        let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
-        let auth_home = self.active_auth_home();
-        let auth = if self.auth_storage_only {
-            load_auth_from_storage(
-                &auth_home,
-                self.active_auth_credentials_store_mode(),
-                forced_chatgpt_workspace_id.as_deref(),
-                self.chatgpt_base_url.as_deref(),
-                self.active_keyring_backend_kind(),
-                self.agent_identity_authapi_base_url.as_deref(),
-                self.auth_route_config.as_ref(),
-            )
-            .await
-        } else {
-            load_auth(
-                &auth_home,
-                self.enable_codex_api_key_env,
-                self.active_auth_credentials_store_mode(),
-                forced_chatgpt_workspace_id.as_deref(),
-                self.chatgpt_base_url.as_deref(),
-                self.active_keyring_backend_kind(),
-                self.agent_identity_authapi_base_url.as_deref(),
-                self.auth_route_config.as_ref(),
-            )
-            .await
+        if self.auth_storage_only {
+            return LoadedAuth::from_current_source(codex_plus_plus::file_auth::load(self).await);
         }
+        let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
+        let auth = load_auth(
+            &self.active_auth_home(),
+            self.enable_codex_api_key_env,
+            self.active_auth_credentials_store_mode(),
+            forced_chatgpt_workspace_id.as_deref(),
+            self.chatgpt_base_url.as_deref(),
+            self.active_keyring_backend_kind(),
+            self.agent_identity_authapi_base_url.as_deref(),
+            self.auth_route_config.as_ref(),
+        )
+        .await
         .ok()
         .flatten();
         if !imported_account_refresh::root_auth_is_account_marker(auth.as_ref()) {
