@@ -1,6 +1,7 @@
 mod amazon_bedrock;
 mod auth;
 mod bearer_auth_provider;
+mod codex_plus_plus;
 mod models_endpoint;
 mod provider;
 
@@ -13,6 +14,9 @@ pub use auth::unauthenticated_auth_provider;
 pub use bearer_auth_provider::BearerAuthProvider;
 pub use bearer_auth_provider::BearerAuthProvider as CoreAuthProvider;
 pub use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
+pub use codex_plus_plus::WeeklyWindowPingOutcome;
+pub use codex_plus_plus::WeeklyWindowPingRequest;
+pub use codex_plus_plus::ping_weekly_window;
 pub use codex_protocol::account::ProviderAccount;
 pub use provider::ModelProvider;
 pub use provider::ModelProviderFuture;
