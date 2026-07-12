@@ -2,15 +2,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use codex_agent_identity::ChatGptEnvironment;
 use codex_api::ApiError;
 use codex_api::Compression;
 use codex_api::ResponseEvent;
 use codex_api::ResponsesClient;
 use codex_api::RetryConfig;
 use codex_api::TransportError;
-use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::HttpTransport;
+use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::Request;
 use codex_http_client::ReqwestTransport;
 use codex_http_client::Response;
@@ -18,7 +19,7 @@ use codex_http_client::StreamResponse;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CodexAuth;
-use codex_login::default_client::build_default_reqwest_client_for_route_async;
+use codex_login::default_client::build_reqwest_client;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use http::HeaderMap;
@@ -59,6 +60,8 @@ pub enum WeeklyWindowPingOutcome {
     Ambiguous,
     LoginRequired,
     RecoveryRequired,
+    UnsupportedConfiguration,
+    UnsupportedRouting,
 }
 
 pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindowPingOutcome {
@@ -69,6 +72,14 @@ pub async fn ping_weekly_window(request: WeeklyWindowPingRequest) -> WeeklyWindo
             != ModelProviderInfo::create_openai_provider(/*base_url*/ None).base_url
     {
         return WeeklyWindowPingOutcome::DefiniteRejection;
+    }
+    if request.chatgpt_base_url.trim_end_matches('/')
+        != ChatGptEnvironment::default().chatgpt_base_url()
+    {
+        return WeeklyWindowPingOutcome::UnsupportedConfiguration;
+    }
+    if request.http_client_factory.outbound_proxy_policy() != OutboundProxyPolicy::ReqwestDefault {
+        return WeeklyWindowPingOutcome::UnsupportedRouting;
     }
 
     ping_weekly_window_with_timeout(request, PING_TIMEOUT).await
@@ -89,15 +100,17 @@ async fn ping_weekly_window_inner(
     request: WeeklyWindowPingRequest,
     deadline: Instant,
 ) -> WeeklyWindowPingOutcome {
-    let Some(auth_manager) = AuthManager::new_from_file_auth(
+    let auth_manager = match AuthManager::new_from_file_auth(
         request.account_codex_home.clone(),
         request.forced_chatgpt_workspace_id.clone(),
         Some(request.chatgpt_base_url.clone()),
         request.auth_route_config.clone(),
     )
     .await
-    .map(Arc::new) else {
-        return WeeklyWindowPingOutcome::LoginRequired;
+    {
+        Ok(Some(manager)) => Arc::new(manager),
+        Ok(None) => return WeeklyWindowPingOutcome::LoginRequired,
+        Err(_) => return WeeklyWindowPingOutcome::DefiniteRejection,
     };
     let Some(auth) = auth_manager.auth_cached() else {
         return WeeklyWindowPingOutcome::LoginRequired;
@@ -154,16 +167,7 @@ async fn send_once(
         retry_5xx: false,
         retry_transport: false,
     };
-    let request_url = provider.url_for_path("responses");
-    let Ok(client) = build_default_reqwest_client_for_route_async(
-        request.http_client_factory.clone(),
-        request_url,
-        ClientRouteClass::Api,
-    )
-    .await
-    else {
-        return AttemptOutcome::Finished(WeeklyWindowPingOutcome::DefiniteRejection);
-    };
+    let client = build_reqwest_client();
     let auth = auth_provider_from_auth_manager(Arc::clone(auth_manager), expected_auth);
     let transport = DeadlineTransport(ReqwestTransport::new(client), deadline);
     let client = ResponsesClient::new(transport, provider, auth);
@@ -213,12 +217,13 @@ async fn send_once(
 fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
     match error {
         ApiError::Transport(TransportError::Http { status, .. }) | ApiError::Api { status, .. }
-            if status.is_client_error() =>
+            if status.is_client_error() && *status != http::StatusCode::REQUEST_TIMEOUT =>
         {
             WeeklyWindowPingOutcome::DefiniteRejection
         }
         ApiError::QuotaExceeded
         | ApiError::UsageLimitReached { .. }
+        | ApiError::UsageNotIncluded
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
         | ApiError::CyberPolicy { .. } => WeeklyWindowPingOutcome::DefiniteRejection,
@@ -227,8 +232,7 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
         | ApiError::Stream(_)
         | ApiError::Retryable { .. }
         | ApiError::ServerOverloaded
-        | ApiError::ContextWindowExceeded
-        | ApiError::UsageNotIncluded => WeeklyWindowPingOutcome::Ambiguous,
+        | ApiError::ContextWindowExceeded => WeeklyWindowPingOutcome::Ambiguous,
     }
 }
 

@@ -132,7 +132,7 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
     let root_auth = std::fs::read(account.root.join("auth.json")).expect("root auth");
 
     assert_eq!(
-        ping_weekly_window(account.request(&server)).await,
+        ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
         WeeklyWindowPingOutcome::Completed
     );
     let requests = server.received_requests().await.expect("received requests");
@@ -160,12 +160,37 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
     custom_request.model_provider_id = "custom".to_string();
     let mut override_request = account.request(&server);
     override_request.model_provider.base_url = Some(server.uri());
+    let mut invalid_auth_request = account.request(&server);
+    invalid_auth_request.account_codex_home = account.root.join("invalid-auth");
+    std::fs::create_dir_all(invalid_auth_request.account_codex_home.join("auth.json")).unwrap();
     for request in [custom_request, override_request] {
         assert_eq!(
             ping_weekly_window(request).await,
             WeeklyWindowPingOutcome::DefiniteRejection
         );
     }
+    assert_eq!(
+        ping_weekly_window_with_timeout(invalid_auth_request, PING_TIMEOUT).await,
+        WeeklyWindowPingOutcome::DefiniteRejection
+    );
+
+    server.reset().await;
+    let mut configured_url_request = account.request(&server);
+    configured_url_request.chatgpt_base_url = "https://attacker.example/backend-api".to_string();
+    assert_eq!(
+        ping_weekly_window(configured_url_request).await,
+        WeeklyWindowPingOutcome::UnsupportedConfiguration
+    );
+
+    let mut routed_request = account.request(&server);
+    routed_request.chatgpt_base_url = ChatGptEnvironment::default().chatgpt_base_url().to_string();
+    routed_request.http_client_factory =
+        HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy);
+    assert_eq!(
+        ping_weekly_window(routed_request).await,
+        WeeklyWindowPingOutcome::UnsupportedRouting
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -189,7 +214,7 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
         .mount(&server)
         .await;
     assert_eq!(
-        ping_weekly_window(account.request(&server)).await,
+        ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
         WeeklyWindowPingOutcome::Completed
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
@@ -212,7 +237,7 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
         .mount(&server)
         .await;
     assert_eq!(
-        ping_weekly_window(account.request(&server)).await,
+        ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
         WeeklyWindowPingOutcome::RecoveryRequired
     );
     assert!(!AccountStore::new(account.root.clone()).list().unwrap()[0].login_required);
@@ -221,18 +246,26 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
 
 #[tokio::test]
 async fn ambiguous_outcomes_are_not_replayed_and_the_attempt_is_bounded() {
+    assert_eq!(
+        classify_error(&ApiError::UsageNotIncluded),
+        WeeklyWindowPingOutcome::DefiniteRejection
+    );
+
     let server = MockServer::start().await;
     let account = TestAccount::new();
-    Mock::given(method("POST"))
-        .and(path("/codex/responses"))
-        .respond_with(ResponseTemplate::new(500))
-        .mount(&server)
-        .await;
-    assert_eq!(
-        ping_weekly_window(account.request(&server)).await,
-        WeeklyWindowPingOutcome::Ambiguous
-    );
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    for status in [500, 408] {
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
+            WeeklyWindowPingOutcome::Ambiguous
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
 
     for response in [
         ResponseTemplate::new(200)

@@ -1553,6 +1553,7 @@ async fn auth_manager_file_auth_ignores_environment_and_reapplies_workspace_poli
         /*auth_route_config*/ None,
     )
     .await
+    .unwrap()
     .unwrap();
 
     let current_token = || manager.auth_cached().unwrap().get_token().unwrap();

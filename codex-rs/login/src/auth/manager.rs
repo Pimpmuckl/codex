@@ -2120,7 +2120,7 @@ impl AuthManager {
         forced_chatgpt_workspace_id: Option<Vec<String>>,
         chatgpt_base_url: Option<String>,
         auth_route_config: Option<AuthRouteConfig>,
-    ) -> Option<Self> {
+    ) -> std::io::Result<Option<Self>> {
         codex_plus_plus::file_auth::new_manager(
             codex_home,
             forced_chatgpt_workspace_id,

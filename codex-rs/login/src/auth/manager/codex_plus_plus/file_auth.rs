@@ -20,10 +20,10 @@ pub(in crate::auth::manager) async fn new_manager(
     forced_chatgpt_workspace_id: Option<Vec<String>>,
     chatgpt_base_url: Option<String>,
     auth_route_config: Option<AuthRouteConfig>,
-) -> Option<AuthManager> {
+) -> std::io::Result<Option<AuthManager>> {
     let agent_identity_authapi_base_url =
         agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
-    let auth = load_auth_from_storage(
+    let Some(auth) = load_auth_from_storage(
         &codex_home,
         AuthCredentialsStoreMode::File,
         forced_chatgpt_workspace_id.as_deref(),
@@ -32,21 +32,22 @@ pub(in crate::auth::manager) async fn new_manager(
         agent_identity_authapi_base_url.as_deref(),
         auth_route_config.as_ref(),
     )
-    .await
-    .ok()
-    .flatten()
+    .await?
     .filter(|auth| {
         !auth.is_chatgpt_auth()
             || chatgpt_auth_workspace_allowed(auth, forced_chatgpt_workspace_id.as_deref())
-    })?;
-    let mut manager = Arc::into_inner(AuthManager::from_auth_with_home(auth, codex_home))?;
+    }) else {
+        return Ok(None);
+    };
+    let mut manager = Arc::into_inner(AuthManager::from_auth_with_home(auth, codex_home))
+        .ok_or_else(|| std::io::Error::other("file auth manager is unexpectedly shared"))?;
     manager.auth_storage_only = true;
     manager.automatic_account_selection = AutomaticAccountSelection::Disabled;
     manager.forced_chatgpt_workspace_id = RwLock::new(forced_chatgpt_workspace_id);
     manager.chatgpt_base_url = chatgpt_base_url;
     manager.agent_identity_authapi_base_url = agent_identity_authapi_base_url;
     manager.auth_route_config = auth_route_config;
-    Some(manager)
+    Ok(Some(manager))
 }
 
 pub(in crate::auth::manager) async fn load(manager: &AuthManager) -> Option<CodexAuth> {
