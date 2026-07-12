@@ -470,6 +470,10 @@ impl ChatWidget {
     pub(super) fn refresh_model_display(&mut self) {
         let effective = self.effective_collaboration_mode();
         self.session_header.set_model(effective.model());
+        self.app_event_tx
+            .send(AppEvent::SyncWeeklyWindowSchedulerModel(
+                effective.model().to_string(),
+            ));
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
         self.sync_service_tier_commands();

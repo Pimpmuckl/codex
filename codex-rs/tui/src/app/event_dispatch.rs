@@ -1003,13 +1003,15 @@ impl App {
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
-                if let Some(scheduler) = &self.weekly_window_scheduler {
-                    scheduler.set_model(&model);
-                }
                 self.sync_active_thread_model_setting(app_server, model)
                     .await;
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
+            }
+            AppEvent::SyncWeeklyWindowSchedulerModel(model) => {
+                if let Some(scheduler) = &self.weekly_window_scheduler {
+                    scheduler.set_model(&model);
+                }
             }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
