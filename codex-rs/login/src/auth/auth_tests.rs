@@ -1289,6 +1289,7 @@ exit 1
     }
 }
 
+#[derive(Default)]
 struct AuthFileParams {
     openai_api_key: Option<String>,
     chatgpt_plan_type: Option<String>,
@@ -1529,6 +1530,27 @@ async fn load_auth_reads_personal_access_token_from_env() {
         "env auth should not write auth.json"
     );
     server.verify().await;
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn auth_manager_storage_only_ignores_environment_credentials_on_reload() {
+    let codex_home = tempdir().unwrap();
+    write_auth_file(AuthFileParams::default(), codex_home.path()).unwrap();
+    let _access_token_guard = EnvVarGuard::set(CODEX_ACCESS_TOKEN_ENV_VAR, "at-env");
+    let manager = AuthManager::new_from_file_auth(
+        codex_home.path().to_path_buf(),
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        /*auth_route_config*/ None,
+    )
+    .await
+    .unwrap();
+
+    let current_token = || manager.auth_cached().unwrap().get_token().unwrap();
+    assert_eq!(current_token(), "test-access-token");
+    manager.reload().await;
+    assert_eq!(current_token(), "test-access-token");
 }
 
 #[tokio::test]
