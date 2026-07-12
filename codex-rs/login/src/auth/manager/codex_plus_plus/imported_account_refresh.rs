@@ -11,25 +11,21 @@ use super::super::CodexAuth;
 use super::super::RefreshTokenError;
 use super::super::RefreshTokenFailedError;
 use super::super::ReloadOutcome;
-use super::super::load_auth_dot_json;
-use super::super::logout_all_stores;
+use super::super::load_auth_dot_json_with_guard;
+use super::super::logout_all_stores_with_guard;
 use super::super::revoke_auth_tokens;
 use crate::account::AccountId;
 use crate::account::AccountStore;
 use crate::account::account_id_for_auth;
 use crate::account::is_root_account_marker;
 use crate::account_lease::AccountLease;
+use crate::account_lease::AuthRefreshGuard;
 use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthKeyringBackendKind;
 
 const IMPORTED_ACCOUNT_LOGIN_REQUIRED_MESSAGE: &str =
     "This account needs you to sign in again. Run `codex account add` to continue.";
 const AUTOMATIC_ACCOUNT_SELECTION_DISABLED_MESSAGE: &str = "This account needs you to sign in again. Automatic account selection is disabled; choose another account in the Codex TUI, run `codex account add`, or enable automatic account selection.";
-
-pub(in crate::auth::manager) enum ImportedAccountRefreshReadiness {
-    Ready,
-    Recovered,
-}
 
 pub(in crate::auth::manager) fn root_auth_is_account_marker(root_auth: Option<&CodexAuth>) -> bool {
     root_auth
@@ -61,12 +57,22 @@ pub(in crate::auth::manager) struct ManagedAuthRefreshLocks {
     account_homes: Vec<PathBuf>,
     index_readable: bool,
     index_guard: Option<AccountLease>,
-    _refresh_guards: Vec<AccountLease>,
+    refresh_guards: Vec<AuthRefreshGuard>,
 }
 
 impl ManagedAuthRefreshLocks {
     pub(in crate::auth::manager) fn account_homes(&self) -> &[PathBuf] {
         &self.account_homes
+    }
+
+    pub(in crate::auth::manager) fn guard_for(
+        &self,
+        auth_home: &Path,
+    ) -> std::io::Result<&AuthRefreshGuard> {
+        self.refresh_guards
+            .iter()
+            .find(|guard| guard.ensure_matches(auth_home).is_ok())
+            .ok_or_else(|| std::io::Error::other("auth refresh guard is missing"))
     }
 
     pub(in crate::auth::manager) fn disable_all(&self) -> std::io::Result<bool> {
@@ -98,7 +104,7 @@ impl ManagedAuthRefreshLocks {
 impl AuthManager {
     pub(in crate::auth::manager) async fn acquire_refresh_file_lock(
         &self,
-    ) -> Result<Option<AccountLease>, RefreshTokenError> {
+    ) -> Result<Option<AuthRefreshGuard>, RefreshTokenError> {
         if self.has_external_auth() {
             return Ok(None);
         }
@@ -123,6 +129,10 @@ impl AuthManager {
         &self,
         locks: &ManagedAuthRefreshLocks,
     ) {
+        let Ok(root_guard) = locks.guard_for(&self.codex_home) else {
+            tracing::warn!("auth refresh guard is missing during revocation");
+            return;
+        };
         let mut auth_snapshots = Vec::new();
         if let Some(auth) = self
             .auth_cached()
@@ -135,6 +145,7 @@ impl AuthManager {
             &self.codex_home,
             AuthCredentialsStoreMode::Ephemeral,
             AuthKeyringBackendKind::default(),
+            root_guard,
         )
         .filter(|auth| !is_root_account_marker(auth))
         {
@@ -145,16 +156,22 @@ impl AuthManager {
                 &self.codex_home,
                 self.auth_credentials_store_mode,
                 self.keyring_backend_kind,
+                root_guard,
             )
             .filter(|auth| !is_root_account_marker(auth))
         {
             auth_snapshots.push(auth);
         }
         for account_home in locks.account_homes() {
+            let Ok(guard) = locks.guard_for(account_home) else {
+                tracing::warn!(auth_home = %account_home.display(), "auth refresh guard is missing during revocation");
+                continue;
+            };
             if let Some(auth) = load_auth_snapshot(
                 account_home,
                 AuthCredentialsStoreMode::File,
                 AuthKeyringBackendKind::default(),
+                guard,
             ) {
                 auth_snapshots.push(auth);
             }
@@ -179,6 +196,7 @@ impl AuthManager {
         &self,
         result: Result<(), RefreshTokenError>,
         attempted_account_id: Option<AccountId>,
+        guard: AuthRefreshGuard,
     ) -> Result<(), RefreshTokenError> {
         let terminal = matches!(
             result
@@ -200,7 +218,7 @@ impl AuthManager {
                 .as_ref()
                 .and_then(CodexAuth::get_account_id);
             if matches!(
-                self.reload_if_account_id_matches(expected_account_id.as_deref())
+                self.reload_if_account_id_matches(expected_account_id.as_deref(), Some(&guard))
                     .await,
                 ReloadOutcome::ReloadedChanged
             ) {
@@ -211,6 +229,7 @@ impl AuthManager {
         AccountStore::new(self.codex_home.clone())
             .record_login_required(&attempted_account_id)
             .map_err(RefreshTokenError::Transient)?;
+        drop(guard);
         if self.active_account_id().as_ref() == Some(&attempted_account_id) {
             self.move_off_imported_account_requiring_login(attempted_account_id)
                 .await
@@ -221,12 +240,13 @@ impl AuthManager {
 
     pub(in crate::auth::manager) async fn reconcile_imported_account_refresh_readiness(
         &self,
-    ) -> Result<ImportedAccountRefreshReadiness, RefreshTokenError> {
+        guard: Option<AuthRefreshGuard>,
+    ) -> Result<Option<AuthRefreshGuard>, RefreshTokenError> {
         let Some(active_account_id) = self.active_account_id() else {
-            return Ok(ImportedAccountRefreshReadiness::Ready);
+            return Ok(guard);
         };
         if self.active_auth_home() == self.codex_home {
-            return Ok(ImportedAccountRefreshReadiness::Ready);
+            return Ok(guard);
         }
         let login_required = AccountStore::new(self.codex_home.clone())
             .list()
@@ -235,28 +255,31 @@ impl AuthManager {
             .find(|account| account.id == active_account_id)
             .is_some_and(|account| account.login_required);
         if !login_required {
-            return Ok(ImportedAccountRefreshReadiness::Ready);
+            return Ok(guard);
         }
 
+        drop(guard);
         self.move_off_imported_account_requiring_login(active_account_id)
             .await?;
-        Ok(ImportedAccountRefreshReadiness::Recovered)
+        Ok(None)
     }
 
     pub(in crate::auth::manager) fn logout_all_managed_auth(
         &self,
         auth_locks: &ManagedAuthRefreshLocks,
     ) -> std::io::Result<bool> {
-        let mut removed = logout_all_stores(
+        let mut removed = logout_all_stores_with_guard(
             &self.codex_home,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
+            auth_locks.guard_for(&self.codex_home)?,
         )?;
         for account_home in auth_locks.account_homes() {
-            removed |= logout_all_stores(
+            removed |= logout_all_stores_with_guard(
                 account_home,
                 AuthCredentialsStoreMode::File,
                 AuthKeyringBackendKind::default(),
+                auth_locks.guard_for(account_home)?,
             )?;
         }
         removed |= auth_locks.disable_all()?;
@@ -292,8 +315,8 @@ impl AuthManager {
     }
 }
 
-fn acquire_refresh_file_lock(auth_home: &Path) -> std::io::Result<AccountLease> {
-    AccountLease::acquire_auth_refresh(auth_home)
+fn acquire_refresh_file_lock(auth_home: &Path) -> std::io::Result<AuthRefreshGuard> {
+    AuthRefreshGuard::acquire(auth_home)
 }
 
 fn acquire_managed_auth_refresh_locks(
@@ -318,7 +341,7 @@ fn acquire_managed_auth_refresh_locks(
                 account_homes,
                 index_readable,
                 index_guard: Some(index_guard),
-                _refresh_guards: refresh_guards,
+                refresh_guards,
             });
         }
     }
@@ -347,8 +370,9 @@ fn load_auth_snapshot(
     auth_home: &Path,
     store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
+    guard: &AuthRefreshGuard,
 ) -> Option<AuthDotJson> {
-    match load_auth_dot_json(auth_home, store_mode, keyring_backend_kind) {
+    match load_auth_dot_json_with_guard(auth_home, store_mode, keyring_backend_kind, guard) {
         Ok(auth) => auth,
         Err(err) => {
             tracing::warn!(
