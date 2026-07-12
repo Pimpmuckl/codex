@@ -216,14 +216,14 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
         }
         ApiError::QuotaExceeded
         | ApiError::UsageLimitReached { .. }
-        | ApiError::Retryable { .. }
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
-        | ApiError::CyberPolicy { .. }
-        | ApiError::ServerOverloaded => WeeklyWindowPingOutcome::DefiniteRejection,
+        | ApiError::CyberPolicy { .. } => WeeklyWindowPingOutcome::DefiniteRejection,
         ApiError::Transport(_)
         | ApiError::Api { .. }
         | ApiError::Stream(_)
+        | ApiError::Retryable { .. }
+        | ApiError::ServerOverloaded
         | ApiError::ContextWindowExceeded
         | ApiError::UsageNotIncluded => WeeklyWindowPingOutcome::Ambiguous,
     }
