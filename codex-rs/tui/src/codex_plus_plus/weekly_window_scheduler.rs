@@ -1,11 +1,8 @@
-//! Embedded TUI scheduler for starting unused imported-account weekly windows.
-
 use std::collections::HashSet;
 use std::future::Future;
 use std::time::Duration;
 
 use chrono::Utc;
-use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AccountStore;
 use codex_login::CodexAuth;
@@ -17,6 +14,7 @@ use codex_model_provider::WeeklyWindowPingOutcome;
 use codex_model_provider::WeeklyWindowPingRequest;
 use codex_model_provider::ping_weekly_window;
 use codex_model_provider::preflight_weekly_window_ping;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
@@ -26,18 +24,24 @@ use crate::legacy_core::config::Config;
 const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub(crate) struct WeeklyWindowScheduler {
+    tx: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
 
 impl WeeklyWindowScheduler {
     pub(crate) fn spawn(config: Config, model: String) -> Self {
-        debug_assert_eq!(
-            config.weekly_usage_window_auto_start,
-            WeeklyUsageWindowAutoStart::Enabled
-        );
-        // Keep the validated model/provider pair isolated from foreground thread changes.
-        let task = tokio::spawn(run_schedule(move || scan(config.clone(), model.clone())));
-        Self { task }
+        let (tx, receiver) = watch::channel(true);
+        let task = tokio::spawn(run_schedule(
+            move |scan_control| scan(config.clone(), model.clone(), scan_control),
+            receiver,
+        ));
+        Self { tx, task }
+    }
+
+    pub(crate) fn set_enabled(&self, on: bool) {
+        let _ = self
+            .tx
+            .send_if_modified(|value| std::mem::replace(value, on) != on);
     }
 }
 
@@ -47,20 +51,33 @@ impl Drop for WeeklyWindowScheduler {
     }
 }
 
-async fn run_schedule<F, Fut>(mut scan: F)
+fn scan_stopped(control: &watch::Receiver<bool>) -> bool {
+    control.has_changed().unwrap_or(true)
+}
+
+async fn run_schedule<F, Fut>(mut scan: F, mut control: watch::Receiver<bool>)
 where
-    F: FnMut() -> Fut,
+    F: FnMut(watch::Receiver<bool>) -> Fut,
     Fut: Future<Output = ()>,
 {
     let mut interval = tokio::time::interval_at(tokio::time::Instant::now(), SCAN_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
-        interval.tick().await;
-        scan().await;
+        tokio::select! {
+            _ = interval.tick(), if *control.borrow() => scan(control.clone()).await,
+            changed = control.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                if *control.borrow_and_update() {
+                    scan(control.clone()).await;
+                }
+            }
+        }
     }
 }
 
-async fn scan(config: Config, model: String) {
+async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
     let http_client_factory = config.http_client_factory();
     if let Err(outcome) = preflight_weekly_window_ping(
         &config.model_provider_id,
@@ -68,10 +85,7 @@ async fn scan(config: Config, model: String) {
         &config.chatgpt_base_url,
         &http_client_factory,
     ) {
-        tracing::warn!(
-            ?outcome,
-            "weekly-window scheduler configuration is unsupported"
-        );
+        tracing::warn!(?outcome, "weekly-window scheduler unsupported");
         return;
     }
     let store = AccountStore::new(config.codex_home.to_path_buf());
@@ -99,9 +113,15 @@ async fn scan(config: Config, model: String) {
         }
     };
     let accounts = accounts_matching_workspace(&config, accounts).await;
+    if scan_stopped(&control) {
+        return;
+    }
     let loaded = account_usage::load_without_refresh(&config, &accounts, &store).await;
 
     for (account_id, account_home) in accounts {
+        if scan_stopped(&control) {
+            return;
+        }
         if loaded.login_required.contains_key(&account_id) {
             continue;
         }
@@ -146,12 +166,6 @@ async fn scan(config: Config, model: String) {
         .await;
         if outcome == WeeklyWindowPingOutcome::RecoveryRequired {
             tracing::warn!(%account_id, "weekly-window ping requires account recovery");
-        } else if matches!(
-            outcome,
-            WeeklyWindowPingOutcome::UnsupportedConfiguration
-                | WeeklyWindowPingOutcome::UnsupportedRouting
-        ) {
-            tracing::warn!(%account_id, ?outcome, "weekly-window ping is unsupported");
         }
         let outcome = attempt_outcome(outcome);
         if let Err(err) = attempt.finish(outcome, Utc::now().timestamp()) {

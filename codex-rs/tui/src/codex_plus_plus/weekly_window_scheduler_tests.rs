@@ -5,14 +5,19 @@ use std::sync::atomic::Ordering;
 use super::*;
 
 #[tokio::test(start_paused = true)]
-async fn schedule_scans_immediately_and_each_interval_until_dropped() {
+async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     let scans = Arc::new(AtomicUsize::new(0));
     let task_scans = Arc::clone(&scans);
+    let (tx, receiver) = watch::channel(true);
     let scheduler = WeeklyWindowScheduler {
-        task: tokio::spawn(run_schedule(move || {
-            task_scans.fetch_add(1, Ordering::Relaxed);
-            std::future::ready(())
-        })),
+        tx,
+        task: tokio::spawn(run_schedule(
+            move |_control| {
+                task_scans.fetch_add(1, Ordering::Relaxed);
+                std::future::ready(())
+            },
+            receiver,
+        )),
     };
 
     tokio::task::yield_now().await;
@@ -20,6 +25,11 @@ async fn schedule_scans_immediately_and_each_interval_until_dropped() {
     tokio::time::advance(SCAN_INTERVAL).await;
     tokio::task::yield_now().await;
     assert_eq!(scans.load(Ordering::Relaxed), 2);
+
+    let active_scan = scheduler.tx.subscribe();
+    scheduler.set_enabled(false);
+    scheduler.set_enabled(true);
+    assert!(scan_stopped(&active_scan));
 
     drop(scheduler);
     tokio::time::advance(SCAN_INTERVAL).await;

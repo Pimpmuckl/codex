@@ -69,20 +69,16 @@ pub(crate) async fn persist_settings(
     };
     app.config.automatic_account_selection = effective_automatic;
     app.config.weekly_usage_window_auto_start = effective_weekly;
-    match effective_weekly {
-        WeeklyUsageWindowAutoStart::Enabled
-            if app_server.uses_embedded_app_server() && app.weekly_window_scheduler.is_none() =>
-        {
-            let model = app.chat_widget.current_model().to_string();
-            app.weekly_window_scheduler = Some(super::WeeklyWindowScheduler::spawn(
-                app.config.clone(),
-                model,
-            ));
-        }
-        WeeklyUsageWindowAutoStart::Disabled => {
-            app.weekly_window_scheduler = None;
-        }
-        WeeklyUsageWindowAutoStart::Enabled => {}
+    if let Some(scheduler) = &app.weekly_window_scheduler {
+        scheduler.set_enabled(effective_weekly == WeeklyUsageWindowAutoStart::Enabled);
+    } else if effective_weekly == WeeklyUsageWindowAutoStart::Enabled
+        && app_server.uses_embedded_app_server()
+    {
+        let model = app.chat_widget.current_model().to_string();
+        app.weekly_window_scheduler = Some(super::WeeklyWindowScheduler::spawn(
+            app.config.clone(),
+            model,
+        ));
     }
     if effective_automatic == automatic_account_selection
         && effective_weekly == weekly_usage_window_auto_start
