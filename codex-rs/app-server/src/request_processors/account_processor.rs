@@ -328,12 +328,16 @@ impl AccountRequestProcessor {
             }
         }
 
-        match login_with_api_key(
-            &self.config.codex_home,
-            &params.api_key,
-            self.config.cli_auth_credentials_store_mode,
-            self.config.auth_keyring_backend_kind(),
-        ) {
+        let codex_home = self.config.codex_home.to_path_buf();
+        let api_key = params.api_key.clone();
+        let store_mode = self.config.cli_auth_credentials_store_mode;
+        let keyring_backend_kind = self.config.auth_keyring_backend_kind();
+        match tokio::task::spawn_blocking(move || {
+            login_with_api_key(&codex_home, &api_key, store_mode, keyring_backend_kind)
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to save api key: {err}")))?
+        {
             Ok(()) => {
                 self.auth_manager.reload().await;
                 Ok(())

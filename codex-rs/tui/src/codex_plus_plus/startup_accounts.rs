@@ -133,12 +133,18 @@ async fn maybe_run_startup_account_picker(
     }
 
     let usage = account_usage::load(config, &selectable_accounts, &store).await;
-    let mut login_required = HashSet::new();
-    for (account_id, attempted_auth) in &usage.login_required {
-        if store.record_login_required_if_auth_matches(account_id, attempted_auth)? {
-            login_required.insert(account_id.clone());
+    let store_for_update = store.clone();
+    let login_required_updates = usage.login_required.clone();
+    let login_required = tokio::task::spawn_blocking(move || {
+        let mut login_required = HashSet::new();
+        for (account_id, attempted_auth) in &login_required_updates {
+            if store_for_update.record_login_required_if_auth_matches(account_id, attempted_auth)? {
+                login_required.insert(account_id.clone());
+            }
         }
-    }
+        Ok::<_, std::io::Error>(login_required)
+    })
+    .await??;
     candidates.retain(|candidate| {
         !login_required.contains(&candidate.id)
             || (config.automatic_account_selection == AutomaticAccountSelection::Disabled
@@ -190,11 +196,14 @@ async fn maybe_run_startup_account_picker(
         .iter()
         .find(|candidate| candidate.id.as_str() == selected_id);
     if let Some(candidate) = selected_account {
-        store.apply_imported_account_to_root_auth(
-            &candidate.id,
-            config.cli_auth_credentials_store_mode,
-            config.auth_keyring_backend_kind(),
-        )?;
+        let store = store.clone();
+        let account_id = candidate.id.clone();
+        let store_mode = config.cli_auth_credentials_store_mode;
+        let keyring_backend_kind = config.auth_keyring_backend_kind();
+        tokio::task::spawn_blocking(move || {
+            store.apply_imported_account_to_root_auth(&account_id, store_mode, keyring_backend_kind)
+        })
+        .await??;
     }
 
     Ok(StartupAccountSelection::Continue {

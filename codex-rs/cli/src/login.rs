@@ -209,12 +209,16 @@ pub async fn run_login_with_api_key(
         std::process::exit(1);
     }
 
-    match login_with_api_key(
-        &config.codex_home,
-        &api_key,
-        config.cli_auth_credentials_store_mode,
-        config.auth_keyring_backend_kind(),
-    ) {
+    let codex_home = config.codex_home.to_path_buf();
+    let store_mode = config.cli_auth_credentials_store_mode;
+    let keyring_backend_kind = config.auth_keyring_backend_kind();
+    let result = tokio::task::spawn_blocking(move || {
+        login_with_api_key(&codex_home, &api_key, store_mode, keyring_backend_kind)
+    })
+    .await
+    .map_err(std::io::Error::other)
+    .and_then(std::convert::identity);
+    match result {
         Ok(_) => {
             eprintln!("{LOGIN_SUCCESS_MESSAGE}");
             std::process::exit(0);

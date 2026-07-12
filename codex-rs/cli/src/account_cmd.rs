@@ -54,23 +54,25 @@ pub(crate) async fn run_account_command(account_cli: AccountCli) -> anyhow::Resu
             .await
             .context("failed to log in")?;
 
-            let profile = store
-                .import_current(
-                    None,
-                    config.cli_auth_credentials_store_mode,
-                    config.auth_keyring_backend_kind(),
-                )
-                .context("failed to import account")?;
+            let store_mode = config.cli_auth_credentials_store_mode;
+            let keyring_backend_kind = config.auth_keyring_backend_kind();
+            let profile = tokio::task::spawn_blocking(move || {
+                store.import_current(None, store_mode, keyring_backend_kind)
+            })
+            .await
+            .context("failed to import account")?;
+            let profile = profile.context("failed to import account")?;
             println!("Added account {} ({})", profile.id, profile.label);
         }
         AccountSubcommand::ImportCurrent(args) => {
-            let profile = store
-                .import_current(
-                    args.label,
-                    config.cli_auth_credentials_store_mode,
-                    config.auth_keyring_backend_kind(),
-                )
-                .context("failed to import current account")?;
+            let store_mode = config.cli_auth_credentials_store_mode;
+            let keyring_backend_kind = config.auth_keyring_backend_kind();
+            let profile = tokio::task::spawn_blocking(move || {
+                store.import_current(args.label, store_mode, keyring_backend_kind)
+            })
+            .await
+            .context("failed to import current account")?;
+            let profile = profile.context("failed to import current account")?;
             println!("Imported account {} ({})", profile.id, profile.label);
         }
         AccountSubcommand::List => {
