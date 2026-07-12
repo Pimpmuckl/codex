@@ -9,7 +9,6 @@ use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
-use codex_login::AuthKeyringBackendKind;
 use codex_login::CodexAuth;
 use codex_login::refresh_auth_from_storage;
 use codex_protocol::auth::RefreshTokenFailedError;
@@ -29,6 +28,7 @@ pub(crate) struct AccountUsage {
     pub(crate) five_hour_remaining_percent: Option<u8>,
     pub(crate) five_hour_exhausted: bool,
     pub(crate) weekly_reset_at: Option<i64>,
+    pub(crate) weekly_unused: Option<bool>,
     pub(crate) weekly_remaining_percent: Option<u8>,
     pub(crate) weekly_exhausted: bool,
 }
@@ -74,16 +74,12 @@ pub(crate) async fn load(
     for (account_id, account_home) in accounts {
         let account_id = account_id.clone();
         let account_home = account_home.clone();
-        let chatgpt_base_url = config.chatgpt_base_url.clone();
-        let auth_route_config = config.auth_route_config();
+        let config = config.clone();
         tasks.spawn(async move {
-            let result = tokio::time::timeout(
-                FETCH_TIMEOUT,
-                fetch(account_home, chatgpt_base_url, auth_route_config),
-            )
-            .await
-            .map_err(|_| AccountUsageFetchError::new(anyhow!("rate-limit request timed out")))
-            .and_then(std::convert::identity);
+            let result = tokio::time::timeout(FETCH_TIMEOUT, fetch(account_home, config))
+                .await
+                .map_err(|_| AccountUsageFetchError::new(anyhow!("rate-limit request timed out")))
+                .and_then(std::convert::identity);
             (account_id, result)
         });
     }
@@ -121,15 +117,15 @@ pub(crate) async fn load(
 
 async fn fetch(
     account_home: PathBuf,
-    chatgpt_base_url: String,
-    auth_route_config: Option<codex_login::AuthRouteConfig>,
+    config: Config,
 ) -> std::result::Result<AccountUsage, AccountUsageFetchError> {
+    let auth_route_config = config.auth_route_config();
     let auth = CodexAuth::from_auth_storage(
         &account_home,
         AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
-        Some(&chatgpt_base_url),
-        AuthKeyringBackendKind::default(),
+        config.forced_chatgpt_workspace_id.as_deref(),
+        Some(&config.chatgpt_base_url),
+        config.auth_keyring_backend_kind(),
         auth_route_config.as_ref(),
     )
     .await
@@ -137,13 +133,14 @@ async fn fetch(
     .context("imported account is not authenticated")
     .map_err(AccountUsageFetchError::new)?;
 
-    match fetch_with_auth(&auth, &chatgpt_base_url).await {
+    match fetch_with_auth(&auth, &config.chatgpt_base_url).await {
         Err(err) if is_unauthorized(&err) => {
             let auth = match refresh_auth_from_storage(
                 &account_home,
                 AuthCredentialsStoreMode::File,
-                Some(&chatgpt_base_url),
-                AuthKeyringBackendKind::default(),
+                config.forced_chatgpt_workspace_id.as_deref(),
+                Some(&config.chatgpt_base_url),
+                config.auth_keyring_backend_kind(),
                 auth_route_config.as_ref(),
             )
             .await
@@ -159,7 +156,7 @@ async fn fetch(
             }
             .context("imported account is not authenticated")
             .map_err(AccountUsageFetchError::new)?;
-            fetch_with_auth(&auth, &chatgpt_base_url)
+            fetch_with_auth(&auth, &config.chatgpt_base_url)
                 .await
                 .map_err(AccountUsageFetchError::new)
         }
@@ -231,6 +228,10 @@ fn account_usage_from_snapshot(snapshot: &RateLimitSnapshot) -> AccountUsage {
             .secondary
             .as_ref()
             .and_then(|window| window.resets_at),
+        weekly_unused: snapshot
+            .secondary
+            .as_ref()
+            .map(|window| window.used_percent == 0.0),
         weekly_remaining_percent: snapshot
             .secondary
             .as_ref()

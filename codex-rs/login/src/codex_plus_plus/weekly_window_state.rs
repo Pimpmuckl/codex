@@ -12,6 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 const STATE_FILE: &str = "weekly-window-state.json";
 const LOCK_FILE: &str = "weekly-window.lock";
+const SCAN_LOCK_FILE: &str = "weekly-window-scan.lock";
 const MAX_STATE_BYTES: u64 = 4 * 1024;
 const SUPPRESSION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_FAILURE_COUNT: u8 = 8;
@@ -69,6 +70,10 @@ pub struct WeeklyWindowAttempt {
     _lease: AccountLease,
 }
 
+pub struct WeeklyWindowScanLease {
+    _lease: AccountLease,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 enum AttemptIdentity {
@@ -110,6 +115,11 @@ impl State {
 }
 
 impl AccountStore {
+    pub fn try_acquire_weekly_window_scan(&self) -> io::Result<Option<WeeklyWindowScanLease>> {
+        AccountLease::try_acquire(&self.codex_home.join(SCAN_LOCK_FILE))
+            .map(|lease| lease.map(|_lease| WeeklyWindowScanLease { _lease }))
+    }
+
     pub fn begin_weekly_window_attempt(
         &self,
         account_id: &AccountId,

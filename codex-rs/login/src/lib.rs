@@ -21,6 +21,7 @@ pub use account::weekly_window_state::WeeklyWindowAttemptDecision;
 pub use account::weekly_window_state::WeeklyWindowAttemptOutcome;
 pub use account::weekly_window_state::WeeklyWindowError;
 pub use account::weekly_window_state::WeeklyWindowRetryableError;
+pub use account::weekly_window_state::WeeklyWindowScanLease;
 pub use account::weekly_window_state::WeeklyWindowStatus;
 pub use account::weekly_window_state::WeeklyWindowUsage;
 pub use codex_config::types::AuthCredentialsStoreMode;
