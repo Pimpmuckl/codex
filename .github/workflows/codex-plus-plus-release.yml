@@ -1,0 +1,221 @@
+name: Codex++ release
+
+on:
+  push:
+    tags:
+      - "codex-plus-plus-v*"
+
+permissions: {}
+
+concurrency:
+  group: codex-plus-plus-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#codex-plus-plus-v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]] || {
+            echo "Invalid Codex++ release tag: ${GITHUB_REF_NAME}"
+            exit 1
+          }
+
+          base_version="${version%%-fork.*}"
+          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          [[ "$base_version" == "$workspace_version" ]] || {
+            echo "Tag base ${base_version} does not match workspace ${workspace_version}"
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_suffix: zip
+            executable: bin/codex.exe
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive_suffix: tar.gz
+            executable: bin/codex
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive_suffix: tar.gz
+            executable: bin/codex
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash .github/scripts/install-musl-build-tools.sh
+
+      - name: Build bundled bwrap
+        if: runner.os == 'Linux'
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --profile release-fast --bin bwrap
+          bwrap="target/${TARGET}/release-fast/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap"
+          digest="$(sha256sum "$bwrap" | awk '{print $1}')"
+          echo "BWRAP=${GITHUB_WORKSPACE}/codex-rs/${bwrap}" >> "$GITHUB_ENV"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+
+      - name: Build package archive
+        shell: bash
+        env:
+          AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ runner.os == 'Linux' && '1' || '' }}
+          AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ runner.os == 'Linux' && '1' || '' }}
+          LIBSQLITE3_FLAGS: ${{ runner.os == 'Windows' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+        run: |
+          set -euo pipefail
+          archive="dist/codex-plus-plus-${VERSION}-${TARGET}.${ARCHIVE_SUFFIX}"
+          package_args=(
+            --target "$TARGET"
+            --package-dir "dist/package-${TARGET}"
+            --archive-output "$archive"
+            --force
+          )
+          if [[ -n "${BWRAP:-}" ]]; then
+            package_args+=(--bwrap-bin "$BWRAP")
+          fi
+          python scripts/build_codex_plus_plus.py \
+            --fork-version "$VERSION" \
+            -- \
+            "${package_args[@]}"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Smoke package
+        shell: bash
+        env:
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          executable="dist/package-${TARGET}/${EXECUTABLE}"
+          [[ "$("$executable" --version)" == "codex-cli ${VERSION}" ]]
+
+      - name: Write checksum
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          archive = Path(os.environ["ARCHIVE"])
+          with archive.open("rb") as file:
+              digest = hashlib.file_digest(file, "sha256").hexdigest()
+          archive.with_name(f"{archive.name}.sha256").write_text(
+              f"{digest}  {archive.name}\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Stage release assets
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-plus-plus-${{ matrix.target }}
+          path: |
+            dist/codex-plus-plus-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_suffix }}
+            dist/codex-plus-plus-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_suffix }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-plus-plus-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="${RUNNER_TEMP}/release-notes.md"
+          cat > "$notes" <<EOF
+          Codex++ ${VERSION}, based on upstream Codex ${VERSION%%-fork.*}.
+
+          This release contains unsigned community builds for Windows x64, macOS ARM64, and Linux x64.
+          EOF
+          assets=(
+            dist/*
+            scripts/install/install-codex-plus-plus.ps1
+            scripts/install/install-codex-plus-plus.sh
+          )
+
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            [[ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == "true" ]] || {
+              echo "Release ${GITHUB_REF_NAME} is already published"
+              exit 1
+            }
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "Codex++ ${VERSION}" \
+              --notes-file "$notes"
+          fi
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
