@@ -341,6 +341,9 @@ impl App {
                 entry.agent_role.clone(),
             );
         }
+        if let Some(scheduler) = &self.weekly_window_scheduler {
+            scheduler.set_model(chat_widget.current_model());
+        }
         self.chat_widget = chat_widget;
         self.sync_active_agent_label();
     }
