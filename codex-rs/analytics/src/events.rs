@@ -257,6 +257,9 @@ pub enum GuardianReviewedAction {
         connector_name: Option<String>,
         tool_title: Option<String>,
     },
+    PreToolUse {
+        tool_name: String,
+    },
     RequestPermissions {},
 }
 
@@ -551,6 +554,7 @@ pub(crate) enum ReviewSubjectKind {
     CommandExecution,
     FileChange,
     McpToolCall,
+    ToolCall,
     Permissions,
     NetworkAccess,
 }

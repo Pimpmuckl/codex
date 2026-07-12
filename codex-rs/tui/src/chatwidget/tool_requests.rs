@@ -73,6 +73,9 @@ impl ChatWidget {
                 let label = connector_name.as_deref().unwrap_or(server.as_str());
                 Some(format!("MCP {tool_name} on {label}"))
             }
+            GuardianAssessmentAction::PreToolUse {
+                tool_name, reason, ..
+            } => Some(format!("{tool_name}: {reason}")),
             GuardianAssessmentAction::RequestPermissions { reason, .. } => {
                 Some(permission_request_summary("permission request", reason))
             }
@@ -90,6 +93,7 @@ impl ChatWidget {
             GuardianAssessmentAction::ApplyPatch { .. }
             | GuardianAssessmentAction::NetworkAccess { .. }
             | GuardianAssessmentAction::McpToolCall { .. }
+            | GuardianAssessmentAction::PreToolUse { .. }
             | GuardianAssessmentAction::RequestPermissions { .. } => None,
         };
 
@@ -189,6 +193,11 @@ impl ChatWidget {
                     } => history_cell::new_guardian_timed_out_action_request(format!(
                         "codex could call MCP tool {server}.{tool_name}"
                     )),
+                    GuardianAssessmentAction::PreToolUse { tool_name, .. } => {
+                        history_cell::new_guardian_timed_out_action_request(format!(
+                            "codex could call {tool_name}"
+                        ))
+                    }
                     GuardianAssessmentAction::NetworkAccess { target, .. } => {
                         history_cell::new_guardian_timed_out_action_request(format!(
                             "codex could access {target}"
@@ -233,6 +242,11 @@ impl ChatWidget {
                 } => history_cell::new_guardian_denied_action_request(format!(
                     "codex to call MCP tool {server}.{tool_name}"
                 )),
+                GuardianAssessmentAction::PreToolUse { tool_name, .. } => {
+                    history_cell::new_guardian_denied_action_request(format!(
+                        "codex to call {tool_name}"
+                    ))
+                }
                 GuardianAssessmentAction::NetworkAccess { target, .. } => {
                     history_cell::new_guardian_denied_action_request(format!(
                         "codex to access {target}"
