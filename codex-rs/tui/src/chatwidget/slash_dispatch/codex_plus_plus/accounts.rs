@@ -46,6 +46,7 @@ impl ChatWidget {
             Err(err) => {
                 warn!(error = %err, "failed to load accounts for Codex++ settings");
                 self.add_error_message("Could not load accounts.".to_string());
+                self.on_modal_or_popup_closed();
                 return;
             }
         };
@@ -54,6 +55,7 @@ impl ChatWidget {
                 "No imported accounts found.".to_string(),
                 /*hint*/ None,
             );
+            self.on_modal_or_popup_closed();
             return;
         }
 
