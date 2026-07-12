@@ -163,6 +163,11 @@ pub enum GuardianAssessmentAction {
         connector_name: Option<String>,
         tool_title: Option<String>,
     },
+    PreToolUse {
+        tool_name: String,
+        tool_input: JsonValue,
+        reason: String,
+    },
     RequestPermissions {
         reason: Option<String>,
         permissions: RequestPermissionProfile,

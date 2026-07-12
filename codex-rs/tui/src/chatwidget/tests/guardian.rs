@@ -224,6 +224,23 @@ async fn guardian_approved_request_permissions_renders_request_summary() {
         decision_source: Some(GuardianAssessmentDecisionSource::Agent),
         action,
     });
+    chat.on_guardian_assessment(GuardianAssessmentEvent {
+        id: "guardian-pre-tool-use".into(),
+        target_item_id: Some("tool-call-1".into()),
+        turn_id: "turn-1".into(),
+        started_at_ms: 2,
+        completed_at_ms: Some(3),
+        status: GuardianAssessmentStatus::Approved,
+        risk_level: Some(GuardianRiskLevel::Low),
+        user_authorization: Some(GuardianUserAuthorization::High),
+        rationale: Some("Hook-requested review approved.".into()),
+        decision_source: Some(GuardianAssessmentDecisionSource::Agent),
+        action: GuardianAssessmentAction::PreToolUse {
+            tool_name: "custom_tool".to_string(),
+            tool_input: serde_json::json!({ "path": "report.txt" }),
+            reason: "Review report access".to_string(),
+        },
+    });
 
     let width: u16 = 110;
     let ui_height: u16 = chat.desired_height(width);

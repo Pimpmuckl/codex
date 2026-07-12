@@ -653,6 +653,13 @@ pub enum GuardianApprovalReviewAction {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    PreToolUse {
+        tool_name: String,
+        tool_input: JsonValue,
+        reason: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     RequestPermissions {
         reason: Option<String>,
         permissions: RequestPermissionProfile,
@@ -708,6 +715,15 @@ impl From<CoreGuardianAssessmentAction> for GuardianApprovalReviewAction {
                 connector_id,
                 connector_name,
                 tool_title,
+            },
+            CoreGuardianAssessmentAction::PreToolUse {
+                tool_name,
+                tool_input,
+                reason,
+            } => Self::PreToolUse {
+                tool_name,
+                tool_input,
+                reason,
             },
             CoreGuardianAssessmentAction::RequestPermissions {
                 reason,
@@ -771,6 +787,15 @@ impl TryFrom<GuardianApprovalReviewAction> for CoreGuardianAssessmentAction {
                 connector_id,
                 connector_name,
                 tool_title,
+            },
+            GuardianApprovalReviewAction::PreToolUse {
+                tool_name,
+                tool_input,
+                reason,
+            } => Self::PreToolUse {
+                tool_name,
+                tool_input,
+                reason,
             },
             GuardianApprovalReviewAction::RequestPermissions {
                 reason,
