@@ -14,8 +14,8 @@ const STATE_FILE: &str = "weekly-window-state.json";
 const LOCK_FILE: &str = "weekly-window.lock";
 const SCAN_LOCK_FILE: &str = "weekly-window-scan.lock";
 const MAX_STATE_BYTES: u64 = 4 * 1024;
-const SUPPRESSION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_FAILURE_COUNT: u8 = 8;
+const STATE_VERSION: u8 = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WeeklyWindowUsage {
     Missing,
@@ -108,7 +108,7 @@ struct State {
 impl State {
     fn new() -> Self {
         Self {
-            version: 1,
+            version: STATE_VERSION,
             ..Self::default()
         }
     }
@@ -143,8 +143,14 @@ impl AccountStore {
         let state_path = account_home.join(STATE_FILE);
         let mut state = match read_state(&state_path)? {
             StateRead::Ready(state) => state,
+            StateRead::Legacy => {
+                let mut state = State::new();
+                observe_after_completion(&mut state, usage);
+                write_state(&state_path, &state)?;
+                return Ok(WeeklyWindowAttemptDecision::NotDue);
+            }
             StateRead::Corrupt => {
-                let state = quarantine_state(usage, now);
+                let state = quarantine_state(usage);
                 write_state(&state_path, &state)?;
                 return Ok(WeeklyWindowAttemptDecision::StateUnavailable);
             }
@@ -155,6 +161,7 @@ impl AccountStore {
             let dispatched_at = state.last_attempt_at;
             close_attempt(&mut state, now, Some(WeeklyWindowError::Ambiguous));
             state.last_attempt_at = dispatched_at;
+            observe_after_completion(&mut state, usage);
             write_state(&state_path, &state)?;
             return Ok(WeeklyWindowAttemptDecision::NotDue);
         }
@@ -186,6 +193,7 @@ impl AccountStore {
                 retry_not_before: state.retry_not_before,
                 recovery_not_before: state.recovery_not_before,
             },
+            StateRead::Legacy => WeeklyWindowStatus::default(),
             StateRead::Corrupt | StateRead::Incompatible => WeeklyWindowStatus {
                 last_error: Some(WeeklyWindowError::StateQuarantined),
                 ..WeeklyWindowStatus::default()
@@ -237,102 +245,57 @@ fn due_identity(state: &mut State, usage: WeeklyWindowUsage, now: i64) -> Option
             close_attempt(state, now, /*error*/ None);
         }
         state.last_observed_active = true;
-        state.last_observed_reset_at = resets_at.or(state.last_observed_reset_at);
         return None;
     }
+    let resets_at = resets_at?;
 
-    if let Some(until) = state.recovery_not_before {
-        if now < until && !state.last_observed_active {
-            baseline(state, resets_at);
+    if state.attempt_status == Some(AttemptStatus::Retryable) {
+        let Some(AttemptIdentity::ResetAt(attempt_reset_at)) = state.attempt_identity else {
+            close_attempt(state, now, /*error*/ None);
+            return None;
+        };
+        let latest_reset_at = state.last_observed_reset_at.unwrap_or(attempt_reset_at);
+        if resets_at != attempt_reset_at && resets_at < latest_reset_at {
             return None;
         }
-        state.recovery_not_before = None;
-        state.last_error = None;
-    }
-
-    let identity = if let Some(resets_at) = resets_at {
-        let identity = AttemptIdentity::ResetAt(resets_at);
-        if state.attempt_status == Some(AttemptStatus::Retryable)
-            && state.attempt_identity == Some(identity)
-        {
-            if state
-                .retry_not_before
-                .is_some_and(|retry_at| now < retry_at)
-            {
-                return None;
-            }
-            identity
-        } else {
-            if state.attempt_status == Some(AttemptStatus::Closed)
-                && state.attempt_identity == Some(identity)
-            {
-                return None;
-            }
-            let moved_forward = state
+        state.last_observed_reset_at = Some(
+            state
                 .last_observed_reset_at
-                .is_some_and(|previous| resets_at > previous);
-            if resets_at > now && !moved_forward {
-                baseline(state, Some(resets_at));
-                return None;
-            }
-            identity
-        }
-    } else if state.attempt_status == Some(AttemptStatus::Retryable) {
+                .unwrap_or(resets_at)
+                .max(resets_at),
+        );
         if state
             .retry_not_before
             .is_some_and(|retry_at| now < retry_at)
         {
             return None;
         }
-        state.attempt_identity?
-    } else {
-        if state.attempt_status == Some(AttemptStatus::Closed)
-            && matches!(state.attempt_identity, Some(AttemptIdentity::ResetAt(_)))
-            && inside_suppression(state, now)
-            && !state.last_observed_active
-        {
-            state.last_observed_active = false;
-            return None;
-        }
-        let generation = if state.last_observed_active
-            || state.attempt_status == Some(AttemptStatus::Closed)
-                && !inside_suppression(state, now)
-        {
-            state.missing_reset_generation.saturating_add(1).max(1)
-        } else if state.missing_reset_generation == 0 {
-            1
-        } else if state.attempt_status.is_none() {
-            state.missing_reset_generation
-        } else {
-            return None;
-        };
-        state.missing_reset_generation = generation;
-        AttemptIdentity::MissingReset(generation)
-    };
+        return Some(AttemptIdentity::ResetAt(attempt_reset_at));
+    }
 
-    if state.attempt_status == Some(AttemptStatus::Closed)
-        && state.attempt_identity != Some(identity)
-        && !state.last_observed_active
-        && inside_suppression(state, now)
-    {
-        baseline(state, resets_at);
+    let previous = state.last_observed_reset_at;
+    let was_active = state.last_observed_active;
+    state.last_observed_active = false;
+    state.last_observed_reset_at = Some(previous.map_or(resets_at, |value| value.max(resets_at)));
+    if previous.is_none() || was_active {
         return None;
     }
-    state.last_observed_active = false;
-    Some(identity)
-}
 
-fn baseline(state: &mut State, resets_at: Option<i64>) {
-    state.last_observed_reset_at = resets_at.or(state.last_observed_reset_at);
-    state.last_observed_active = false;
-    if resets_at.is_none() && state.missing_reset_generation == 0 {
-        state.missing_reset_generation = 1;
-    }
+    let identity = AttemptIdentity::ResetAt(resets_at);
+    (resets_at > previous?
+        && !(state.attempt_status == Some(AttemptStatus::Closed)
+            && state.attempt_identity == Some(identity)))
+    .then_some(identity)
 }
 
 fn close_attempt(state: &mut State, now: i64, error: Option<WeeklyWindowError>) {
     if let Some(AttemptIdentity::ResetAt(resets_at)) = state.attempt_identity {
-        state.last_observed_reset_at = Some(resets_at);
+        state.last_observed_reset_at = Some(
+            state
+                .last_observed_reset_at
+                .unwrap_or(resets_at)
+                .max(resets_at),
+        );
     }
     state.attempt_status = Some(AttemptStatus::Closed);
     state.last_attempt_at = Some(now);
@@ -346,34 +309,32 @@ fn close_attempt(state: &mut State, now: i64, error: Option<WeeklyWindowError>) 
 fn observe_after_completion(state: &mut State, usage: WeeklyWindowUsage) {
     if let WeeklyWindowUsage::Present { unused, resets_at } = usage {
         state.last_observed_active = !unused;
-        state.last_observed_reset_at = resets_at.or(state.last_observed_reset_at);
+        if let Some(resets_at) = resets_at {
+            state.last_observed_reset_at = Some(
+                state
+                    .last_observed_reset_at
+                    .unwrap_or(resets_at)
+                    .max(resets_at),
+            );
+        }
     }
 }
 
-fn inside_suppression(state: &State, now: i64) -> bool {
-    state
-        .last_attempt_at
-        .is_some_and(|at| now < at.saturating_add(SUPPRESSION_SECONDS))
-}
-
-fn quarantine_state(usage: WeeklyWindowUsage, now: i64) -> State {
+fn quarantine_state(usage: WeeklyWindowUsage) -> State {
     let mut state = State {
-        recovery_not_before: Some(now.saturating_add(SUPPRESSION_SECONDS)),
         last_error: Some(WeeklyWindowError::StateQuarantined),
         ..State::new()
     };
     if let WeeklyWindowUsage::Present { unused, resets_at } = usage {
         state.last_observed_active = !unused;
         state.last_observed_reset_at = resets_at;
-        if unused {
-            baseline(&mut state, resets_at);
-        }
     }
     state
 }
 
 enum StateRead {
     Ready(State),
+    Legacy,
     Corrupt,
     Incompatible,
 }
@@ -397,7 +358,10 @@ fn read_state(path: &Path) -> io::Result<StateRead> {
     let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) else {
         return Ok(StateRead::Corrupt);
     };
-    if version != 1 {
+    if version == 1 {
+        return Ok(StateRead::Legacy);
+    }
+    if version != u64::from(STATE_VERSION) {
         return Ok(StateRead::Incompatible);
     }
     Ok(serde_json::from_value(value).map_or(StateRead::Corrupt, StateRead::Ready))
