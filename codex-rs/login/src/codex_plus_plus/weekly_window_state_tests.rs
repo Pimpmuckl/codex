@@ -4,7 +4,6 @@ use tempfile::TempDir;
 
 const ACTIVE: bool = false;
 const UNUSED: bool = true;
-const RESETLESS: Option<i64> = None;
 
 fn test_store(automation_enabled: bool) -> (TempDir, AccountStore, AccountId) {
     let home = TempDir::new().expect("tempdir");
@@ -46,12 +45,6 @@ fn assert_unavailable(store: &AccountStore, id: &AccountId, usage: WeeklyWindowU
     ));
 }
 
-fn finish_completed(attempt: WeeklyWindowAttempt, _now: i64) {
-    let refreshed_usage = usage(UNUSED, Some(i64::MAX));
-    let outcome = WeeklyWindowAttemptOutcome::Completed { refreshed_usage };
-    attempt.finish(outcome, _now).unwrap();
-}
-
 fn finish_rejected(attempt: WeeklyWindowAttempt, _now: i64) {
     let error = WeeklyWindowRetryableError::Rejected;
     let outcome = WeeklyWindowAttemptOutcome::Retryable { error };
@@ -59,30 +52,45 @@ fn finish_rejected(attempt: WeeklyWindowAttempt, _now: i64) {
 }
 
 #[test]
-fn reset_windows_baseline_dedupe_and_recover_dropped_dispatch() {
+fn dated_unused_window_requires_outward_movement_and_recovers_dropped_dispatch() {
     let (_home, store, id) = test_store(/*automation_enabled*/ true);
     assert_not_due(&store, &id, usage(ACTIVE, Some(100)), 50);
-    let attempt = ready(&store, &id, usage(UNUSED, Some(200)), 60);
+    assert_not_due(&store, &id, usage(UNUSED, Some(200)), 60);
+    assert_not_due(&store, &id, usage(UNUSED, Some(200)), 61);
+    let attempt = ready(&store, &id, usage(UNUSED, Some(201)), 62);
     assert!(matches!(
-        store.begin_weekly_window_attempt(&id, usage(UNUSED, Some(200)), /*now*/ 60),
+        store.begin_weekly_window_attempt(&id, usage(UNUSED, Some(201)), /*now*/ 62),
         Ok(WeeklyWindowAttemptDecision::Locked)
     ));
     drop(attempt);
-    let stale_at = 60 + SUPPRESSION_SECONDS;
-    assert_not_due(&store, &id, usage(UNUSED, Some(300)), stale_at);
+    assert_not_due(&store, &id, usage(UNUSED, Some(202)), 63);
     let status = store.weekly_window_status(&id).unwrap();
     assert_eq!(status.last_error, Some(WeeklyWindowError::Ambiguous));
-    let attempt = ready(&store, &id, usage(UNUSED, Some(300)), stale_at + 1);
-    finish_completed(attempt, stale_at + 1);
-    assert_not_due(&store, &id, usage(UNUSED, Some(300)), stale_at + 2);
-    assert_not_due(&store, &id, usage(ACTIVE, RESETLESS), stale_at + 3);
-    let attempt = ready(&store, &id, usage(UNUSED, RESETLESS), stale_at + 4);
-    finish_completed(attempt, stale_at + 4);
-    let retry_at = stale_at + 4 + SUPPRESSION_SECONDS;
-    assert_not_due(&store, &id, usage(UNUSED, Some(i64::MAX)), retry_at - 1);
-    drop(ready(&store, &id, usage(UNUSED, Some(i64::MAX)), i64::MAX));
+    assert_not_due(&store, &id, usage(UNUSED, Some(202)), 64);
+    let attempt = ready(&store, &id, usage(UNUSED, Some(203)), 65);
+    attempt
+        .finish(
+            WeeklyWindowAttemptOutcome::Completed {
+                refreshed_usage: usage(ACTIVE, Some(203)),
+            },
+            /*now*/ 66,
+        )
+        .unwrap();
+    assert_not_due(&store, &id, usage(UNUSED, Some(300)), 67);
+    assert_not_due(&store, &id, usage(UNUSED, Some(300)), 68);
+    drop(ready(&store, &id, usage(UNUSED, Some(301)), 69));
+
+    let (_home, store, id) = test_store(/*automation_enabled*/ true);
+    assert_not_due(&store, &id, usage(UNUSED, Some(100)), 100);
+    drop(ready(&store, &id, usage(UNUSED, Some(101)), 101));
+    assert_not_due(&store, &id, usage(ACTIVE, None), 102);
+    assert_not_due(&store, &id, usage(UNUSED, Some(200)), 103);
+    assert_not_due(&store, &id, usage(UNUSED, Some(200)), 104);
+    drop(ready(&store, &id, usage(UNUSED, Some(201)), 105));
+
     let (_home, disabled, id) = test_store(/*automation_enabled*/ false);
     assert_not_due(&disabled, &id, usage(UNUSED, Some(1)), 1);
+    assert_not_due(&disabled, &id, usage(UNUSED, Some(2)), 2);
 }
 
 #[test]
@@ -97,6 +105,7 @@ fn weekly_scan_lease_is_nonblocking_and_released_on_drop() {
 #[test]
 fn retry_backoff_reuses_identity_and_caps() {
     let (home, store, id) = test_store(/*automation_enabled*/ true);
+    assert_not_due(&store, &id, usage(UNUSED, Some(9)), 9);
     let mut now = 10;
     for failure in 0..=MAX_FAILURE_COUNT {
         finish_rejected(ready(&store, &id, usage(UNUSED, Some(10)), now), now);
@@ -121,16 +130,76 @@ fn retry_backoff_reuses_identity_and_caps() {
 }
 
 #[test]
-fn resetless_windows_rearm_after_activity_and_seven_days() {
+fn retry_tracks_reset_drift_and_resetless_activity() {
     let (_home, store, id) = test_store(/*automation_enabled*/ true);
-    finish_rejected(ready(&store, &id, usage(UNUSED, RESETLESS), 0), 0);
-    assert_not_due(&store, &id, usage(ACTIVE, RESETLESS), 1);
-    finish_completed(ready(&store, &id, usage(UNUSED, RESETLESS), 2), 2);
-    assert_not_due(&store, &id, usage(UNUSED, RESETLESS), 3);
-    assert!(matches!(
-        store.begin_weekly_window_attempt(&id, usage(UNUSED, RESETLESS), 2 + SUPPRESSION_SECONDS),
-        Ok(WeeklyWindowAttemptDecision::Ready(_))
-    ));
+    assert_not_due(&store, &id, usage(UNUSED, Some(9)), 9);
+    finish_rejected(ready(&store, &id, usage(UNUSED, Some(10)), 10), 10);
+    assert_not_due(&store, &id, usage(UNUSED, Some(12)), 309);
+    assert_not_due(&store, &id, usage(UNUSED, Some(11)), 310);
+    finish_rejected(ready(&store, &id, usage(UNUSED, Some(12)), 311), 311);
+    assert_eq!(
+        store.weekly_window_status(&id).unwrap().retry_not_before,
+        Some(911)
+    );
+    ready(&store, &id, usage(UNUSED, Some(12)), 911)
+        .finish(
+            WeeklyWindowAttemptOutcome::Completed {
+                refreshed_usage: WeeklyWindowUsage::Missing,
+            },
+            /*now*/ 911,
+        )
+        .unwrap();
+    assert_not_due(&store, &id, usage(UNUSED, Some(12)), 912);
+    drop(ready(&store, &id, usage(UNUSED, Some(13)), 913));
+
+    let (_home, store, id) = test_store(/*automation_enabled*/ true);
+    assert_not_due(&store, &id, usage(UNUSED, Some(9)), 9);
+    finish_rejected(ready(&store, &id, usage(UNUSED, Some(10)), 10), 10);
+    assert_not_due(&store, &id, usage(ACTIVE, None), 11);
+    assert_not_due(&store, &id, usage(UNUSED, Some(11)), 12);
+    drop(ready(&store, &id, usage(UNUSED, Some(12)), 13));
+
+    let (_home, store, id) = test_store(/*automation_enabled*/ true);
+    assert_not_due(&store, &id, usage(UNUSED, Some(9)), 9);
+    finish_rejected(ready(&store, &id, usage(UNUSED, Some(10)), 10), 10);
+    assert_not_due(&store, &id, usage(UNUSED, Some(8)), 310);
+    drop(ready(&store, &id, usage(UNUSED, Some(10)), 311));
+}
+
+#[test]
+fn reset_regression_does_not_reopen_a_closed_identity() {
+    let (_home, store, id) = test_store(/*automation_enabled*/ true);
+    assert_not_due(&store, &id, usage(UNUSED, Some(10)), 10);
+    ready(&store, &id, usage(UNUSED, Some(11)), 11)
+        .finish(
+            WeeklyWindowAttemptOutcome::Completed {
+                refreshed_usage: WeeklyWindowUsage::Missing,
+            },
+            /*now*/ 11,
+        )
+        .unwrap();
+    assert_not_due(&store, &id, usage(UNUSED, Some(9)), 12);
+    assert_not_due(&store, &id, usage(UNUSED, Some(11)), 13);
+    drop(ready(&store, &id, usage(UNUSED, Some(12)), 14));
+}
+
+#[test]
+fn legacy_retry_state_is_rebaselined() {
+    let (home, store, id) = test_store(/*automation_enabled*/ true);
+    let path = home.path().join("accounts/acct_test").join(STATE_FILE);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let state = State {
+        version: 1,
+        attempt_identity: Some(AttemptIdentity::ResetAt(10)),
+        attempt_status: Some(AttemptStatus::Retryable),
+        retry_not_before: Some(0),
+        ..State::default()
+    };
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    assert_not_due(&store, &id, usage(UNUSED, Some(10)), 10);
+    assert_not_due(&store, &id, usage(UNUSED, Some(10)), 11);
+    drop(ready(&store, &id, usage(UNUSED, Some(11)), 12));
 }
 
 #[test]
@@ -145,23 +214,18 @@ fn bad_state_is_quarantined_or_preserved_without_credentials() {
         WeeklyWindowStatus {
             last_error: Some(WeeklyWindowError::StateQuarantined),
             retry_not_before: None,
-            recovery_not_before: Some(100 + SUPPRESSION_SECONDS),
+            recovery_not_before: None,
         }
     );
-    drop(ready(&store, &id, usage(UNUSED, RESETLESS), 101));
-    std::fs::write(&path, b"{broken").unwrap();
-    assert_unavailable(&store, &id, usage(UNUSED, RESETLESS), 200);
-    let recovery_at = 200 + SUPPRESSION_SECONDS;
-    let reset_at = recovery_at + 100;
-    assert_not_due(&store, &id, usage(UNUSED, Some(reset_at)), recovery_at);
-    let rolled_usage = usage(UNUSED, Some(reset_at + 100));
-    let attempt = ready(&store, &id, rolled_usage, recovery_at + 1);
+    assert_not_due(&store, &id, usage(UNUSED, Some(200)), 101);
+    assert_not_due(&store, &id, usage(UNUSED, Some(200)), 102);
+    let attempt = ready(&store, &id, usage(UNUSED, Some(201)), 103);
     assert_eq!(store.weekly_window_status(&id).unwrap().last_error, None);
     drop(attempt);
 
-    for incompatible in [br#"{"version":2}"#.to_vec(), vec![b'x'; 4097]] {
+    for incompatible in [br#"{"version":3}"#.to_vec(), vec![b'x'; 4097]] {
         std::fs::write(&path, &incompatible).unwrap();
-        assert_unavailable(&store, &id, usage(UNUSED, RESETLESS), 101);
+        assert_unavailable(&store, &id, usage(UNUSED, None), 104);
         assert_eq!(std::fs::read(&path).unwrap(), incompatible);
     }
 }
