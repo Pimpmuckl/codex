@@ -16,7 +16,7 @@ use codex_keyring_store::tests::MockKeyringStore;
 use keyring::Error as KeyringError;
 
 #[tokio::test]
-async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
+async fn file_storage_read_only_fallback_fails_closed_with_pending_save() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let storage = FileAuthStorage::new(codex_home.path().to_path_buf());
     let auth_dot_json = AuthDotJson {
@@ -33,8 +33,45 @@ async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
         .save(&auth_dot_json)
         .context("failed to save auth file")?;
 
+    let guard = AuthRefreshGuard::acquire(codex_home.path())?;
     let loaded = storage.load().context("failed to load auth file")?;
+    drop(guard);
     assert_eq!(Some(auth_dot_json), loaded);
+
+    storage
+        .atomic
+        .fail_once(atomic_file::FaultPoint::BeforeReplace);
+    let auth = loaded.context("auth should be loaded")?;
+    assert!(storage.save(&auth).is_err());
+    assert!(storage.atomic.load_without_recovery().is_err());
+
+    let lock_path = codex_home.path().join(".auth-refresh.lock");
+    let original_permissions = std::fs::metadata(&lock_path)?.permissions();
+    let mut read_only_permissions = original_permissions.clone();
+    read_only_permissions.set_readonly(true);
+    std::fs::set_permissions(&lock_path, read_only_permissions)?;
+    let read_only_load = storage.load();
+    std::fs::set_permissions(&lock_path, original_permissions)?;
+    assert_eq!(
+        std::io::ErrorKind::WouldBlock,
+        read_only_load.unwrap_err().kind()
+    );
+
+    let guard = AuthRefreshGuard::acquire(codex_home.path())?;
+    let storage = Arc::new(storage);
+    let loader_storage = Arc::clone(&storage);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let loader = std::thread::spawn(move || sender.send(loader_storage.load()));
+    assert_eq!(
+        std::sync::mpsc::RecvTimeoutError::Timeout,
+        receiver
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap_err()
+    );
+    drop(guard);
+    assert_eq!(Some(auth), receiver.recv_timeout(Duration::from_secs(2))??);
+    loader.join().expect("loader should not panic")?;
+
     Ok(())
 }
 
