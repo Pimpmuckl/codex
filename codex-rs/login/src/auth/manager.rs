@@ -1351,7 +1351,28 @@ async fn load_auth(
         return Ok(None);
     }
 
-    // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
+    load_auth_from_storage(
+        codex_home,
+        auth_credentials_store_mode,
+        forced_chatgpt_workspace_id,
+        chatgpt_base_url,
+        keyring_backend_kind,
+        agent_identity_authapi_base_url,
+        auth_route_config,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn load_auth_from_storage(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    forced_chatgpt_workspace_id: Option<&[String]>,
+    chatgpt_base_url: Option<&str>,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    agent_identity_authapi_base_url: Option<&str>,
+    auth_route_config: Option<&AuthRouteConfig>,
+) -> std::io::Result<Option<CodexAuth>> {
     let storage = create_auth_storage(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
@@ -1860,6 +1881,7 @@ pub struct AuthManager {
     active_auth_home: RwLock<PathBuf>,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
+    auth_storage_only: bool,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     automatic_account_selection: AutomaticAccountSelection,
@@ -2076,6 +2098,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            auth_storage_only: false,
             enable_codex_api_key_env,
             auth_credentials_store_mode,
             automatic_account_selection,
@@ -2089,6 +2112,22 @@ impl AuthManager {
             external_auth: RwLock::new(None),
             auth_route_config,
         }
+    }
+
+    /// Creates a manager that reads only file-backed auth.
+    pub async fn new_from_file_auth(
+        codex_home: PathBuf,
+        forced_chatgpt_workspace_id: Option<Vec<String>>,
+        chatgpt_base_url: Option<String>,
+        auth_route_config: Option<AuthRouteConfig>,
+    ) -> std::io::Result<Option<Self>> {
+        codex_plus_plus::file_auth::new_manager(
+            codex_home,
+            forced_chatgpt_workspace_id,
+            chatgpt_base_url,
+            auth_route_config,
+        )
+        .await
     }
 
     /// Create an AuthManager with a specific CodexAuth, for testing only.
@@ -2106,6 +2145,35 @@ impl AuthManager {
             active_auth_home: RwLock::new(PathBuf::from("non-existent")),
             inner: RwLock::new(cached),
             auth_change_tx,
+            auth_storage_only: false,
+            enable_codex_api_key_env: false,
+            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
+            keyring_backend_kind: AuthKeyringBackendKind::default(),
+            forced_chatgpt_workspace_id: RwLock::new(None),
+            chatgpt_base_url: None,
+            agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
+            refresh_lock: Semaphore::new(/*permits*/ 1),
+            agent_identity_lock: Semaphore::new(/*permits*/ 1),
+            agent_identity_bootstrap_cooldown: Mutex::default(),
+            external_auth: RwLock::new(None),
+            auth_route_config: None,
+        })
+    }
+
+    fn from_auth_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<Self> {
+        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
+        Arc::new(Self {
+            codex_home: codex_home.clone(),
+            active_account_id: RwLock::new(None),
+            active_account_lease: Mutex::new(None),
+            active_auth_home: RwLock::new(codex_home),
+            inner: RwLock::new(CachedAuth {
+                auth: Some(auth),
+                permanent_refresh_failure: None,
+            }),
+            auth_change_tx,
+            auth_storage_only: false,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             automatic_account_selection: AutomaticAccountSelection::Enabled,
@@ -2123,31 +2191,7 @@ impl AuthManager {
 
     /// Create an AuthManager with a specific CodexAuth and codex home, for testing only.
     pub fn from_auth_for_testing_with_home(auth: CodexAuth, codex_home: PathBuf) -> Arc<Self> {
-        let cached = CachedAuth {
-            auth: Some(auth),
-            permanent_refresh_failure: None,
-        };
-        let (auth_change_tx, _auth_change_rx) = watch::channel(0);
-        Arc::new(Self {
-            codex_home: codex_home.clone(),
-            active_account_id: RwLock::new(None),
-            active_account_lease: Mutex::new(None),
-            active_auth_home: RwLock::new(codex_home),
-            inner: RwLock::new(cached),
-            auth_change_tx,
-            enable_codex_api_key_env: false,
-            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
-            automatic_account_selection: AutomaticAccountSelection::Enabled,
-            keyring_backend_kind: AuthKeyringBackendKind::default(),
-            forced_chatgpt_workspace_id: RwLock::new(None),
-            chatgpt_base_url: None,
-            agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
-            refresh_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_lock: Semaphore::new(/*permits*/ 1),
-            agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(None),
-            auth_route_config: None,
-        })
+        Self::from_auth_with_home(auth, codex_home)
     }
 
     /// Create an AuthManager with a specific CodexAuth and Agent Identity AuthAPI base URL, for testing only.
@@ -2168,6 +2212,7 @@ impl AuthManager {
             active_auth_home: RwLock::new(PathBuf::from("non-existent")),
             inner: RwLock::new(cached),
             auth_change_tx,
+            auth_storage_only: false,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             automatic_account_selection: AutomaticAccountSelection::Enabled,
@@ -2199,6 +2244,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            auth_storage_only: false,
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             automatic_account_selection: AutomaticAccountSelection::Enabled,
@@ -2460,10 +2506,12 @@ impl AuthManager {
             return LoadedAuth::from_current_source(auth);
         }
 
+        if self.auth_storage_only {
+            return LoadedAuth::from_current_source(codex_plus_plus::file_auth::load(self).await);
+        }
         let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
-        let auth_home = self.active_auth_home();
         let auth = load_auth(
-            &auth_home,
+            &self.active_auth_home(),
             self.enable_codex_api_key_env,
             self.active_auth_credentials_store_mode(),
             forced_chatgpt_workspace_id.as_deref(),
