@@ -857,6 +857,9 @@ pub(crate) enum AppEvent {
         weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
     },
 
+    /// Open Codex++ account settings with the embedded scheduler's current status snapshot.
+    OpenCodexPlusPlusAccounts,
+
     /// Update memory settings and persist them to config.toml.
     UpdateMemorySettings {
         use_memories: bool,

@@ -1,9 +1,13 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::Utc;
 use codex_config::WeeklyUsageWindowAutoStart;
+use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::WeeklyWindowAttemptDecision;
 use codex_login::WeeklyWindowAttemptOutcome;
@@ -21,9 +25,20 @@ use crate::account_usage;
 use crate::legacy_core::config::Config;
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const MAX_STATUS_ACCOUNTS: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WeeklyWindowStatus {
+    Waiting(Option<u8>),
+    Started(Option<u8>),
+    Retrying(Option<u8>),
+    SignInRequired,
+    Failed,
+}
 
 pub(crate) struct WeeklyWindowScheduler {
     state: watch::Sender<bool>,
+    statuses: Arc<Mutex<HashMap<AccountId, WeeklyWindowStatus>>>,
     _task: JoinHandle<()>,
 }
 
@@ -31,17 +46,43 @@ impl WeeklyWindowScheduler {
     pub(crate) fn spawn(config: Config, model: String) -> Self {
         let enabled = config.weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Enabled;
         let (state, receiver) = watch::channel(enabled);
+        let statuses = Arc::new(Mutex::new(HashMap::new()));
+        let task_statuses = Arc::clone(&statuses);
         let task = tokio::spawn(run_schedule(
-            move |scan_control| scan(config.clone(), model.clone(), scan_control),
+            move |scan_control| {
+                scan(
+                    config.clone(),
+                    model.clone(),
+                    scan_control,
+                    Arc::clone(&task_statuses),
+                )
+            },
             receiver,
         ));
-        Self { state, _task: task }
+        Self {
+            state,
+            statuses,
+            _task: task,
+        }
     }
 
     pub(crate) fn set_enabled(&self, on: bool) {
+        if !on {
+            self.statuses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
         let _ = self
             .state
             .send_if_modified(|v| std::mem::replace(v, on) != on);
+    }
+
+    pub(crate) fn statuses(&self) -> HashMap<AccountId, WeeklyWindowStatus> {
+        self.statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -67,7 +108,16 @@ where
     }
 }
 
-async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
+async fn scan(
+    config: Config,
+    model: String,
+    control: watch::Receiver<bool>,
+    status_sink: Arc<Mutex<HashMap<AccountId, WeeklyWindowStatus>>>,
+) {
+    status_sink
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
     let http_client_factory = config.http_client_factory();
     if let Err(outcome) = preflight_weekly_window_ping(
         &config.model_provider_id,
@@ -114,7 +164,13 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
         return;
     }
     let loaded = account_usage::load(&config, &accounts, &store).await;
+    let mut statuses = HashMap::new();
     for (account_id, attempted_auth) in &loaded.login_required {
+        record_status(
+            &mut statuses,
+            account_id,
+            WeeklyWindowStatus::SignInRequired,
+        );
         if let Err(err) = store.record_login_required_if_auth_matches(account_id, attempted_auth) {
             tracing::warn!(%account_id, %err, "weekly-window scheduler could not record login failure");
         }
@@ -127,20 +183,34 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
         if loaded.login_required.contains_key(&account_id) {
             continue;
         }
-        let usage = weekly_usage(loaded.usage.get(&account_id));
+        let account_usage = loaded.usage.get(&account_id);
+        let remaining = account_usage.and_then(|usage| usage.weekly_remaining_percent);
+        let usage = weekly_usage(account_usage);
         let attempt = match store.begin_weekly_window_attempt(
             &account_id,
             usage,
             Utc::now().timestamp(),
         ) {
             Ok(WeeklyWindowAttemptDecision::Ready(attempt)) => attempt,
-            Ok(
-                WeeklyWindowAttemptDecision::NotDue
-                | WeeklyWindowAttemptDecision::Locked
-                | WeeklyWindowAttemptDecision::StateUnavailable,
-            ) => continue,
+            Ok(WeeklyWindowAttemptDecision::NotDue | WeeklyWindowAttemptDecision::Locked) => {
+                record_status(
+                    &mut statuses,
+                    &account_id,
+                    if account_usage.is_some() {
+                        WeeklyWindowStatus::Waiting(remaining)
+                    } else {
+                        WeeklyWindowStatus::Failed
+                    },
+                );
+                continue;
+            }
+            Ok(WeeklyWindowAttemptDecision::StateUnavailable) => {
+                record_status(&mut statuses, &account_id, WeeklyWindowStatus::Failed);
+                continue;
+            }
             Err(err) => {
                 tracing::warn!(%account_id, %err, "weekly-window scheduler could not begin attempt");
+                record_status(&mut statuses, &account_id, WeeklyWindowStatus::Failed);
                 continue;
             }
         };
@@ -155,19 +225,54 @@ async fn scan(config: Config, model: String, control: watch::Receiver<bool>) {
             http_client_factory: http_client_factory.clone(),
         })
         .await;
-        let refreshed_usage = if outcome == WeeklyWindowPingOutcome::Completed {
+        let (refreshed_usage, refreshed_remaining) = if outcome
+            == WeeklyWindowPingOutcome::Completed
+        {
             let refreshed =
                 account_usage::load(&config, &[(account_id.clone(), account_home)], &store).await;
-            weekly_usage(refreshed.usage.get(&account_id))
+            let refreshed_account_usage = refreshed.usage.get(&account_id);
+            (
+                weekly_usage(refreshed_account_usage),
+                refreshed_account_usage.and_then(|usage| usage.weekly_remaining_percent),
+            )
         } else {
-            WeeklyWindowUsage::Missing
+            (WeeklyWindowUsage::Missing, remaining)
+        };
+        let status = match outcome {
+            WeeklyWindowPingOutcome::Completed => WeeklyWindowStatus::Started(refreshed_remaining),
+            WeeklyWindowPingOutcome::LoginRequired | WeeklyWindowPingOutcome::RecoveryRequired => {
+                WeeklyWindowStatus::SignInRequired
+            }
+            WeeklyWindowPingOutcome::DefiniteRejection | WeeklyWindowPingOutcome::Ambiguous => {
+                WeeklyWindowStatus::Retrying(remaining)
+            }
+            WeeklyWindowPingOutcome::UnsupportedConfiguration
+            | WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowStatus::Failed,
         };
         if let Err(err) = attempt.finish(
             attempt_outcome(outcome, refreshed_usage),
             Utc::now().timestamp(),
         ) {
             tracing::warn!(%account_id, %err, "weekly-window scheduler could not finish attempt");
+            record_status(&mut statuses, &account_id, WeeklyWindowStatus::Failed);
+        } else {
+            record_status(&mut statuses, &account_id, status);
         }
+    }
+    if !control.has_changed().unwrap_or(true) {
+        *status_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = statuses;
+    }
+}
+
+fn record_status(
+    statuses: &mut HashMap<AccountId, WeeklyWindowStatus>,
+    account_id: &AccountId,
+    status: WeeklyWindowStatus,
+) {
+    if statuses.len() < MAX_STATUS_ACCOUNTS || statuses.contains_key(&account_id) {
+        statuses.insert(account_id.clone(), status);
     }
 }
 

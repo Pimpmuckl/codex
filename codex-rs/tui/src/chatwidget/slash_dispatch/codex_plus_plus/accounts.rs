@@ -1,5 +1,6 @@
 //! Per-account Codex++ automation settings exposed through `/accounts`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -10,6 +11,7 @@ use codex_login::AccountStore;
 use tracing::warn;
 
 use super::*;
+use crate::codex_plus_plus::WeeklyWindowStatus;
 
 struct AccountAutomationRow {
     id: AccountId,
@@ -19,6 +21,7 @@ struct AccountAutomationRow {
     login_required: bool,
     is_current: bool,
     in_use: bool,
+    weekly_status: Option<WeeklyWindowStatus>,
 }
 
 struct AccountAutomationChoice {
@@ -29,6 +32,13 @@ struct AccountAutomationChoice {
 
 impl ChatWidget {
     pub(in crate::chatwidget::slash_dispatch) fn open_accounts_popup(&mut self) {
+        self.app_event_tx.send(AppEvent::OpenCodexPlusPlusAccounts);
+    }
+
+    pub(crate) fn open_accounts_popup_with_statuses(
+        &mut self,
+        weekly_statuses: Option<&HashMap<AccountId, WeeklyWindowStatus>>,
+    ) {
         let store = AccountStore::new(self.config.codex_home.to_path_buf());
         let accounts = match store.list() {
             Ok(accounts) => accounts,
@@ -57,6 +67,8 @@ impl ChatWidget {
             .into_iter()
             .map(|account| {
                 let in_use = store.account_in_use(&account.id).unwrap_or(false);
+                let weekly_status =
+                    weekly_statuses.and_then(|statuses| statuses.get(&account.id).copied());
                 AccountAutomationRow {
                     is_current: current_account_id.as_ref() == Some(&account.id),
                     id: account.id,
@@ -65,6 +77,7 @@ impl ChatWidget {
                     automation_enabled: account.automation_enabled,
                     login_required: account.login_required,
                     in_use,
+                    weekly_status,
                 }
             })
             .collect();
@@ -102,7 +115,12 @@ fn accounts_settings_params(
             let codex_home = codex_home.clone();
             SelectionItem {
                 name: row.label,
-                description: account_status(row.enabled, row.login_required, row.in_use),
+                description: account_status(
+                    row.enabled,
+                    row.login_required,
+                    row.in_use,
+                    row.weekly_status,
+                ),
                 is_current: row.is_current,
                 toggle: Some(SelectionToggle {
                     is_on: row.automation_enabled,
@@ -140,7 +158,12 @@ fn accounts_settings_params(
     }
 }
 
-fn account_status(enabled: bool, login_required: bool, in_use: bool) -> Option<String> {
+fn account_status(
+    enabled: bool,
+    login_required: bool,
+    in_use: bool,
+    weekly_status: Option<WeeklyWindowStatus>,
+) -> Option<String> {
     let mut statuses = Vec::new();
     if !enabled {
         statuses.push("Account disabled");
@@ -151,7 +174,24 @@ fn account_status(enabled: bool, login_required: bool, in_use: bool) -> Option<S
     if in_use {
         statuses.push("In use");
     }
+    let weekly = weekly_status.map(|status| match status {
+        WeeklyWindowStatus::Waiting(percent) => weekly_status_text(percent, "Waiting"),
+        WeeklyWindowStatus::Started(percent) => weekly_status_text(percent, "Started"),
+        WeeklyWindowStatus::Retrying(percent) => weekly_status_text(percent, "Retrying"),
+        WeeklyWindowStatus::SignInRequired => "Weekly · Sign-in required".to_string(),
+        WeeklyWindowStatus::Failed => "Weekly · Unavailable".to_string(),
+    });
+    if let Some(weekly) = weekly.as_deref() {
+        statuses.push(weekly);
+    }
     (!statuses.is_empty()).then(|| statuses.join(" · "))
+}
+
+fn weekly_status_text(percent: Option<u8>, status: &str) -> String {
+    percent.map_or_else(
+        || format!("Weekly · {status}"),
+        |percent| format!("Weekly {percent:>3}% · {status}"),
+    )
 }
 
 fn persist_account_automation(
