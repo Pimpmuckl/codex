@@ -204,6 +204,21 @@ fn home_relative_path_fields_are_allowed_and_resolved() {
     assert_eq!(path, expected.to_string_lossy());
 }
 
+#[test]
+fn cloud_config_cannot_enable_weekly_auto_start() {
+    let layers = cloud_config_layers_from_fragments(
+        vec![fragment(
+            "cfg_123",
+            "Base policy",
+            "weekly_usage_window_auto_start = \"enabled\"",
+        )],
+        &base_dir(),
+    )
+    .expect("cloud config should parse");
+
+    assert_eq!(layers[0].config.get("weekly_usage_window_auto_start"), None);
+}
+
 #[tokio::test]
 async fn raw_toml_diagnostics_use_enterprise_layer_name() {
     let base_dir = base_dir();

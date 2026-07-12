@@ -21,6 +21,7 @@ use codex_config::ResidencyRequirement;
 use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
+use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
@@ -824,6 +825,7 @@ pub struct Config {
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
 
     pub automatic_account_selection: AutomaticAccountSelection,
+    pub weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
@@ -3837,6 +3839,9 @@ impl Config {
                 env!("CARGO_PKG_VERSION"),
             ),
             automatic_account_selection: cfg.automatic_account_selection.unwrap_or_default(),
+            weekly_usage_window_auto_start: cfg
+                .weekly_usage_window_auto_start
+                .unwrap_or_default(),
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.

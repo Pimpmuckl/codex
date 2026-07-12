@@ -19,6 +19,8 @@ use crate::save_auth;
 
 #[path = "codex_plus_plus/account_policy.rs"]
 pub(crate) mod account_policy;
+#[path = "codex_plus_plus/weekly_window_state.rs"]
+pub(crate) mod weekly_window_state;
 
 const ACCOUNTS_DIR: &str = "accounts";
 const INDEX_FILE: &str = "index.json";
@@ -501,12 +503,12 @@ impl AccountStore {
 }
 
 #[cfg(not(windows))]
-fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
 
 #[cfg(windows)]
-fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
 
