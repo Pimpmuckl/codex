@@ -10,6 +10,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
 use codex_plugin::PluginHookSource;
 use codex_plugin::PluginId;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::items::parse_hook_prompt_fragment;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
@@ -20,6 +21,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::hooks::trust_discovered_hooks;
@@ -42,6 +44,7 @@ use core_test_support::skip_if_host_windows;
 use core_test_support::skip_if_no_network;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -58,6 +61,53 @@ const SECOND_CONTINUATION_PROMPT: &str = "Now tighten it to just: meow.";
 const BLOCKED_PROMPT_CONTEXT: &str = "Remember the blocked lighthouse note.";
 const PERMISSION_REQUEST_HOOK_MATCHER: &str = "^Bash$";
 const PERMISSION_REQUEST_ALLOW_REASON: &str = "should not be used for allow";
+
+async fn submit_yolo_auto_review_turn(test: &TestCodex, prompt: &str) -> Result<()> {
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: prompt.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                sandbox_policy: Some(SandboxPolicy::DangerFullAccess),
+                ..Default::default()
+            },
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    Ok(())
+}
+
+fn guardian_review_sse(response_id: &str, outcome: &str, rationale: &str) -> String {
+    let (risk_level, user_authorization) = if outcome == "allow" {
+        ("low", "high")
+    } else {
+        ("high", "low")
+    };
+    sse(vec![
+        ev_response_created(response_id),
+        ev_assistant_message(
+            &format!("msg-{response_id}"),
+            &serde_json::json!({
+                "risk_level": risk_level,
+                "user_authorization": user_authorization,
+                "outcome": outcome,
+                "rationale": rationale,
+            })
+            .to_string(),
+        ),
+        ev_completed(response_id),
+    ])
+}
 
 fn restrictive_workspace_write_profile() -> PermissionProfile {
     PermissionProfile::workspace_write_with(
@@ -365,6 +415,14 @@ elif mode == "json_deny_with_context":
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
             "additionalContext": reason
+        }}
+    }}))
+elif mode == "ask":
+    print(json.dumps({{
+        "hookSpecificOutput": {{
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": reason
         }}
     }}))
 elif mode == "exit_2":
@@ -3599,6 +3657,66 @@ async fn pre_tool_use_blocks_local_function_tool_before_execution() -> Result<()
     assert_eq!(hook_inputs[0]["tool_name"], "test_sync_tool");
     assert_eq!(hook_inputs[0]["tool_use_id"], call_id);
     assert_eq!(hook_inputs[0]["tool_input"], args);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_tool_use_ask_reviews_generic_tool_under_yolo() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "pretooluse-ask-generic";
+    let args = serde_json::json!({ "sleep_before_ms": 0 });
+    let reason = "Review this generic tool call";
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parent-tool"),
+                ev_function_call(call_id, "test_sync_tool", &serde_json::to_string(&args)?),
+                ev_completed("resp-parent-tool"),
+            ]),
+            guardian_review_sse(
+                "resp-guardian-allow",
+                "allow",
+                "The requested test tool call is safe.",
+            ),
+            sse(vec![
+                ev_response_created("resp-parent-done"),
+                ev_assistant_message("msg-parent-done", "done"),
+                ev_completed("resp-parent-done"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_pre_build_hook(move |home| {
+            write_pre_tool_use_hook(home, Some("^test_sync_tool$"), "ask", reason)
+                .expect("failed to write pre tool use hook test fixture");
+        })
+        .with_config(trust_discovered_hooks);
+    let test = builder.build(&server).await?;
+
+    submit_yolo_auto_review_turn(&test, "review the generic function tool").await?;
+
+    let requests = responses.requests();
+    let guardian_request = requests
+        .iter()
+        .find(|request| request.body_contains_text(reason))
+        .expect("expected hook-enforced Guardian review request");
+    assert!(guardian_request.body_contains_text("test_sync_tool"));
+    assert!(guardian_request.body_contains_text("sleep_before_ms"));
+    assert_eq!(
+        requests
+            .iter()
+            .filter_map(|request| request.function_call_output_text(call_id))
+            .count(),
+        1,
+        "approved original invocation should execute exactly once"
+    );
 
     Ok(())
 }

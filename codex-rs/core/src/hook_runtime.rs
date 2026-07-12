@@ -55,6 +55,7 @@ pub(crate) struct HookRuntimeOutcome {
 
 pub(crate) enum PreToolUseHookResult {
     Continue { updated_input: Option<Value> },
+    Review { reason: String },
     Blocked(String),
 }
 
@@ -189,6 +190,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
         hook_events,
         should_block,
         block_reason,
+        review_reason,
         additional_contexts,
         updated_input,
     } = hooks.run_pre_tool_use(request).await;
@@ -196,6 +198,9 @@ pub(crate) async fn run_pre_tool_use_hooks(
     record_additional_contexts(sess, turn_context, additional_contexts).await;
 
     if !should_block {
+        if let Some(reason) = review_reason {
+            return PreToolUseHookResult::Review { reason };
+        }
         return PreToolUseHookResult::Continue { updated_input };
     }
 
