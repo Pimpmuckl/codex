@@ -2,6 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 // Note: Table-based layout previously used Constraint; the manual renderer
 // below no longer requires it.
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -31,7 +32,8 @@ pub(crate) struct GenericDisplayRow {
     pub name_prefix_spans: Vec<Span<'static>>,
     pub display_shortcut: Option<KeyBinding>,
     pub match_indices: Option<Vec<usize>>, // indices to bold (char positions)
-    pub description: Option<String>,       // optional grey text after the name
+    pub description: Option<String>,       // optional text after the name
+    pub description_style: Option<Style>,  // defaults to dim when unset
     pub category_tag: Option<String>,      // optional right-side category label
     pub disabled_reason: Option<String>,   // optional disabled message
     pub is_disabled: bool,
@@ -227,6 +229,13 @@ fn should_wrap_name_in_column(row: &GenericDisplayRow) -> bool {
         && row.name_prefix_spans.is_empty()
 }
 
+fn description_span(row: &GenericDisplayRow, description: String) -> Span<'static> {
+    match row.description_style {
+        Some(style) => Span::styled(description, style),
+        None => description.dim(),
+    }
+}
+
 fn wrap_two_column_row(row: &GenericDisplayRow, desc_col: usize, width: u16) -> Vec<Line<'static>> {
     let Some(description) = row.description.as_deref() else {
         return Vec::new();
@@ -278,7 +287,7 @@ fn wrap_two_column_row(row: &GenericDisplayRow, desc_col: usize, width: u16) -> 
             if gap > 0 {
                 spans.push(" ".repeat(gap).into());
             }
-            spans.push(desc.to_string().dim());
+            spans.push(description_span(row, desc.to_string()));
         }
 
         out.push(Line::from(spans));
@@ -426,7 +435,7 @@ fn adjust_start_for_wrapped_selection_visibility(
 
 /// Build the full display line for a row with the description padded to start
 /// at `desc_col`. Applies fuzzy-match bolding when indices are present and
-/// dims the description.
+/// styles the description.
 fn build_full_line(row: &GenericDisplayRow, desc_col: usize) -> Line<'static> {
     let combined_description = match (&row.description, &row.disabled_reason) {
         (Some(desc), Some(reason)) => Some(format!("{desc} (disabled: {reason})")),
@@ -501,7 +510,7 @@ fn build_full_line(row: &GenericDisplayRow, desc_col: usize) -> Line<'static> {
         if gap > 0 {
             full_spans.push(" ".repeat(gap).into());
         }
-        full_spans.push(desc.clone().dim());
+        full_spans.push(description_span(row, desc.clone()));
     }
     if let Some(tag) = row.category_tag.as_deref().filter(|tag| !tag.is_empty()) {
         full_spans.push("  ".into());
@@ -876,5 +885,22 @@ mod tests {
         let expected = accent_style();
         assert_eq!(style.fg, expected.fg);
         assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn description_can_use_the_terminal_default_style() {
+        let row = GenericDisplayRow {
+            name: "account@example.com".to_string(),
+            description: Some("Weekly 80%".to_string()),
+            description_style: Some(Style::default()),
+            ..Default::default()
+        };
+
+        let line = build_full_line(&row, /*desc_col*/ 24);
+
+        assert_eq!(
+            line.spans.last().expect("description span").style,
+            Style::default()
+        );
     }
 }
