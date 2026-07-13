@@ -14,6 +14,7 @@ use crate::test_backend::VT100Backend;
 fn settings_view(
     automatic: AutomaticAccountSelection,
     weekly: WeeklyUsageWindowAutoStart,
+    capacity: ModelCapacityRetryMode,
 ) -> (
     ListSelectionView,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
@@ -23,7 +24,7 @@ fn settings_view(
     let weekly_supported = automatic == AutomaticAccountSelection::Enabled;
     (
         ListSelectionView::new(
-            codex_plus_plus_settings_params(automatic, weekly, weekly_supported, &keymap),
+            codex_plus_plus_settings_params(automatic, weekly, capacity, weekly_supported, &keymap),
             AppEventSender::new(tx),
             keymap,
         ),
@@ -34,8 +35,9 @@ fn settings_view(
 fn render_settings(
     automatic: AutomaticAccountSelection,
     weekly: WeeklyUsageWindowAutoStart,
+    capacity: ModelCapacityRetryMode,
 ) -> String {
-    let (view, _rx) = settings_view(automatic, weekly);
+    let (view, _rx) = settings_view(automatic, weekly, capacity);
     let mut terminal =
         Terminal::new(VT100Backend::new(/*width*/ 84, /*height*/ 10)).expect("terminal");
     terminal
@@ -51,6 +53,7 @@ fn settings_enabled_snapshot() {
         render_settings(
             AutomaticAccountSelection::Enabled,
             WeeklyUsageWindowAutoStart::Enabled,
+            ModelCapacityRetryMode::Bounded,
         )
     );
 }
@@ -62,15 +65,17 @@ fn settings_unsupported_snapshot() {
         render_settings(
             AutomaticAccountSelection::Disabled,
             WeeklyUsageWindowAutoStart::Disabled,
+            ModelCapacityRetryMode::Indefinite,
         )
     );
 }
 
 #[test]
-fn unsupported_settings_save_only_the_visible_setting() {
+fn unsupported_settings_save_only_the_visible_settings() {
     let (mut view, mut rx) = settings_view(
         AutomaticAccountSelection::Disabled,
         WeeklyUsageWindowAutoStart::Enabled,
+        ModelCapacityRetryMode::Bounded,
     );
 
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
@@ -78,8 +83,10 @@ fn unsupported_settings_save_only_the_visible_setting() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::PersistAutomaticAccountSelection {
-            selection: AutomaticAccountSelection::Enabled,
+        Ok(AppEvent::PersistCodexPlusPlusSettings {
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
+            weekly_usage_window_auto_start: None,
+            model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
         })
     );
 }
@@ -89,6 +96,7 @@ fn weekly_setting_saves_full_selection() {
     let (mut view, mut rx) = settings_view(
         AutomaticAccountSelection::Enabled,
         WeeklyUsageWindowAutoStart::Enabled,
+        ModelCapacityRetryMode::Bounded,
     );
 
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
@@ -99,7 +107,31 @@ fn weekly_setting_saves_full_selection() {
         rx.try_recv(),
         Ok(AppEvent::PersistCodexPlusPlusSettings {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
-            weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart::Disabled,
+            weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Disabled),
+            model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
+        })
+    );
+}
+
+#[test]
+fn capacity_setting_saves_indefinite_mode() {
+    let (mut view, mut rx) = settings_view(
+        AutomaticAccountSelection::Enabled,
+        WeeklyUsageWindowAutoStart::Enabled,
+        ModelCapacityRetryMode::Bounded,
+    );
+
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
+    view.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PersistCodexPlusPlusSettings {
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
+            weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Enabled),
+            model_capacity_retry_mode: ModelCapacityRetryMode::Indefinite,
         })
     );
 }
@@ -109,6 +141,7 @@ fn escape_cancels_without_writing() {
     let (mut view, mut rx) = settings_view(
         AutomaticAccountSelection::Enabled,
         WeeklyUsageWindowAutoStart::Enabled,
+        ModelCapacityRetryMode::Bounded,
     );
 
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
