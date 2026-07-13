@@ -10,6 +10,7 @@ path = "junit.xml"
 
 [profile.local]
 inherits = "default"
+test-threads = 4
 
 [test-groups.app_server_protocol_codegen]
 max-threads = 1

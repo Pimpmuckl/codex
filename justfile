@@ -6,6 +6,8 @@ set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.envir
 
 rust_min_stack := "8388608" # 8 MiB
 python := if os_family() == "windows" { "python" } else { "python3" }
+export CARGO_BUILD_JOBS := env_var_or_default("CARGO_BUILD_JOBS", "4")
+export RUST_TEST_THREADS := env_var_or_default("RUST_TEST_THREADS", "4")
 
 # Display help
 help:
