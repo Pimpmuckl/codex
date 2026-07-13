@@ -73,6 +73,14 @@ fn account_picker_snapshot() {
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .expect("render account picker");
 
+    let usage = terminal
+        .backend()
+        .vt100()
+        .screen()
+        .cell(/*row*/ 3, /*col*/ 33)
+        .expect("first usage description");
+    assert_eq!(usage.contents(), "5");
+    assert!(!usage.dim());
     insta::assert_snapshot!("account_picker_startup", terminal.backend());
 
     let view = new_view(
