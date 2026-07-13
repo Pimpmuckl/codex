@@ -17,6 +17,7 @@ use color_eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use ratatui::style::Style;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use tokio::sync::mpsc;
@@ -247,6 +248,7 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
                 candidate.weekly_reset.as_deref(),
             ),
         )),
+        description_style: Some(Style::default()),
         is_default: candidate.is_default,
         dismiss_on_select: true,
         search_value: Some(candidate.email.clone()),

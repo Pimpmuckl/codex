@@ -3,6 +3,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use pretty_assertions::assert_eq;
 use ratatui::Terminal;
+use ratatui::style::Modifier;
 use tokio::sync::mpsc::unbounded_channel;
 
 use super::*;
@@ -104,7 +105,12 @@ fn mixed_account_automation_snapshot() {
     let mut terminal =
         Terminal::new(VT100Backend::new(/*width*/ 92, /*height*/ 12)).expect("terminal");
     terminal
-        .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
+        .draw(|frame| {
+            view.render(frame.area(), frame.buffer_mut());
+            let status = &frame.buffer_mut()[(36, 5)];
+            assert_eq!(status.symbol(), "L");
+            assert!(status.style().add_modifier.contains(Modifier::DIM));
+        })
         .expect("render accounts settings");
 
     insta::assert_snapshot!(
