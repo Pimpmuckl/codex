@@ -87,10 +87,16 @@ In the codex-rs folder where the rust code lives:
 
 Coordinate heavyweight Rust validation before running it. Crate-wide or workspace-wide tests,
 Clippy and Bazel may compile or execute thousands of targets even when the command looks scoped.
-Run only one heavyweight Rust job at a time, use bounded concurrency where the tool
-supports it, and require explicit user approval before starting a validation run that could
-materially load the workstation. Prefer the narrowest relevant tests and record broader validation
-as skipped for resource safety when focused evidence is sufficient.
+Never run more than one heavyweight Rust job at a time, including across agents. Local Rust
+validation must keep Cargo's default target directory inside its current worktree; do not share
+`CARGO_TARGET_DIR` with another worktree or redirect it to a hashed temporary directory. Default
+Cargo builds and Rust test harnesses to four threads, while preserving explicit overrides. For
+focused tests, always select `--lib` or one exact `--test` target in addition to any nextest filter,
+because filters limit execution but not Cargo compilation. Require explicit user approval before
+starting a validation run that could materially load the workstation. Prefer the narrowest relevant
+tests and record broader validation as skipped for resource safety when focused evidence is
+sufficient. Use the existing upstream CI workflows for explicitly requested broad PR or release
+validation; do not add fork-specific test workflows, shared build caches, or target plumbing.
 
 Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
