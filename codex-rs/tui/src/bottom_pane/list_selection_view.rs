@@ -6,6 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -136,6 +137,8 @@ pub(crate) struct SelectionItem {
     pub toggle_placeholder: Option<&'static str>,
     pub display_shortcut: Option<KeyBinding>,
     pub description: Option<String>,
+    /// Overrides the default dimmed description style.
+    pub description_style: Option<Style>,
     pub selected_description: Option<String>,
     pub is_current: bool,
     pub is_default: bool,
@@ -605,6 +608,7 @@ impl ListSelectionView {
                         display_shortcut: item.display_shortcut,
                         match_indices: None,
                         description,
+                        description_style: item.description_style,
                         category_tag: None,
                         wrap_indent,
                         is_disabled,
