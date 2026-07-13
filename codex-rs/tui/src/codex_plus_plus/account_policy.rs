@@ -2,6 +2,7 @@
 
 use crate::app::App;
 use crate::app_server_session::AppServerSession;
+use codex_config::ModelCapacityRetryMode;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
 
@@ -10,6 +11,7 @@ pub(crate) async fn persist_settings(
     app_server: &AppServerSession,
     automatic_account_selection: AutomaticAccountSelection,
     weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
+    model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
 ) {
     let automatic = match automatic_account_selection {
         AutomaticAccountSelection::Enabled => "enabled",
@@ -25,6 +27,15 @@ pub(crate) async fn persist_settings(
             serde_json::json!(match weekly {
                 WeeklyUsageWindowAutoStart::Enabled => "enabled",
                 WeeklyUsageWindowAutoStart::Disabled => "disabled",
+            }),
+        ));
+    }
+    if let Some(capacity) = model_capacity_retry_mode {
+        writes.push(crate::config_update::replace_config_value(
+            "model_capacity_retry_mode",
+            serde_json::json!(match capacity {
+                ModelCapacityRetryMode::Bounded => "bounded",
+                ModelCapacityRetryMode::Indefinite => "indefinite",
             }),
         ));
     }
@@ -71,18 +82,36 @@ pub(crate) async fn persist_settings(
         Some("disabled") => WeeklyUsageWindowAutoStart::Disabled,
         _ => WeeklyUsageWindowAutoStart::Enabled,
     };
+    let effective_capacity = match response
+        .config
+        .additional
+        .get("model_capacity_retry_mode")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("indefinite") => ModelCapacityRetryMode::Indefinite,
+        _ => ModelCapacityRetryMode::Bounded,
+    };
     app.config.automatic_account_selection = effective_automatic;
     app.config.weekly_usage_window_auto_start = effective_weekly;
+    app.config.model_capacity_retry_mode = effective_capacity;
     if let Some(scheduler) = &app.weekly_window_scheduler {
         scheduler.set_enabled(effective_weekly == WeeklyUsageWindowAutoStart::Enabled);
     }
     if effective_automatic == automatic_account_selection
         && weekly_usage_window_auto_start.is_none_or(|weekly| effective_weekly == weekly)
+        && model_capacity_retry_mode.is_none_or(|capacity| effective_capacity == capacity)
     {
-        app.chat_widget
-            .codex_plus_plus_settings_persisted(effective_automatic, effective_weekly);
+        app.chat_widget.codex_plus_plus_settings_persisted(
+            effective_automatic,
+            effective_weekly,
+            effective_capacity,
+        );
     } else {
         app.chat_widget
-            .codex_plus_plus_settings_persistence_overridden(effective_automatic, effective_weekly);
+            .codex_plus_plus_settings_persistence_overridden(
+                effective_automatic,
+                effective_weekly,
+                effective_capacity,
+            );
     }
 }

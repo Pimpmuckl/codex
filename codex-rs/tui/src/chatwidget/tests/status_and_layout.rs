@@ -81,7 +81,7 @@ async fn app_server_model_verification_renders_warning() {
 async fn model_capacity_retry_warning_renders_snapshot() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.on_warning("The selected model is at capacity. Retrying in one minute (1/1).");
+    chat.on_warning("The selected model is at capacity. Retrying in 1 minute (1/4).");
 
     let cells = drain_insert_history(&mut rx);
     let rendered = cells

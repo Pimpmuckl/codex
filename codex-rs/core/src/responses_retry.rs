@@ -3,19 +3,17 @@
 use std::time::Duration;
 
 use crate::client::ModelClientSession;
-use crate::codex_plus_plus::model_capacity_retry;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::util::backoff;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
-use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ResponsesStreamRequest<'a> {
-    Sampling(&'a CancellationToken),
+pub(crate) enum ResponsesStreamRequest {
+    Sampling,
     RemoteCompactionV2,
 }
 
@@ -28,23 +26,8 @@ pub(crate) async fn handle_retryable_response_stream_error(
     client_session: &mut ModelClientSession,
     sess: &Session,
     turn_context: &TurnContext,
-    request: ResponsesStreamRequest<'_>,
+    request: ResponsesStreamRequest,
 ) -> Result<(), CodexErr> {
-    if let ResponsesStreamRequest::Sampling(cancellation_token) = request
-        && model_capacity_retry::applies_to_sampling(&err, &turn_context.session_source)
-    {
-        return model_capacity_retry::handle(
-            retries,
-            max_retries,
-            err,
-            client_session,
-            sess,
-            turn_context,
-            cancellation_token,
-        )
-        .await;
-    }
-
     if *retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
@@ -96,7 +79,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
 }
 
 fn log_retry(
-    request: ResponsesStreamRequest<'_>,
+    request: ResponsesStreamRequest,
     turn_context: &TurnContext,
     err: &CodexErr,
     retries: u64,
@@ -104,7 +87,7 @@ fn log_retry(
     delay: Duration,
 ) {
     match request {
-        ResponsesStreamRequest::Sampling(_) => {
+        ResponsesStreamRequest::Sampling => {
             warn!(
                 "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
             );
