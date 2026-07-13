@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::HooksToml;
+use crate::ModelCapacityRetryMode;
 use crate::WeeklyUsageWindowAutoStart;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
@@ -265,6 +266,8 @@ pub struct ConfigToml {
     pub automatic_account_selection: Option<AutomaticAccountSelection>,
     /// Whether Codex++ starts unused weekly usage windows automatically.
     pub weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
+    /// Whether Codex++ keeps retrying indefinitely while a model is at capacity.
+    pub model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.
@@ -991,6 +994,23 @@ mod tests {
             [
                 WeeklyUsageWindowAutoStart::Enabled,
                 WeeklyUsageWindowAutoStart::Disabled,
+            ]
+        );
+    }
+
+    #[test]
+    fn model_capacity_retry_defaults_bounded_and_accepts_override() {
+        let parsed = ["", "model_capacity_retry_mode = \"indefinite\""].map(|value| {
+            toml::from_str::<ConfigToml>(value)
+                .unwrap()
+                .model_capacity_retry_mode
+                .unwrap_or_default()
+        });
+        assert_eq!(
+            parsed,
+            [
+                ModelCapacityRetryMode::Bounded,
+                ModelCapacityRetryMode::Indefinite,
             ]
         );
     }
