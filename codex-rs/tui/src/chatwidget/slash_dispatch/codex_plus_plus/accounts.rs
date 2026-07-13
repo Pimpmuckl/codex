@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use codex_login::AccountId;
 use codex_login::AccountStore;
+use ratatui::style::Style;
 use tracing::warn;
 
 use super::*;
@@ -124,6 +125,7 @@ fn accounts_settings_params(
                     row.in_use,
                     row.weekly_status,
                 ),
+                description_style: Some(Style::default()),
                 is_current: row.is_current,
                 toggle: Some(SelectionToggle {
                     is_on: row.automation_enabled,
