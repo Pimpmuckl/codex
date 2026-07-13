@@ -1574,6 +1574,14 @@
       },
       "type": "object"
     },
+    "ModelCapacityRetryMode": {
+      "description": "Controls whether Codex++ stops after its bounded model-capacity retry schedule.",
+      "enum": [
+        "bounded",
+        "indefinite"
+      ],
+      "type": "string"
+    },
     "ModelProviderAuthInfo": {
       "additionalProperties": false,
       "description": "Configuration for obtaining a provider bearer token from a command.",
@@ -5288,6 +5296,14 @@
         }
       ],
       "description": "Controls whether the auto-compaction limit applies to the full context or only to tokens after the carried prefix in the current compaction window."
+    },
+    "model_capacity_retry_mode": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ModelCapacityRetryMode"
+        }
+      ],
+      "description": "Whether Codex++ keeps retrying indefinitely while a model is at capacity."
     },
     "model_catalog_json": {
       "allOf": [

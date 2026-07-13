@@ -15,6 +15,7 @@ use codex_config::ConfigRequirementsToml;
 use codex_config::ConstrainedWithSource;
 use codex_config::FeatureRequirementsToml;
 use codex_config::McpServerRequirement;
+use codex_config::ModelCapacityRetryMode;
 use codex_config::PluginRequirementsToml;
 use codex_config::ProfileV2Name;
 use codex_config::ResidencyRequirement;
@@ -826,6 +827,7 @@ pub struct Config {
 
     pub automatic_account_selection: AutomaticAccountSelection,
     pub weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
+    pub model_capacity_retry_mode: ModelCapacityRetryMode,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
@@ -3842,6 +3844,7 @@ impl Config {
             weekly_usage_window_auto_start: cfg
                 .weekly_usage_window_auto_start
                 .unwrap_or_default(),
+            model_capacity_retry_mode: cfg.model_capacity_retry_mode.unwrap_or_default(),
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.

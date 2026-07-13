@@ -1140,6 +1140,7 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut capacity_retries = 0;
     let mut usage_limit_account_attempts = HashSet::new();
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1244,16 +1245,31 @@ async fn run_sampling_request(
             return Err(err);
         }
 
-        handle_retryable_response_stream_error(
-            &mut retries,
-            max_retries,
-            err,
-            client_session,
-            &sess,
-            &turn_context,
-            ResponsesStreamRequest::Sampling(&cancellation_token),
-        )
-        .await?;
+        if crate::codex_plus_plus::model_capacity_retry::applies_to_sampling(
+            &err,
+            &turn_context.session_source,
+        ) {
+            crate::codex_plus_plus::model_capacity_retry::handle(
+                &mut capacity_retries,
+                err,
+                client_session,
+                &sess,
+                &turn_context,
+                &cancellation_token,
+            )
+            .await?;
+        } else {
+            handle_retryable_response_stream_error(
+                &mut retries,
+                max_retries,
+                err,
+                client_session,
+                &sess,
+                &turn_context,
+                ResponsesStreamRequest::Sampling,
+            )
+            .await?;
+        }
         turn_context.turn_timing_state.record_sampling_retry();
     }
 }
