@@ -1534,6 +1534,9 @@ async fn responses_websocket_capacity_retry_does_not_fallback_to_http() {
             ],
             vec![overloaded.clone()],
         ],
+        vec![vec![overloaded.clone()]],
+        vec![vec![overloaded.clone()]],
+        vec![vec![overloaded.clone()]],
         vec![vec![overloaded]],
     ])
     .await;
@@ -1559,19 +1562,21 @@ async fn responses_websocket_capacity_retry_does_not_fallback_to_http() {
         })
         .await
         .expect("submit turn");
-    wait_for_event(&test.codex, |event| {
-        matches!(
-            event,
-            EventMsg::Warning(warning)
-                if warning.message
-                    == "The selected model is at capacity. Retrying in one minute (1/1)."
-        )
-    })
-    .await;
-    tokio::time::pause();
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(60)).await;
-    tokio::time::resume();
+    for delay in [
+        Duration::from_secs(60),
+        Duration::from_secs(2 * 60),
+        Duration::from_secs(5 * 60),
+        Duration::from_secs(15 * 60),
+    ] {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::Warning(warning) if warning.message.contains("model is at capacity"))
+        })
+        .await;
+        tokio::time::pause();
+        tokio::task::yield_now().await;
+        tokio::time::advance(delay).await;
+        tokio::time::resume();
+    }
     let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
     let EventMsg::Error(error) = error else {
         unreachable!();
@@ -1581,8 +1586,8 @@ async fn responses_websocket_capacity_retry_does_not_fallback_to_http() {
         error.codex_error_info,
         Some(codex_protocol::protocol::CodexErrorInfo::ServerOverloaded)
     );
-    assert_eq!(server.handshakes().len(), 2);
-    assert_eq!(server.connections().iter().map(Vec::len).sum::<usize>(), 3);
+    assert_eq!(server.handshakes().len(), 5);
+    assert_eq!(server.connections().iter().map(Vec::len).sum::<usize>(), 6);
     server.shutdown().await;
 }
 

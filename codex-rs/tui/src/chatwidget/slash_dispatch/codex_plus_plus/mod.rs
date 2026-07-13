@@ -8,8 +8,11 @@ use std::sync::atomic::Ordering;
 
 use AutomaticAccountSelection::Disabled as AutomaticOff;
 use AutomaticAccountSelection::Enabled as AutomaticOn;
+use ModelCapacityRetryMode::Bounded as CapacityBounded;
+use ModelCapacityRetryMode::Indefinite as CapacityIndefinite;
 use WeeklyUsageWindowAutoStart::Disabled as WeeklyOff;
 use WeeklyUsageWindowAutoStart::Enabled as WeeklyOn;
+use codex_config::ModelCapacityRetryMode;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
 use crossterm::event::KeyCode;
@@ -29,6 +32,7 @@ impl ChatWidget {
         let params = codex_plus_plus_settings_params(
             self.config.automatic_account_selection,
             self.config.weekly_usage_window_auto_start,
+            self.config.model_capacity_retry_mode,
             self.weekly_start_supported,
             &list_keymap,
         );
@@ -41,9 +45,11 @@ impl ChatWidget {
         &mut self,
         automatic: AutomaticAccountSelection,
         weekly: WeeklyUsageWindowAutoStart,
+        capacity: ModelCapacityRetryMode,
     ) {
         self.config.automatic_account_selection = automatic;
         self.config.weekly_usage_window_auto_start = weekly;
+        self.config.model_capacity_retry_mode = capacity;
         self.add_info_message(persistence_success_message(), /*hint*/ None);
     }
 
@@ -55,15 +61,24 @@ impl ChatWidget {
         &mut self,
         automatic: AutomaticAccountSelection,
         weekly: WeeklyUsageWindowAutoStart,
+        capacity: ModelCapacityRetryMode,
     ) {
         self.config.automatic_account_selection = automatic;
         self.config.weekly_usage_window_auto_start = weekly;
+        self.config.model_capacity_retry_mode = capacity;
         self.add_error_message(persistence_overridden_message());
     }
 
     pub(crate) fn codex_plus_plus_settings_verification_failed(&mut self, err: String) {
         self.add_error_message(persistence_verification_failed_message(err));
     }
+}
+
+#[derive(Clone)]
+struct SettingsSelection {
+    automatic: Arc<AtomicBool>,
+    weekly: Arc<AtomicBool>,
+    capacity_indefinite: Arc<AtomicBool>,
 }
 
 fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
@@ -79,29 +94,38 @@ fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
 fn codex_plus_plus_settings_params(
     current_automatic: AutomaticAccountSelection,
     current_weekly: WeeklyUsageWindowAutoStart,
+    current_capacity: ModelCapacityRetryMode,
     weekly_supported: bool,
     list_keymap: &ListKeymap,
 ) -> SelectionViewParams {
-    let automatic = Arc::new(AtomicBool::new(current_automatic == AutomaticOn));
-    let weekly = Arc::new(AtomicBool::new(current_weekly == WeeklyOn));
+    let selection = SettingsSelection {
+        automatic: Arc::new(AtomicBool::new(current_automatic == AutomaticOn)),
+        weekly: Arc::new(AtomicBool::new(current_weekly == WeeklyOn)),
+        capacity_indefinite: Arc::new(AtomicBool::new(current_capacity == CapacityIndefinite)),
+    };
     let mut items = vec![settings_item(
         "Automatic account selection",
         "Choose and switch accounts when needed.",
-        Arc::clone(&automatic),
-        Arc::clone(&automatic),
-        Arc::clone(&weekly),
+        Arc::clone(&selection.automatic),
+        selection.clone(),
         weekly_supported,
     )];
     if weekly_supported {
         items.push(settings_item(
             "Start unused weekly windows",
             "Keep imported accounts ready to use.",
-            Arc::clone(&weekly),
-            automatic,
-            weekly,
+            Arc::clone(&selection.weekly),
+            selection.clone(),
             true,
         ));
     }
+    items.push(settings_item(
+        "Keep retrying at capacity",
+        "After 1, 2, 5, and 15 minutes, retry every 15 minutes.",
+        Arc::clone(&selection.capacity_indefinite),
+        selection,
+        weekly_supported,
+    ));
     SelectionViewParams {
         title: Some("Codex++ Settings".to_string()),
         subtitle: Some("Select the settings to enable.".to_string()),
@@ -115,8 +139,7 @@ fn settings_item(
     name: &str,
     description: &str,
     toggle: Arc<AtomicBool>,
-    automatic: Arc<AtomicBool>,
-    weekly: Arc<AtomicBool>,
+    selection: SettingsSelection,
     save_weekly: bool,
 ) -> SelectionItem {
     let toggle_action = Arc::clone(&toggle);
@@ -128,23 +151,27 @@ fn settings_item(
             action: Box::new(move |is_on, _tx| toggle_action.store(is_on, Ordering::Relaxed)),
         }),
         actions: vec![Box::new(move |tx| {
-            let automatic = automatic
-                .load(Ordering::Relaxed)
-                .then_some(AutomaticOn)
-                .unwrap_or(AutomaticOff);
-            if save_weekly {
-                tx.send(AppEvent::PersistCodexPlusPlusSettings {
-                    automatic_account_selection: automatic,
-                    weekly_usage_window_auto_start: weekly
-                        .load(Ordering::Relaxed)
-                        .then_some(WeeklyOn)
-                        .unwrap_or(WeeklyOff),
-                });
+            let automatic = if selection.automatic.load(Ordering::Relaxed) {
+                AutomaticOn
             } else {
-                tx.send(AppEvent::PersistAutomaticAccountSelection {
-                    selection: automatic,
-                });
-            }
+                AutomaticOff
+            };
+            tx.send(AppEvent::PersistCodexPlusPlusSettings {
+                automatic_account_selection: automatic,
+                weekly_usage_window_auto_start: save_weekly.then(|| {
+                    if selection.weekly.load(Ordering::Relaxed) {
+                        WeeklyOn
+                    } else {
+                        WeeklyOff
+                    }
+                }),
+                model_capacity_retry_mode: if selection.capacity_indefinite.load(Ordering::Relaxed)
+                {
+                    CapacityIndefinite
+                } else {
+                    CapacityBounded
+                },
+            });
         })],
         dismiss_on_select: true,
         ..Default::default()
@@ -167,7 +194,8 @@ fn settings_hint_line(list_keymap: &ListKeymap) -> Line<'static> {
 }
 
 fn persistence_success_message() -> String {
-    "Codex++ settings updated. Automatic account selection applies after restart.".to_string()
+    "Codex++ settings updated. Account selection and capacity retries apply after restart."
+        .to_string()
 }
 
 fn persistence_error_message(err: String) -> String {

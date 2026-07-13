@@ -43,6 +43,7 @@ use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
+use codex_config::ModelCapacityRetryMode;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AutomaticAccountSelection;
@@ -847,14 +848,11 @@ pub(crate) enum AppEvent {
     },
 
     /// Persist automatic account selection without touching hidden settings.
-    PersistAutomaticAccountSelection {
-        selection: AutomaticAccountSelection,
-    },
-
     /// Persist all Codex++ global settings selected in `/codexplusplus`.
     PersistCodexPlusPlusSettings {
         automatic_account_selection: AutomaticAccountSelection,
-        weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
+        weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
+        model_capacity_retry_mode: ModelCapacityRetryMode,
     },
 
     OpenCodexPlusPlusAccounts,
