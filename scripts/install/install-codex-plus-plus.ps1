@@ -92,6 +92,20 @@ function Test-IsJunction {
         $Item.LinkType -eq "Junction"
 }
 
+function Test-CmdLeaseActive {
+    param([System.IO.FileInfo]$Lease)
+
+    if ($Lease.Name -notmatch "^cmd\.(\d+)\.(\d+)\.lease$") {
+        return $false
+    }
+    try {
+        $process = [System.Diagnostics.Process]::GetProcessById([int]$Matches[1])
+        return $process.StartTime.ToUniversalTime().Ticks -eq [long]$Matches[2]
+    } catch {
+        return $false
+    }
+}
+
 function Remove-StaleReleases {
     param(
         [string]$ReleasesDir,
@@ -121,6 +135,7 @@ function Remove-StaleReleases {
         }
         $generationLeaseDir = Join-Path $GenerationLeasesDir $release.Name
         $pruningGatePath = Join-Path $generationLeaseDir ".pruning"
+        $prunedPath = Join-Path $GenerationLeasesDir "$($release.Name).pruned"
         New-Item -ItemType Directory -Force -Path $generationLeaseDir | Out-Null
         Remove-Item -LiteralPath $pruningGatePath -Force -ErrorAction SilentlyContinue
         $pruningGate = $null
@@ -143,7 +158,15 @@ function Remove-StaleReleases {
                 [System.IO.FileAccess]::ReadWrite,
                 [System.IO.FileShare]::None
             )
-            if (Get-ChildItem -LiteralPath $generationLeaseDir -Filter "cmd.*.lease" -File -Force) {
+            $activeCmdLease = $false
+            foreach ($cmdLease in Get-ChildItem -LiteralPath $generationLeaseDir -Filter "cmd.*.lease" -File -Force) {
+                if (Test-CmdLeaseActive -Lease $cmdLease) {
+                    $activeCmdLease = $true
+                } else {
+                    Remove-Item -LiteralPath $cmdLease.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+            if ($activeCmdLease) {
                 Write-Host "==> Kept active Codex++ release at $($release.FullName)"
                 continue
             }
@@ -168,6 +191,9 @@ function Remove-StaleReleases {
             $pruningGate.Dispose()
             if (Test-Path -LiteralPath $release.FullName -PathType Container) {
                 Remove-Item -LiteralPath $pruningGatePath -Force -ErrorAction SilentlyContinue
+            } else {
+                [System.IO.File]::WriteAllBytes($prunedPath, [byte[]]::new(0))
+                Remove-Item -LiteralPath $generationLeaseDir -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -292,17 +318,28 @@ if ($ShimDir.Equals($releasesRoot, [System.StringComparison]::OrdinalIgnoreCase)
 $cmdContent = @"
 @echo off
 setlocal DisableDelayedExpansion
+set "CODEX_PLUS_PLUS_IDENTITY_FILE=%~dp0.codex-plus-plus-leases\.identity.%RANDOM%%RANDOM%%RANDOM%"
+set "CODEX_PLUS_PLUS_PARENT_IDENTITY=1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -InputFormat None -ExecutionPolicy Bypass -File "%~dp0codex.ps1" >"%CODEX_PLUS_PLUS_IDENTITY_FILE%"
+set "CODEX_PLUS_PLUS_PARENT_IDENTITY="
+set "CODEX_PLUS_PLUS_IDENTITY="
+set /p "CODEX_PLUS_PLUS_IDENTITY="<"%CODEX_PLUS_PLUS_IDENTITY_FILE%"
+del /q "%CODEX_PLUS_PLUS_IDENTITY_FILE%" >nul 2>&1
+for /f "tokens=1" %%A in ("%CODEX_PLUS_PLUS_IDENTITY%") do set "CODEX_PLUS_PLUS_PID=%%A"
+for /f "tokens=2" %%A in ("%CODEX_PLUS_PLUS_IDENTITY%") do set "CODEX_PLUS_PLUS_STARTED=%%A"
+if not defined CODEX_PLUS_PLUS_STARTED exit /b 1
 :codex_plus_plus_retry
 set "CODEX_PLUS_PLUS_GENERATION="
 set /p "CODEX_PLUS_PLUS_GENERATION="<"%~dp0.codex-plus-plus-current"
 if not defined CODEX_PLUS_PLUS_GENERATION exit /b 1
 set "CODEX_PLUS_PLUS_LEASE_DIR=%~dp0.codex-plus-plus-leases\%CODEX_PLUS_PLUS_GENERATION%"
 if exist "%CODEX_PLUS_PLUS_LEASE_DIR%\.pruning" goto codex_plus_plus_retry
-set "CODEX_PLUS_PLUS_LEASE=%CODEX_PLUS_PLUS_LEASE_DIR%\cmd.%RANDOM%%RANDOM%%RANDOM%.lease"
-if exist "%CODEX_PLUS_PLUS_LEASE%" goto codex_plus_plus_retry
+if exist "%~dp0.codex-plus-plus-leases\%CODEX_PLUS_PLUS_GENERATION%.pruned" goto codex_plus_plus_retry
+set "CODEX_PLUS_PLUS_LEASE=%CODEX_PLUS_PLUS_LEASE_DIR%\cmd.%CODEX_PLUS_PLUS_PID%.%CODEX_PLUS_PLUS_STARTED%.lease"
 type nul >"%CODEX_PLUS_PLUS_LEASE%" 2>nul
 if errorlevel 1 goto codex_plus_plus_retry
 if exist "%CODEX_PLUS_PLUS_LEASE_DIR%\.pruning" goto codex_plus_plus_release_and_retry
+if exist "%~dp0.codex-plus-plus-leases\%CODEX_PLUS_PLUS_GENERATION%.pruned" goto codex_plus_plus_release_and_retry
 if not exist "%~dp0.codex-plus-plus-generations\%CODEX_PLUS_PLUS_GENERATION%\$targetFileName" goto codex_plus_plus_release_and_retry
 "%~dp0.codex-plus-plus-generations\%CODEX_PLUS_PLUS_GENERATION%\$targetFileName" %*
 set "CODEX_PLUS_PLUS_EXIT=%ERRORLEVEL%"
@@ -374,6 +411,56 @@ Invoke-WithInstallLocks -LockPaths $installLockPaths -Script {
     )
     $installedTargetPath = Join-Path $generationLinkPath $targetFileName
     $content = @"
+if (`$env:CODEX_PLUS_PLUS_PARENT_IDENTITY -eq '1') {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+namespace CodexPlusPlus {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ProcessBasicInformation {
+        public IntPtr Reserved1;
+        public IntPtr PebBaseAddress;
+        public IntPtr Reserved2_0;
+        public IntPtr Reserved2_1;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    public static class NativeMethods {
+        [DllImport("ntdll.dll")]
+        private static extern int NtQueryInformationProcess(
+            IntPtr processHandle,
+            int processInformationClass,
+            ref ProcessBasicInformation processInformation,
+            int processInformationLength,
+            out int returnLength
+        );
+
+        public static int GetParentProcessId() {
+            var information = new ProcessBasicInformation();
+            int returnLength;
+            int status = NtQueryInformationProcess(
+                Process.GetCurrentProcess().Handle,
+                0,
+                ref information,
+                Marshal.SizeOf(information),
+                out returnLength
+            );
+            if (status != 0) {
+                throw new InvalidOperationException("NtQueryInformationProcess failed: " + status);
+            }
+            return information.InheritedFromUniqueProcessId.ToInt32();
+        }
+    }
+}
+'@
+    `$parentProcessId = [CodexPlusPlus.NativeMethods]::GetParentProcessId()
+    `$parent = [System.Diagnostics.Process]::GetProcessById(`$parentProcessId)
+    [Console]::Out.WriteLine("{0} {1}", `$parent.Id, `$parent.StartTime.ToUniversalTime().Ticks)
+    exit 0
+}
 while (`$true) {
     `$generation = [System.IO.File]::ReadAllText((Join-Path `$PSScriptRoot '.codex-plus-plus-current')).Trim()
     `$leasePath = Join-Path `$PSScriptRoot ".codex-plus-plus-leases\`$generation\powershell.lock"

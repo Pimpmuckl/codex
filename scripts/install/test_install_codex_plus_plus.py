@@ -5,10 +5,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 
 INSTALL_SCRIPT = Path(__file__).with_name("install-codex-plus-plus.ps1")
+SHELL_INSTALL_SCRIPT = Path(__file__).with_name("install-codex-plus-plus.sh")
 
 
 @unittest.skipUnless(os.name == "nt", "Windows installer test")
@@ -177,8 +179,16 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
                 stderr=subprocess.DEVNULL,
             )
             try:
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    active.wait(timeout=0.25)
+                lease_dir = shim_dir / ".codex-plus-plus-leases" / first_release.name
+                deadline = time.monotonic() + 5
+                while not list(lease_dir.glob("cmd.*.lease")):
+                    if time.monotonic() >= deadline:
+                        self.fail(
+                            "CMD shim did not acquire its generation lease: "
+                            f"process={active.poll()}, "
+                            f"leases={lease_debug(shim_dir)}"
+                        )
+                    time.sleep(0.05)
                 run_installer(package_dir, shim_dir, codex_home)
                 run_installer(package_dir, shim_dir, codex_home)
                 releases = release_dirs(codex_home)
@@ -192,6 +202,13 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
                 if active.stdin is not None:
                     active.stdin.close()
 
+            stale_lease = (
+                shim_dir
+                / ".codex-plus-plus-leases"
+                / first_release.name
+                / "cmd.999999.1.lease"
+            )
+            stale_lease.write_bytes(b"")
             run_installer(package_dir, shim_dir, codex_home)
             releases = release_dirs(codex_home)
             self.assertEqual(len(releases), 2)
@@ -199,10 +216,76 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
             self.assertEqual(current_target_dir(shim_dir), releases[-1] / "bin")
 
 
+@unittest.skipIf(os.name == "nt", "POSIX installer test")
+class InstallCodexPlusPlusShellTest(unittest.TestCase):
+    def test_install_copies_package_and_preserves_active_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_posix_package(root / "package")
+            shim_dir = root / "install" / "bin"
+            codex_home = root / "codex-home"
+
+            run_shell_installer(package_dir, shim_dir, codex_home)
+            first_release = only_release(codex_home)
+            moved_package_dir = root / "package-away"
+            package_dir.rename(moved_package_dir)
+            launched = subprocess.run(
+                [str(shim_dir / "codex"), "hello"],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            moved_package_dir.rename(package_dir)
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+            self.assertEqual(launched.stdout, "hello\n")
+
+            active = subprocess.Popen(
+                [str(shim_dir / "codex"), "wait"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    active.wait(timeout=0.25)
+                run_shell_installer(package_dir, shim_dir, codex_home)
+                run_shell_installer(package_dir, shim_dir, codex_home)
+                releases = release_dirs(codex_home)
+                self.assertEqual(len(releases), 3)
+                self.assertIn(first_release, releases)
+            finally:
+                if active.stdin is not None:
+                    active.stdin.write("\n")
+                    active.stdin.flush()
+                active.wait(timeout=5)
+                if active.stdin is not None:
+                    active.stdin.close()
+
+            run_shell_installer(package_dir, shim_dir, codex_home)
+            releases = release_dirs(codex_home)
+            self.assertEqual(len(releases), 2)
+            self.assertNotIn(first_release, releases)
+
+
 def create_package(package_dir: Path) -> Path:
     (package_dir / "bin").mkdir(parents=True)
     (package_dir / "codex-package.json").write_text("{}\n", encoding="utf-8")
     shutil.copy2(os.environ["COMSPEC"], package_dir / "bin" / "codex.exe")
+    return package_dir
+
+
+def create_posix_package(package_dir: Path) -> Path:
+    (package_dir / "bin").mkdir(parents=True)
+    (package_dir / "codex-package.json").write_text("{}\n", encoding="utf-8")
+    target = package_dir / "bin" / "codex"
+    target.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1-}" = wait ]; then IFS= read -r line; exit 0; fi\n'
+        "printf '%s\\n' \"${1-}\"\n",
+        encoding="utf-8",
+    )
+    target.chmod(0o755)
     return package_dir
 
 
@@ -262,6 +345,30 @@ def installer_env(codex_home: Path) -> dict[str, str]:
     return env
 
 
+def run_shell_installer(
+    package_dir: Path,
+    shim_dir: Path,
+    codex_home: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            "sh",
+            str(SHELL_INSTALL_SCRIPT),
+            "--target-exe",
+            str(package_dir / "bin" / "codex"),
+            "--shim-dir",
+            str(shim_dir),
+            "--install",
+        ],
+        capture_output=True,
+        check=False,
+        env=installer_env(codex_home),
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"installer failed:\n{result.stdout}\n{result.stderr}")
+
+
 def current_target_dir(shim_dir: Path) -> Path:
     generation = (
         (shim_dir / ".codex-plus-plus-current").read_text(encoding="utf-8").strip()
@@ -277,6 +384,14 @@ def release_dirs(codex_home: Path) -> list[Path]:
         for path in releases_dir.iterdir()
         if not path.name.startswith(".")
     )
+
+
+def lease_debug(shim_dir: Path) -> list[tuple[Path, bytes | None]]:
+    leases_root = shim_dir / ".codex-plus-plus-leases"
+    return [
+        (path, path.read_bytes() if path.is_file() else None)
+        for path in leases_root.rglob("*")
+    ]
 
 
 def only_release(codex_home: Path) -> Path:
