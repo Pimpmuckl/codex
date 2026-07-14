@@ -18,6 +18,7 @@ WORKSPACE_VERSION_PATTERN = re.compile(r'^(version\s*=\s*")[^"]+(")', re.MULTILI
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from codex_package.cli import parse_args as parse_package_args  # noqa: E402
 from codex_package.version import read_workspace_version  # noqa: E402
 
 
@@ -105,7 +106,7 @@ def default_package_args(package_args: list[str]) -> list[str]:
     defaults: list[str] = []
     if option_value(package_args, "--cargo-profile") is None:
         defaults.extend(["--cargo-profile", "release-fast"])
-    if option_value(package_args, "--package-dir") is None:
+    if package_dir_arg(package_args) is None:
         defaults.extend(["--package-dir", DEFAULT_PACKAGE_DIR, "--force"])
     return [*defaults, *package_args]
 
@@ -121,11 +122,14 @@ def option_value(args: list[str], option: str) -> str | None:
     return None
 
 
+def package_dir_arg(args: list[str]) -> Path | None:
+    return getattr(parse_package_args(args), "package_dir", None)
+
+
 def install_package(package_args: list[str]) -> int:
-    package_dir_arg = option_value(package_args, "--package-dir")
-    if package_dir_arg is None:
+    package_dir = package_dir_arg(package_args)
+    if package_dir is None:
         raise RuntimeError("Codex++ package directory was not configured")
-    package_dir = Path(package_dir_arg)
     if not package_dir.is_absolute():
         package_dir = REPO_ROOT / package_dir
     target_exe = package_dir / "bin" / ("codex.exe" if os.name == "nt" else "codex")

@@ -30,7 +30,7 @@ On Windows, extract the package and run:
 .\install-codex-plus-plus.ps1 -TargetExe .\bin\codex.exe -Install -AddToUserPath
 ```
 
-The Windows installer copies the package under `$CODEX_HOME/packages/codex-plus-plus`, then switches the shim to the new immutable release. Existing sessions keep running their previous release while new sessions use the new one. Inactive older releases are removed automatically on later installs.
+The Windows installer copies the package under `$CODEX_HOME/packages/codex-plus-plus`, then switches the shim to the new immutable release. Existing sessions keep running their previous release while new sessions use the new one. It retains the current and immediately previous releases plus any older release still in use; other stale releases are removed automatically.
 
 On macOS or Linux, extract the package and run:
 
