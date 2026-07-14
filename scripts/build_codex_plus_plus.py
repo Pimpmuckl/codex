@@ -25,7 +25,11 @@ from codex_package.version import read_workspace_version  # noqa: E402
 def main() -> int:
     args, package_args = parse_args()
     base_version = read_workspace_version()
-    fork_version = args.fork_version or suffixed_version(base_version, args.suffix)
+    fork_version = args.fork_version or (
+        suffixed_version(base_version, args.suffix)
+        if args.suffix is not None
+        else next_fork_version(base_version)
+    )
     tag_name = f"{args.tag_prefix}{fork_version}"
     package_args = default_package_args(package_args)
 
@@ -70,12 +74,11 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     )
     parser.add_argument(
         "--suffix",
-        default="fork",
-        help="Suffix appended to the upstream workspace version when --fork-version is omitted.",
+        help="Override the suffix appended when --fork-version is omitted.",
     )
     parser.add_argument(
         "--tag-prefix",
-        default="rust-v",
+        default="codex-plus-plus-v",
         help="Prefix used when printing the suggested fork tag.",
     )
     parser.add_argument(
@@ -100,6 +103,23 @@ def suffixed_version(version: str, suffix: str) -> str:
     if not suffix:
         return version
     return f"{version}-{suffix}"
+
+
+def next_fork_version(version: str) -> str:
+    tag_prefix = f"codex-plus-plus-v{version}-fork."
+    result = subprocess.run(
+        ["git", "tag", "--list", f"{tag_prefix}*"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    revisions = [
+        int(revision)
+        for tag in result.stdout.splitlines()
+        if (revision := tag.removeprefix(tag_prefix)).isdigit()
+    ]
+    return f"{version}-fork.{max(revisions, default=0) + 1}"
 
 
 def default_package_args(package_args: list[str]) -> list[str]:
