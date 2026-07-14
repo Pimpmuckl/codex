@@ -80,14 +80,29 @@ async fn app_server_model_verification_renders_warning() {
 #[tokio::test]
 async fn model_capacity_retry_warning_renders_snapshot() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
 
-    chat.on_warning("The selected model is at capacity. Retrying in 1 minute (1/4).");
+    handle_warning(
+        &mut chat,
+        "The selected model is at capacity. Retrying in 1 minute (1/4).",
+    );
 
     let cells = drain_insert_history(&mut rx);
-    let rendered = cells
+    let warning = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
+    let height = chat.desired_height(/*width*/ 80);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, height))
+        .expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("draw capacity retry status");
+    let rendered = format!(
+        "{warning}\n{}",
+        normalized_backend_snapshot(terminal.backend())
+    );
     assert_chatwidget_snapshot!("model_capacity_retry_warning", rendered);
 }
 
