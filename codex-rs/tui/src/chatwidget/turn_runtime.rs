@@ -470,6 +470,13 @@ impl ChatWidget {
         if !self.warning_display_state.should_display(&message) {
             return;
         }
+        if let Some(details) = crate::codex_plus_plus::model_capacity_retry_status_details(&message)
+        {
+            self.on_stream_error(
+                "Waiting for model capacity".to_string(),
+                Some(details.to_string()),
+            );
+        }
         self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
     }

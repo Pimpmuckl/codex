@@ -3,3 +3,12 @@ source: tui/src/chatwidget/tests/status_and_layout.rs
 expression: rendered
 ---
 ⚠ The selected model is at capacity. Retrying in 1 minute (1/4).
+
+"                                                                                "
+"• Waiting for model capacity (0s • esc to interrupt)                            "
+"  └ Retrying in 1 minute (1/4).                                                 "
+"                                                                                "
+"                                                                                "
+"› Ask Codex to do anything                                                      "
+"                                                                                "
+"  gpt-5.6-sol default · /tmp/project                                            "
