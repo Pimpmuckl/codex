@@ -218,6 +218,36 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
 
 @unittest.skipIf(os.name == "nt", "POSIX installer test")
 class InstallCodexPlusPlusShellTest(unittest.TestCase):
+    def test_concurrent_installs_publish_a_valid_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_posix_package(root / "package")
+            shim_dir = root / "install" / "bin"
+            codex_home = root / "codex-home"
+            command = shell_installer_command(package_dir, shim_dir)
+            processes = [
+                subprocess.Popen(
+                    command,
+                    env=installer_env(codex_home),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+
+            results = [process.communicate() for process in processes]
+            for process, (stdout, stderr) in zip(processes, results, strict=True):
+                self.assertEqual(process.returncode, 0, f"{stdout}\n{stderr}")
+            generation = (
+                (shim_dir / ".codex-plus-plus-current")
+                .read_text(encoding="utf-8")
+                .strip()
+            )
+            releases = release_dirs(codex_home)
+            self.assertEqual(len(releases), 2)
+            self.assertIn(generation, {release.name for release in releases})
+
     def test_install_copies_package_and_preserves_active_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -227,6 +257,10 @@ class InstallCodexPlusPlusShellTest(unittest.TestCase):
 
             run_shell_installer(package_dir, shim_dir, codex_home)
             first_release = only_release(codex_home)
+            stale_chooser = (
+                shim_dir / ".codex-plus-plus-install-locks" / "choosing.999999.stale"
+            )
+            stale_chooser.write_text("999999\nold process\n", encoding="utf-8")
             moved_package_dir = root / "package-away"
             package_dir.rename(moved_package_dir)
             launched = subprocess.run(
@@ -262,6 +296,12 @@ class InstallCodexPlusPlusShellTest(unittest.TestCase):
                 if active.stdin is not None:
                     active.stdin.close()
 
+            first_lease_dir = shim_dir / ".codex-plus-plus-leases" / first_release.name
+            (first_lease_dir / ".pruning").write_bytes(b"")
+            (first_lease_dir / f"sh.{os.getpid()}").write_text(
+                "mismatched process start\n",
+                encoding="utf-8",
+            )
             run_shell_installer(package_dir, shim_dir, codex_home)
             releases = release_dirs(codex_home)
             self.assertEqual(len(releases), 2)
@@ -351,15 +391,7 @@ def run_shell_installer(
     codex_home: Path,
 ) -> None:
     result = subprocess.run(
-        [
-            "sh",
-            str(SHELL_INSTALL_SCRIPT),
-            "--target-exe",
-            str(package_dir / "bin" / "codex"),
-            "--shim-dir",
-            str(shim_dir),
-            "--install",
-        ],
+        shell_installer_command(package_dir, shim_dir),
         capture_output=True,
         check=False,
         env=installer_env(codex_home),
@@ -367,6 +399,18 @@ def run_shell_installer(
     )
     if result.returncode != 0:
         raise AssertionError(f"installer failed:\n{result.stdout}\n{result.stderr}")
+
+
+def shell_installer_command(package_dir: Path, shim_dir: Path) -> list[str]:
+    return [
+        "sh",
+        str(SHELL_INSTALL_SCRIPT),
+        "--target-exe",
+        str(package_dir / "bin" / "codex"),
+        "--shim-dir",
+        str(shim_dir),
+        "--install",
+    ]
 
 
 def current_target_dir(shim_dir: Path) -> Path:
