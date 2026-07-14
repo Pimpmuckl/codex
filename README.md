@@ -30,6 +30,8 @@ On Windows, extract the package and run:
 .\install-codex-plus-plus.ps1 -TargetExe .\bin\codex.exe -Install -AddToUserPath
 ```
 
+The Windows installer copies the package under `$CODEX_HOME/packages/codex-plus-plus`, then switches the shim to the new immutable release. Existing sessions keep running their previous release while new sessions use the new one. Inactive older releases are removed automatically on later installs.
+
 On macOS or Linux, extract the package and run:
 
 ```sh
@@ -50,13 +52,13 @@ Inside the TUI:
 
 ## Build Locally
 
-Build a package using a temporary fork version such as `<upstream-version>-fork`:
+Build and install a package using a temporary fork version such as `<upstream-version>-fork`:
 
-```sh
-python scripts/build_codex_plus_plus.py -- --package-dir dist/codex-plus-plus --force
+```powershell
+python scripts/build_codex_plus_plus.py --install
 ```
 
-Then install its shim using the platform command above with the package's `bin/codex` or `bin/codex.exe` as the target.
+Without `--install`, the helper builds the reusable package directory at `dist/codex-plus-plus`. Explicit package arguments after `--` still override that default.
 
 ## Remove the Shim
 
