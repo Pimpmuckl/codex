@@ -129,6 +129,24 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_install_rejects_a_release_store_aliased_into_source_package(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_package(root / "package")
+            codex_home = root / "codex-home-alias"
+            codex_home.symlink_to(package_dir, target_is_directory=True)
+            result = invoke_installer(
+                package_dir,
+                root / "install" / "bin",
+                codex_home,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "managed install paths must be outside the source package",
+                result.stderr,
+            )
+
     def test_install_switches_generations_and_prunes_only_unlocked_releases(
         self,
     ) -> None:
@@ -248,6 +266,62 @@ class InstallCodexPlusPlusShellTest(unittest.TestCase):
             self.assertEqual(len(releases), 2)
             self.assertIn(generation, {release.name for release in releases})
 
+    def test_remove_serializes_with_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_posix_package(root / "package")
+            shim_dir = root / "install" / "bin"
+            codex_home = root / "codex-home"
+            run_shell_installer(package_dir, shim_dir, codex_home)
+            processes = [
+                subprocess.Popen(
+                    command,
+                    env=installer_env(codex_home),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for command in (
+                    shell_installer_command(package_dir, shim_dir),
+                    shell_remove_command(shim_dir),
+                )
+            ]
+
+            results = [process.communicate() for process in processes]
+            for process, (stdout, stderr) in zip(processes, results, strict=True):
+                self.assertEqual(process.returncode, 0, f"{stdout}\n{stderr}")
+            installed = [
+                (shim_dir / name).exists()
+                for name in ("codex", ".codex-plus-plus-current")
+            ]
+            self.assertIn(installed, ([True, True], [False, False]))
+
+    def test_install_rejects_a_release_store_aliased_into_source_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_posix_package(root / "package")
+            managed_dir = package_dir / "managed"
+            managed_dir.mkdir()
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "packages").symlink_to(
+                managed_dir,
+                target_is_directory=True,
+            )
+            result = subprocess.run(
+                shell_installer_command(package_dir, root / "install" / "bin"),
+                capture_output=True,
+                check=False,
+                env=installer_env(codex_home),
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "managed install paths must be outside the source package",
+                result.stderr,
+            )
+
     def test_install_copies_package_and_preserves_active_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -261,6 +335,9 @@ class InstallCodexPlusPlusShellTest(unittest.TestCase):
                 shim_dir / ".codex-plus-plus-install-locks" / "choosing.999999.stale"
             )
             stale_chooser.write_text("999999\nold process\n", encoding="utf-8")
+            abandoned_staging = first_release.parent / ".staging.abandoned"
+            abandoned_staging.mkdir()
+            (abandoned_staging / "partial").write_bytes(b"partial")
             moved_package_dir = root / "package-away"
             package_dir.rename(moved_package_dir)
             launched = subprocess.run(
@@ -288,6 +365,7 @@ class InstallCodexPlusPlusShellTest(unittest.TestCase):
                 releases = release_dirs(codex_home)
                 self.assertEqual(len(releases), 3)
                 self.assertIn(first_release, releases)
+                self.assertFalse(abandoned_staging.exists())
             finally:
                 if active.stdin is not None:
                     active.stdin.write("\n")
@@ -410,6 +488,16 @@ def shell_installer_command(package_dir: Path, shim_dir: Path) -> list[str]:
         "--shim-dir",
         str(shim_dir),
         "--install",
+    ]
+
+
+def shell_remove_command(shim_dir: Path) -> list[str]:
+    return [
+        "sh",
+        str(SHELL_INSTALL_SCRIPT),
+        "--shim-dir",
+        str(shim_dir),
+        "--remove",
     ]
 
 

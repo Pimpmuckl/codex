@@ -11,9 +11,83 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if (-not ("CodexPlusPlus.PhysicalPath" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace CodexPlusPlus {
+    public static class PhysicalPath {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile
+        );
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle file,
+            StringBuilder path,
+            uint pathLength,
+            uint flags
+        );
+
+        public static string Resolve(string path) {
+            using (var handle = CreateFile(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (handle.IsInvalid) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                var resolved = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandle(handle, resolved, (uint)resolved.Capacity, 0);
+                if (length == 0 || length >= resolved.Capacity) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                string value = resolved.ToString();
+                if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) {
+                    return @"\\" + value.Substring(8);
+                }
+                return value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)
+                    ? value.Substring(4)
+                    : value;
+            }
+        }
+    }
+}
+'@
+}
+
 function Resolve-FullPath {
     param([string]$Path)
     $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
+function Resolve-PhysicalPath {
+    param([string]$Path)
+
+    $fullPath = Resolve-FullPath -Path $Path
+    $suffix = [System.Collections.Generic.List[string]]::new()
+    $existingPath = $fullPath
+    while (-not (Test-Path -LiteralPath $existingPath)) {
+        $suffix.Insert(0, (Split-Path -Leaf $existingPath))
+        $parent = Split-Path -Parent $existingPath
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $existingPath) {
+            throw "Could not resolve an existing parent for path: $fullPath"
+        }
+        $existingPath = $parent
+    }
+    $physicalPath = [CodexPlusPlus.PhysicalPath]::Resolve($existingPath)
+    foreach ($component in $suffix) {
+        $physicalPath = Join-Path $physicalPath $component
+    }
+    return [System.IO.Path]::GetFullPath($physicalPath)
 }
 
 function Move-ToPathFront {
@@ -199,7 +273,7 @@ function Remove-StaleReleases {
     }
 }
 
-$ShimDir = Resolve-FullPath -Path $ShimDir
+$ShimDir = Resolve-PhysicalPath -Path $ShimDir
 $shimPath = Join-Path $ShimDir "codex.ps1"
 $cmdShimPath = Join-Path $ShimDir "codex.cmd"
 $targetPointerPath = Join-Path $ShimDir ".codex-plus-plus-current"
@@ -207,12 +281,12 @@ $generationLinksDir = Join-Path $ShimDir ".codex-plus-plus-generations"
 $generationLeasesDir = Join-Path $ShimDir ".codex-plus-plus-leases"
 $markerPath = Join-Path $ShimDir ".codex-plus-plus-shim"
 $codexHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
-    Join-Path $env:USERPROFILE ".codex"
+    Resolve-PhysicalPath -Path (Join-Path $env:USERPROFILE ".codex")
 } else {
-    Resolve-FullPath -Path $env:CODEX_HOME
+    Resolve-PhysicalPath -Path $env:CODEX_HOME
 }
-$installRoot = Join-Path $codexHome "packages\codex-plus-plus"
-$releasesRoot = Join-Path $installRoot "releases"
+$installRoot = Resolve-PhysicalPath -Path (Join-Path $codexHome "packages\codex-plus-plus")
+$releasesRoot = Resolve-PhysicalPath -Path (Join-Path $installRoot "releases")
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
     $shimLockId = ([System.BitConverter]::ToString(
@@ -261,7 +335,7 @@ if ([string]::IsNullOrWhiteSpace($TargetExe)) {
     exit 2
 }
 
-$targetPath = Resolve-FullPath -Path $TargetExe
+$targetPath = Resolve-PhysicalPath -Path $TargetExe
 if ($targetPath.StartsWith("\\")) {
     Write-Error "Target fork executable must be on a local filesystem: $targetPath"
     exit 1

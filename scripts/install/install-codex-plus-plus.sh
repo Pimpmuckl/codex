@@ -24,6 +24,99 @@ shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
+owner_is_live() {
+  owner_path=$1
+  lock_pid=$(sed -n '1p' "$owner_path" 2>/dev/null || true)
+  lock_start=$(sed -n '2p' "$owner_path" 2>/dev/null || true)
+  live_start=
+  if [ -n "$lock_pid" ]; then
+    live_start=$(LC_ALL=C ps -o lstart= -p "$lock_pid" 2>/dev/null || true)
+  fi
+  [ -n "$lock_start" ] && [ "$live_start" = "$lock_start" ]
+}
+
+acquire_install_lock() {
+  lock_root="$shim_dir/.codex-plus-plus-install-locks"
+  mkdir -p "$lock_root"
+  process_start=$(LC_ALL=C ps -o lstart= -p "$$")
+  if [ -z "$process_start" ]; then
+    echo "Could not read the installer process identity." >&2
+    exit 1
+  fi
+  process_identity=$(printf '%s' "$process_start" | tr -cd '[:alnum:]')
+  choosing_path="$lock_root/choosing.$$.$process_identity"
+  owner_temp="$lock_root/.owner.$$.$process_identity.tmp"
+  {
+    printf '%s\n' "$$"
+    printf '%s\n' "$process_start"
+  } > "$owner_temp"
+  mv "$owner_temp" "$choosing_path"
+
+  ticket_number=1
+  for other_ticket in "$lock_root"/ticket.*; do
+    [ -f "$other_ticket" ] || continue
+    ticket_base=${other_ticket##*/ticket.}
+    other_number=${ticket_base%%.*}
+    case "$other_number" in
+      *[!0-9]*|'') continue ;;
+    esac
+    if [ "$other_number" -ge "$ticket_number" ]; then
+      ticket_number=$((other_number + 1))
+    fi
+  done
+  ticket_path="$lock_root/ticket.$ticket_number.$$.$process_identity"
+  ticket_temp="$lock_root/.ticket.$$.$process_identity.tmp"
+  cp "$choosing_path" "$ticket_temp"
+  mv "$ticket_temp" "$ticket_path"
+  rm -f "$choosing_path"
+
+  trap 'unlock' 0
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  waited=0
+  while :; do
+    blocked=0
+    for other_owner in "$lock_root"/choosing.*; do
+      [ -f "$other_owner" ] || continue
+      if owner_is_live "$other_owner"; then
+        blocked=1
+      else
+        rm -f "$other_owner"
+      fi
+    done
+    for other_ticket in "$lock_root"/ticket.*; do
+      [ -f "$other_ticket" ] || continue
+      [ "$other_ticket" = "$ticket_path" ] && continue
+      if ! owner_is_live "$other_ticket"; then
+        rm -f "$other_ticket"
+        continue
+      fi
+      ticket_base=${other_ticket##*/ticket.}
+      other_number=${ticket_base%%.*}
+      ticket_rest=${ticket_base#*.}
+      other_pid=${ticket_rest%%.*}
+      if [ "$other_number" -lt "$ticket_number" ] || {
+        [ "$other_number" -eq "$ticket_number" ] && [ "$other_pid" -lt "$$" ]
+      }; then
+        blocked=1
+      fi
+    done
+    [ "$blocked" -eq 0 ] && break
+    waited=$((waited + 1))
+    if [ "$waited" -ge 600 ]; then
+      echo "Timed out waiting for the Codex++ install lock." >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+}
+
+unlock() {
+  rm -f "$ticket_path" "$choosing_path" "$owner_temp" "$ticket_temp"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --target-exe)
@@ -59,6 +152,11 @@ shim_path="$shim_dir/codex"
 current_path="$shim_dir/.codex-plus-plus-current"
 
 if [ "$remove" -eq 1 ]; then
+  mkdir -p "$shim_dir"
+  shim_dir=$(CDPATH= cd "$shim_dir" && pwd -P)
+  shim_path="$shim_dir/codex"
+  current_path="$shim_dir/.codex-plus-plus-current"
+  acquire_install_lock
   if [ -f "$shim_path" ]; then
     rm -f "$shim_path" "$current_path"
     echo "==> Removed shim at $shim_path"
@@ -118,10 +216,11 @@ current_path="$shim_dir/.codex-plus-plus-current"
 install_root="$codex_home/packages/codex-plus-plus"
 releases_root="$install_root/releases"
 leases_root="$shim_dir/.codex-plus-plus-leases"
+mkdir -p "$releases_root"
+releases_root=$(CDPATH= cd "$releases_root" && pwd -P)
 set -- $(printf '%s' "$shim_dir" | cksum)
 shim_id="$1-$2"
 releases_dir="$releases_root/$shim_id"
-lock_root="$shim_dir/.codex-plus-plus-install-locks"
 
 case "$shim_dir/" in
   "$package_dir/"*)
@@ -148,94 +247,8 @@ case "$releases_root/" in
     ;;
 esac
 
-mkdir -p "$releases_dir" "$leases_root" "$lock_root"
-process_start=$(ps -o lstart= -p "$$")
-if [ -z "$process_start" ]; then
-  echo "Could not read the installer process identity." >&2
-  exit 1
-fi
-process_identity=$(printf '%s' "$process_start" | tr -cd '[:alnum:]')
-choosing_path="$lock_root/choosing.$$.$process_identity"
-owner_temp="$lock_root/.owner.$$.$process_identity.tmp"
-{
-  printf '%s\n' "$$"
-  printf '%s\n' "$process_start"
-} > "$owner_temp"
-mv "$owner_temp" "$choosing_path"
-
-owner_is_live() {
-  owner_path=$1
-  lock_pid=$(sed -n '1p' "$owner_path" 2>/dev/null || true)
-  lock_start=$(sed -n '2p' "$owner_path" 2>/dev/null || true)
-  live_start=
-  if [ -n "$lock_pid" ]; then
-    live_start=$(ps -o lstart= -p "$lock_pid" 2>/dev/null || true)
-  fi
-  [ -n "$lock_start" ] && [ "$live_start" = "$lock_start" ]
-}
-
-ticket_number=1
-for other_ticket in "$lock_root"/ticket.*; do
-  [ -f "$other_ticket" ] || continue
-  ticket_base=${other_ticket##*/ticket.}
-  other_number=${ticket_base%%.*}
-  case "$other_number" in
-    *[!0-9]*|'') continue ;;
-  esac
-  if [ "$other_number" -ge "$ticket_number" ]; then
-    ticket_number=$((other_number + 1))
-  fi
-done
-ticket_path="$lock_root/ticket.$ticket_number.$$.$process_identity"
-ticket_temp="$lock_root/.ticket.$$.$process_identity.tmp"
-cp "$choosing_path" "$ticket_temp"
-mv "$ticket_temp" "$ticket_path"
-rm -f "$choosing_path"
-
-unlock() {
-  rm -f "$ticket_path" "$choosing_path" "$owner_temp" "$ticket_temp"
-}
-trap 'unlock' 0
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-waited=0
-while :; do
-  blocked=0
-  for other_owner in "$lock_root"/choosing.*; do
-    [ -f "$other_owner" ] || continue
-    if owner_is_live "$other_owner"; then
-      blocked=1
-    else
-      rm -f "$other_owner"
-    fi
-  done
-  for other_ticket in "$lock_root"/ticket.*; do
-    [ -f "$other_ticket" ] || continue
-    [ "$other_ticket" = "$ticket_path" ] && continue
-    if ! owner_is_live "$other_ticket"; then
-      rm -f "$other_ticket"
-      continue
-    fi
-    ticket_base=${other_ticket##*/ticket.}
-    other_number=${ticket_base%%.*}
-    ticket_rest=${ticket_base#*.}
-    other_pid=${ticket_rest%%.*}
-    if [ "$other_number" -lt "$ticket_number" ] || {
-      [ "$other_number" -eq "$ticket_number" ] && [ "$other_pid" -lt "$$" ]
-    }; then
-      blocked=1
-    fi
-  done
-  [ "$blocked" -eq 0 ] && break
-  waited=$((waited + 1))
-  if [ "$waited" -ge 600 ]; then
-    echo "Timed out waiting for the Codex++ install lock." >&2
-    exit 1
-  fi
-  sleep 0.1
-done
+mkdir -p "$releases_dir" "$leases_root"
+acquire_install_lock
 
 previous_release=
 if [ -f "$current_path" ]; then
@@ -246,7 +259,10 @@ fi
 release_name="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 release_dir="$releases_dir/$release_name"
 staging_dir="$releases_dir/.staging.$release_name"
-rm -rf "$staging_dir"
+for abandoned_staging in "$releases_dir"/.staging.*; do
+  [ -e "$abandoned_staging" ] || continue
+  rm -rf "$abandoned_staging"
+done
 mkdir "$staging_dir"
 cp -R "$package_dir/." "$staging_dir"
 mv "$staging_dir" "$release_dir"
@@ -270,7 +286,7 @@ while :; do
   if [ -e "$lease_dir/.pruning" ] || [ -e "$leases_root/$generation.pruned" ]; then
     continue
   fi
-  process_start=$(ps -o lstart= -p "$$") || exit 1
+  process_start=$(LC_ALL=C ps -o lstart= -p "$$") || exit 1
   printf '%s\n' "$process_start" > "$marker" 2>/dev/null || continue
   if [ -e "$lease_dir/.pruning" ] || [ -e "$leases_root/$generation.pruned" ]; then
     rm -f "$marker"
@@ -303,7 +319,7 @@ for stale_release in "$releases_dir"/*; do
     [ -f "$marker" ] || continue
     marker_pid=${marker##*/sh.}
     marker_start=$(sed -n '1p' "$marker" 2>/dev/null || true)
-    live_start=$(ps -o lstart= -p "$marker_pid" 2>/dev/null || true)
+    live_start=$(LC_ALL=C ps -o lstart= -p "$marker_pid" 2>/dev/null || true)
     if [ -n "$marker_start" ] && [ "$live_start" = "$marker_start" ]; then
       active=1
     else
