@@ -44,17 +44,21 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
             shim_dir = root / "install" / "bin"
             codex_home = root / "codex-home"
             run_installer(package_dir, shim_dir, codex_home)
+            other_codex_home = root / "other-codex-home"
             processes = [
                 subprocess.Popen(
                     command,
-                    env=installer_env(codex_home),
+                    env=environment,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                 )
-                for command in (
-                    installer_command(package_dir, shim_dir),
-                    remove_command(shim_dir),
+                for command, environment in (
+                    (
+                        installer_command(package_dir, shim_dir),
+                        installer_env(codex_home),
+                    ),
+                    (remove_command(shim_dir), installer_env(other_codex_home)),
                 )
             ]
 
@@ -85,6 +89,44 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_different_shims_keep_independent_release_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_package(root / "package")
+            codex_home = root / "codex-home"
+            first_shim_dir = root / "first-install" / "bin"
+            second_shim_dir = root / "second-install" / "bin"
+
+            run_installer(package_dir, first_shim_dir, codex_home)
+            first_target_dir = current_target_dir(first_shim_dir)
+            run_installer(package_dir, second_shim_dir, codex_home)
+
+            self.assertTrue((first_target_dir / "codex.exe").is_file())
+            self.assertTrue(
+                (current_target_dir(second_shim_dir) / "codex.exe").is_file()
+            )
+
+    def test_install_rejects_a_shim_inside_the_release_store(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_package(root / "package")
+            codex_home = root / "codex-home"
+            shim_dir = (
+                codex_home
+                / "packages"
+                / "codex-plus-plus"
+                / "releases"
+                / "shim"
+                / "bin"
+            )
+            result = invoke_installer(package_dir, shim_dir, codex_home)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "shim and release directories must not overlap",
+                result.stderr,
+            )
+
     def test_install_switches_generations_and_prunes_only_unlocked_releases(
         self,
     ) -> None:
@@ -102,17 +144,53 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
             self.assertIn(".codex-plus-plus-current", shim)
             self.assertEqual(current_target_dir(shim_dir), first_release / "bin")
             launched = subprocess.run(
-                [str(shim_dir / "codex.cmd"), "/c", "exit", "0"],
+                [str(shim_dir / "codex.cmd"), "/c", "exit", "0", "foo)"],
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+            launched = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-File",
+                    str(shim_dir / "codex.ps1"),
+                    "/c",
+                    "exit",
+                    "0",
+                ],
                 capture_output=True,
                 check=False,
             )
             self.assertEqual(launched.returncode, 0, launched.stderr)
 
-            with (first_release / "bin" / "codex.exe").open("rb"):
+            active = subprocess.Popen(
+                [
+                    str(shim_dir / "codex.cmd"),
+                    "/d",
+                    "/q",
+                    "/c",
+                    "pause >nul",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    active.wait(timeout=0.25)
+                run_installer(package_dir, shim_dir, codex_home)
                 run_installer(package_dir, shim_dir, codex_home)
                 releases = release_dirs(codex_home)
-                self.assertEqual(len(releases), 2)
+                self.assertEqual(len(releases), 3)
                 self.assertIn(first_release, releases)
+            finally:
+                if active.stdin is not None:
+                    active.stdin.write(b"\n")
+                    active.stdin.flush()
+                active.wait(timeout=5)
+                if active.stdin is not None:
+                    active.stdin.close()
 
             run_installer(package_dir, shim_dir, codex_home)
             releases = release_dirs(codex_home)
@@ -192,9 +270,12 @@ def current_target_dir(shim_dir: Path) -> Path:
 
 
 def release_dirs(codex_home: Path) -> list[Path]:
-    releases_dir = codex_home / "packages" / "codex-plus-plus" / "releases"
+    releases_root = codex_home / "packages" / "codex-plus-plus" / "releases"
     return sorted(
-        path for path in releases_dir.iterdir() if not path.name.startswith(".")
+        path
+        for releases_dir in releases_root.iterdir()
+        for path in releases_dir.iterdir()
+        if not path.name.startswith(".")
     )
 
 
