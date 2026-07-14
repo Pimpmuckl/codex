@@ -11,9 +11,83 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if (-not ("CodexPlusPlus.PhysicalPath" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace CodexPlusPlus {
+    public static class PhysicalPath {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile
+        );
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle file,
+            StringBuilder path,
+            uint pathLength,
+            uint flags
+        );
+
+        public static string Resolve(string path) {
+            using (var handle = CreateFile(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (handle.IsInvalid) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                var resolved = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandle(handle, resolved, (uint)resolved.Capacity, 0);
+                if (length == 0 || length >= resolved.Capacity) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                string value = resolved.ToString();
+                if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) {
+                    return @"\\" + value.Substring(8);
+                }
+                return value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)
+                    ? value.Substring(4)
+                    : value;
+            }
+        }
+    }
+}
+'@
+}
+
 function Resolve-FullPath {
     param([string]$Path)
     $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
+function Resolve-PhysicalPath {
+    param([string]$Path)
+
+    $fullPath = Resolve-FullPath -Path $Path
+    $suffix = [System.Collections.Generic.List[string]]::new()
+    $existingPath = $fullPath
+    while (-not (Test-Path -LiteralPath $existingPath)) {
+        $suffix.Insert(0, (Split-Path -Leaf $existingPath))
+        $parent = Split-Path -Parent $existingPath
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $existingPath) {
+            throw "Could not resolve an existing parent for path: $fullPath"
+        }
+        $existingPath = $parent
+    }
+    $physicalPath = [CodexPlusPlus.PhysicalPath]::Resolve($existingPath)
+    foreach ($component in $suffix) {
+        $physicalPath = Join-Path $physicalPath $component
+    }
+    return [System.IO.Path]::GetFullPath($physicalPath)
 }
 
 function Move-ToPathFront {
@@ -35,36 +109,223 @@ function Move-ToPathFront {
     (@($Entry) + $segments) -join ";"
 }
 
-$ShimDir = Resolve-FullPath -Path $ShimDir
+function Get-Sha256 {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "")
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Invoke-WithInstallLocks {
+    param(
+        [string[]]$LockPaths,
+        [scriptblock]$Script
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    $locks = @()
+    try {
+        foreach ($lockPath in @($LockPaths | Sort-Object -Unique)) {
+            $lock = $null
+            while ($null -eq $lock) {
+                try {
+                    $lock = [System.IO.File]::Open(
+                        $lockPath,
+                        [System.IO.FileMode]::OpenOrCreate,
+                        [System.IO.FileAccess]::ReadWrite,
+                        [System.IO.FileShare]::None
+                    )
+                } catch [System.IO.IOException] {
+                    if ([DateTime]::UtcNow -ge $deadline) {
+                        throw "Timed out waiting for the Codex++ install lock: $lockPath"
+                    }
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+            $locks += $lock
+        }
+        & $Script
+    } finally {
+        foreach ($lock in $locks) {
+            $lock.Dispose()
+        }
+    }
+}
+
+function Test-IsJunction {
+    param([object]$Item)
+
+    return $null -ne $Item -and
+        ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and
+        $Item.LinkType -eq "Junction"
+}
+
+function Test-CmdLeaseActive {
+    param([System.IO.FileInfo]$Lease)
+
+    if ($Lease.Name -notmatch "^cmd\.(\d+)\.(\d+)\.lease$") {
+        return $false
+    }
+    try {
+        $process = [System.Diagnostics.Process]::GetProcessById([int]$Matches[1])
+        return $process.StartTime.ToUniversalTime().Ticks -eq [long]$Matches[2]
+    } catch {
+        return $false
+    }
+}
+
+function Remove-StaleReleases {
+    param(
+        [string]$ReleasesDir,
+        [string]$GenerationLinksDir,
+        [string]$GenerationLeasesDir,
+        [string[]]$KeepReleaseDirs
+    )
+
+    if (-not (Test-Path -LiteralPath $ReleasesDir -PathType Container)) {
+        return
+    }
+    foreach ($release in Get-ChildItem -LiteralPath $ReleasesDir -Directory -Force -ErrorAction SilentlyContinue) {
+        if ($release.Name.StartsWith(".staging.")) {
+            Remove-Item -LiteralPath $release.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        $keepRelease = $false
+        foreach ($keepReleaseDir in $KeepReleaseDirs) {
+            if (-not [string]::IsNullOrWhiteSpace($keepReleaseDir) -and
+                $release.FullName.Equals($keepReleaseDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $keepRelease = $true
+                break
+            }
+        }
+        if ($keepRelease) {
+            continue
+        }
+        $generationLeaseDir = Join-Path $GenerationLeasesDir $release.Name
+        $pruningGatePath = Join-Path $generationLeaseDir ".pruning"
+        $prunedPath = Join-Path $GenerationLeasesDir "$($release.Name).pruned"
+        New-Item -ItemType Directory -Force -Path $generationLeaseDir | Out-Null
+        Remove-Item -LiteralPath $pruningGatePath -Force -ErrorAction SilentlyContinue
+        $pruningGate = $null
+        $powershellLease = $null
+        try {
+            $pruningGate = [System.IO.File]::Open(
+                $pruningGatePath,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+        } catch [System.IO.IOException] {
+            Write-Host "==> Kept active Codex++ release at $($release.FullName)"
+            continue
+        }
+        try {
+            $powershellLease = [System.IO.File]::Open(
+                (Join-Path $generationLeaseDir "powershell.lock"),
+                [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+            $activeCmdLease = $false
+            foreach ($cmdLease in Get-ChildItem -LiteralPath $generationLeaseDir -Filter "cmd.*.lease" -File -Force) {
+                if (Test-CmdLeaseActive -Lease $cmdLease) {
+                    $activeCmdLease = $true
+                } else {
+                    Remove-Item -LiteralPath $cmdLease.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+            if ($activeCmdLease) {
+                Write-Host "==> Kept active Codex++ release at $($release.FullName)"
+                continue
+            }
+            $releaseTargetPath = Join-Path $release.FullName "bin\codex.exe"
+            if (Test-Path -LiteralPath $releaseTargetPath -PathType Leaf) {
+                Remove-Item -LiteralPath $releaseTargetPath -Force
+            }
+            Remove-Item -LiteralPath $release.FullName -Recurse -Force
+            $generationLink = Get-Item -LiteralPath (Join-Path $GenerationLinksDir $release.Name) -Force -ErrorAction SilentlyContinue
+            if (Test-IsJunction -Item $generationLink) {
+                $generationLink.Delete()
+            }
+            Write-Host "==> Removed stale Codex++ release at $($release.FullName)"
+        } catch [System.IO.IOException] {
+            Write-Host "==> Kept active Codex++ release at $($release.FullName)"
+        } catch {
+            Write-Warning "Could not remove stale Codex++ release at $($release.FullName): $($_.Exception.Message)"
+        } finally {
+            if ($null -ne $powershellLease) {
+                $powershellLease.Dispose()
+            }
+            $pruningGate.Dispose()
+            if (Test-Path -LiteralPath $release.FullName -PathType Container) {
+                Remove-Item -LiteralPath $pruningGatePath -Force -ErrorAction SilentlyContinue
+            } else {
+                [System.IO.File]::WriteAllBytes($prunedPath, [byte[]]::new(0))
+                Remove-Item -LiteralPath $generationLeaseDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+$ShimDir = Resolve-PhysicalPath -Path $ShimDir
 $shimPath = Join-Path $ShimDir "codex.ps1"
 $cmdShimPath = Join-Path $ShimDir "codex.cmd"
-$targetLinkPath = Join-Path $ShimDir ".codex-plus-plus-target"
+$targetPointerPath = Join-Path $ShimDir ".codex-plus-plus-current"
+$generationLinksDir = Join-Path $ShimDir ".codex-plus-plus-generations"
+$generationLeasesDir = Join-Path $ShimDir ".codex-plus-plus-leases"
 $markerPath = Join-Path $ShimDir ".codex-plus-plus-shim"
+$codexHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+    Resolve-PhysicalPath -Path (Join-Path $env:USERPROFILE ".codex")
+} else {
+    Resolve-PhysicalPath -Path $env:CODEX_HOME
+}
+$installRoot = Resolve-PhysicalPath -Path (Join-Path $codexHome "packages\codex-plus-plus")
+$releasesRoot = Resolve-PhysicalPath -Path (Join-Path $installRoot "releases")
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $shimLockId = ([System.BitConverter]::ToString(
+        $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ShimDir.ToUpperInvariant()))
+    )).Replace("-", "")
+} finally {
+    $sha256.Dispose()
+}
+$releasesDir = Join-Path $releasesRoot $shimLockId
+$releaseLockPath = Join-Path $installRoot "install.lock"
+$shimLockPath = Join-Path (Split-Path -Parent $ShimDir) ".codex-plus-plus-install-$shimLockId.lock"
+$installLockPaths = @($releaseLockPath, $shimLockPath)
 
 if ($Remove) {
-    if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
-        Remove-Item -LiteralPath $shimPath
-        Write-Host "==> Removed shim at $shimPath"
-    } else {
-        Write-Host "==> No shim found at $shimPath"
+    foreach ($lockPath in $installLockPaths) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $lockPath) | Out-Null
     }
-    $ownsCompanion = (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) -and
-        (Test-Path -LiteralPath $markerPath -PathType Leaf) -and
-        (Get-Content -LiteralPath $markerPath -Raw).Trim() -ceq (Get-FileHash -LiteralPath $cmdShimPath -Algorithm SHA256).Hash
-    if ($ownsCompanion) {
-        if (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) {
-            Remove-Item -LiteralPath $cmdShimPath
-            Write-Host "==> Removed shim at $cmdShimPath"
+    Invoke-WithInstallLocks -LockPaths $installLockPaths -Script {
+        if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+            Remove-Item -LiteralPath $shimPath
+            Write-Host "==> Removed shim at $shimPath"
+        } else {
+            Write-Host "==> No shim found at $shimPath"
         }
-        $existingTargetLink = Get-Item -LiteralPath $targetLinkPath -Force -ErrorAction SilentlyContinue
-        if ($existingTargetLink -and $existingTargetLink.LinkType -eq "Junction") {
-            $existingTargetLink.Delete()
+        $ownsCompanion = (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) -and
+            (Test-Path -LiteralPath $markerPath -PathType Leaf) -and
+            (Get-Content -LiteralPath $markerPath -Raw).Trim() -ceq (Get-Sha256 -Path $cmdShimPath)
+        if ($ownsCompanion) {
+            if (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) {
+                Remove-Item -LiteralPath $cmdShimPath
+                Write-Host "==> Removed shim at $cmdShimPath"
+            }
+            Remove-Item -LiteralPath $targetPointerPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $markerPath
+        } elseif (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) {
+            Write-Host "==> Kept non-shim launcher at $cmdShimPath"
+        } else {
+            Write-Host "==> No shim found at $cmdShimPath"
         }
-        Remove-Item -LiteralPath $markerPath
-    } elseif (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) {
-        Write-Host "==> Kept non-shim launcher at $cmdShimPath"
-    } else {
-        Write-Host "==> No shim found at $cmdShimPath"
     }
     exit 0
 }
@@ -74,7 +335,7 @@ if ([string]::IsNullOrWhiteSpace($TargetExe)) {
     exit 2
 }
 
-$targetPath = Resolve-FullPath -Path $TargetExe
+$targetPath = Resolve-PhysicalPath -Path $TargetExe
 if ($targetPath.StartsWith("\\")) {
     Write-Error "Target fork executable must be on a local filesystem: $targetPath"
     exit 1
@@ -102,48 +363,243 @@ if ($targetFileName -ine "codex.exe") {
     Write-Error "Target fork executable must be named codex.exe: $targetPath"
     exit 1
 }
+$targetBinDir = Split-Path -Parent $targetPath
+if ((Split-Path -Leaf $targetBinDir) -ine "bin") {
+    Write-Error "Target fork executable must be inside a package bin directory: $targetPath"
+    exit 1
+}
+$packageDir = Split-Path -Parent $targetBinDir
+if (-not (Test-Path -LiteralPath (Join-Path $packageDir "codex-package.json") -PathType Leaf)) {
+    Write-Error "Target fork executable must belong to a Codex package: $targetPath"
+    exit 1
+}
+$packageDirPrefix = $packageDir.TrimEnd("\") + "\"
+foreach ($managedPath in @($ShimDir, $releasesRoot)) {
+    if ($managedPath.Equals($packageDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $managedPath.StartsWith($packageDirPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Error "Codex++ managed install paths must be outside the source package: $packageDir"
+        exit 1
+    }
+}
+$shimDirPrefix = $ShimDir.TrimEnd("\") + "\"
+$releasesRootPrefix = $releasesRoot.TrimEnd("\") + "\"
+if ($ShimDir.Equals($releasesRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $ShimDir.StartsWith($releasesRootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $releasesRoot.StartsWith($shimDirPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Error "Codex++ shim and release directories must not overlap."
+    exit 1
+}
 $cmdContent = @"
 @echo off
 setlocal DisableDelayedExpansion
-"%~dp0.codex-plus-plus-target\$targetFileName" %*
-exit /b %ERRORLEVEL%
+set "CODEX_PLUS_PLUS_IDENTITY_FILE=%~dp0.codex-plus-plus-leases\.identity.%RANDOM%%RANDOM%%RANDOM%"
+set "CODEX_PLUS_PLUS_PARENT_IDENTITY=1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -InputFormat None -ExecutionPolicy Bypass -File "%~dp0codex.ps1" >"%CODEX_PLUS_PLUS_IDENTITY_FILE%"
+set "CODEX_PLUS_PLUS_PARENT_IDENTITY="
+set "CODEX_PLUS_PLUS_IDENTITY="
+set /p "CODEX_PLUS_PLUS_IDENTITY="<"%CODEX_PLUS_PLUS_IDENTITY_FILE%"
+del /q "%CODEX_PLUS_PLUS_IDENTITY_FILE%" >nul 2>&1
+for /f "tokens=1" %%A in ("%CODEX_PLUS_PLUS_IDENTITY%") do set "CODEX_PLUS_PLUS_PID=%%A"
+for /f "tokens=2" %%A in ("%CODEX_PLUS_PLUS_IDENTITY%") do set "CODEX_PLUS_PLUS_STARTED=%%A"
+if not defined CODEX_PLUS_PLUS_STARTED exit /b 1
+:codex_plus_plus_retry
+set "CODEX_PLUS_PLUS_GENERATION="
+set /p "CODEX_PLUS_PLUS_GENERATION="<"%~dp0.codex-plus-plus-current"
+if not defined CODEX_PLUS_PLUS_GENERATION exit /b 1
+set "CODEX_PLUS_PLUS_LEASE_DIR=%~dp0.codex-plus-plus-leases\%CODEX_PLUS_PLUS_GENERATION%"
+if exist "%CODEX_PLUS_PLUS_LEASE_DIR%\.pruning" goto codex_plus_plus_retry
+if exist "%~dp0.codex-plus-plus-leases\%CODEX_PLUS_PLUS_GENERATION%.pruned" goto codex_plus_plus_retry
+set "CODEX_PLUS_PLUS_LEASE=%CODEX_PLUS_PLUS_LEASE_DIR%\cmd.%CODEX_PLUS_PLUS_PID%.%CODEX_PLUS_PLUS_STARTED%.lease"
+type nul >"%CODEX_PLUS_PLUS_LEASE%" 2>nul
+if errorlevel 1 goto codex_plus_plus_retry
+if exist "%CODEX_PLUS_PLUS_LEASE_DIR%\.pruning" goto codex_plus_plus_release_and_retry
+if exist "%~dp0.codex-plus-plus-leases\%CODEX_PLUS_PLUS_GENERATION%.pruned" goto codex_plus_plus_release_and_retry
+if not exist "%~dp0.codex-plus-plus-generations\%CODEX_PLUS_PLUS_GENERATION%\$targetFileName" goto codex_plus_plus_release_and_retry
+"%~dp0.codex-plus-plus-generations\%CODEX_PLUS_PLUS_GENERATION%\$targetFileName" %*
+set "CODEX_PLUS_PLUS_EXIT=%ERRORLEVEL%"
+del /q "%CODEX_PLUS_PLUS_LEASE%" >nul 2>&1
+exit /b %CODEX_PLUS_PLUS_EXIT%
+:codex_plus_plus_release_and_retry
+del /q "%CODEX_PLUS_PLUS_LEASE%" >nul 2>&1
+goto codex_plus_plus_retry
 "@
-$existingMarker = Get-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
-$ownsCompanion = $existingMarker -and
-    (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) -and
-    (Get-Content -LiteralPath $markerPath -Raw).Trim() -ceq (Get-FileHash -LiteralPath $cmdShimPath -Algorithm SHA256).Hash
-if ($existingMarker -and -not $ownsCompanion) {
-    Write-Error "Refusing to replace unmanaged marker: $markerPath"
-    exit 1
+foreach ($lockPath in $installLockPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $lockPath) | Out-Null
 }
-if ((Test-Path -LiteralPath $cmdShimPath -PathType Leaf) -and -not $ownsCompanion) {
-    Write-Error "Refusing to replace non-shim launcher: $cmdShimPath"
-    exit 1
-}
-$existingTargetLink = Get-Item -LiteralPath $targetLinkPath -Force -ErrorAction SilentlyContinue
-if ($existingTargetLink -and (-not $ownsCompanion -or $existingTargetLink.LinkType -ne "Junction")) {
-    Write-Error "Refusing to replace unmanaged target path: $targetLinkPath"
-    exit 1
-}
+Invoke-WithInstallLocks -LockPaths $installLockPaths -Script {
+    $existingMarker = Get-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    $ownsCompanion = $existingMarker -and
+        (Test-Path -LiteralPath $cmdShimPath -PathType Leaf) -and
+        (Get-Content -LiteralPath $markerPath -Raw).Trim() -ceq (Get-Sha256 -Path $cmdShimPath)
+    if ($existingMarker -and -not $ownsCompanion) {
+        throw "Refusing to replace unmanaged marker: $markerPath"
+    }
+    if ((Test-Path -LiteralPath $cmdShimPath -PathType Leaf) -and -not $ownsCompanion) {
+        throw "Refusing to replace non-shim launcher: $cmdShimPath"
+    }
+    $existingTarget = Get-Item -LiteralPath $targetPointerPath -Force -ErrorAction SilentlyContinue
+    $managedTarget = $existingTarget -and -not $existingTarget.PSIsContainer
+    if ($existingTarget -and (-not $ownsCompanion -or -not $managedTarget)) {
+        throw "Refusing to replace unmanaged target path: $targetPointerPath"
+    }
 
-New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
-$content = @"
-`$target = '$($targetPath.Replace("'", "''"))'
-if (`$MyInvocation.ExpectingInput) {
-    `$input | & `$target @args
-} else {
-    & `$target @args
+    $previousGeneration = if ($existingTarget) {
+        [System.IO.File]::ReadAllText($targetPointerPath).Trim()
+    } else {
+        $null
+    }
+    $previousReleaseDir = if ($previousGeneration -match "^\d{8}T\d{13}Z$") {
+        Join-Path $releasesDir $previousGeneration
+    } else {
+        $null
+    }
+
+    New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $generationLinksDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $generationLeasesDir | Out-Null
+    $releaseName = [DateTime]::UtcNow.ToString(
+        "yyyyMMddTHHmmssfffffffZ",
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
+    $releaseDir = Join-Path $releasesDir $releaseName
+    $stagingDir = Join-Path $releasesDir ".staging.$releaseName.$PID"
+    try {
+        New-Item -ItemType Directory -Path $stagingDir | Out-Null
+        Get-ChildItem -LiteralPath $packageDir -Force |
+            Copy-Item -Destination $stagingDir -Recurse -Force
+        Move-Item -LiteralPath $stagingDir -Destination $releaseDir
+    } finally {
+        if (Test-Path -LiteralPath $stagingDir) {
+            Remove-Item -LiteralPath $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $installedBinDir = Join-Path $releaseDir "bin"
+    $generationLinkPath = Join-Path $generationLinksDir $releaseName
+    New-Item -ItemType Junction -Path $generationLinkPath -Target $installedBinDir | Out-Null
+    $generationLeaseDir = Join-Path $generationLeasesDir $releaseName
+    New-Item -ItemType Directory -Path $generationLeaseDir | Out-Null
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $generationLeaseDir "powershell.lock"),
+        [byte[]]::new(0)
+    )
+    $installedTargetPath = Join-Path $generationLinkPath $targetFileName
+    $content = @"
+if (`$env:CODEX_PLUS_PLUS_PARENT_IDENTITY -eq '1') {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+namespace CodexPlusPlus {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ProcessBasicInformation {
+        public IntPtr Reserved1;
+        public IntPtr PebBaseAddress;
+        public IntPtr Reserved2_0;
+        public IntPtr Reserved2_1;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    public static class NativeMethods {
+        [DllImport("ntdll.dll")]
+        private static extern int NtQueryInformationProcess(
+            IntPtr processHandle,
+            int processInformationClass,
+            ref ProcessBasicInformation processInformation,
+            int processInformationLength,
+            out int returnLength
+        );
+
+        public static int GetParentProcessId() {
+            var information = new ProcessBasicInformation();
+            int returnLength;
+            int status = NtQueryInformationProcess(
+                Process.GetCurrentProcess().Handle,
+                0,
+                ref information,
+                Marshal.SizeOf(information),
+                out returnLength
+            );
+            if (status != 0) {
+                throw new InvalidOperationException("NtQueryInformationProcess failed: " + status);
+            }
+            return information.InheritedFromUniqueProcessId.ToInt32();
+        }
+    }
 }
-if (`$null -ne `$global:LASTEXITCODE) { exit `$global:LASTEXITCODE }
+'@
+    `$parentProcessId = [CodexPlusPlus.NativeMethods]::GetParentProcessId()
+    `$parent = [System.Diagnostics.Process]::GetProcessById(`$parentProcessId)
+    [Console]::Out.WriteLine("{0} {1}", `$parent.Id, `$parent.StartTime.ToUniversalTime().Ticks)
+    exit 0
+}
+while (`$true) {
+    `$generation = [System.IO.File]::ReadAllText((Join-Path `$PSScriptRoot '.codex-plus-plus-current')).Trim()
+    `$leasePath = Join-Path `$PSScriptRoot ".codex-plus-plus-leases\`$generation\powershell.lock"
+    try {
+        `$lease = [System.IO.File]::Open(
+            `$leasePath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read
+        )
+    } catch [System.IO.IOException] {
+        continue
+    }
+    `$target = Join-Path `$PSScriptRoot ".codex-plus-plus-generations\`$generation\$targetFileName"
+    if (Test-Path -LiteralPath `$target -PathType Leaf) {
+        break
+    }
+    `$lease.Dispose()
+}
+try {
+    if (`$MyInvocation.ExpectingInput) {
+        `$input | & `$target @args
+    } else {
+        & `$target @args
+    }
+    if (`$null -ne `$global:LASTEXITCODE) { exit `$global:LASTEXITCODE }
+} finally {
+    `$lease.Dispose()
+}
 "@
-[System.IO.File]::WriteAllText($shimPath, $content, [System.Text.UTF8Encoding]::new($true))
-if ($existingTargetLink) {
-    $existingTargetLink.Delete()
+    [System.IO.File]::WriteAllText($shimPath, $content, [System.Text.UTF8Encoding]::new($true))
+    [System.IO.File]::WriteAllText($cmdShimPath, $cmdContent, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($markerPath, (Get-Sha256 -Path $cmdShimPath), [System.Text.UTF8Encoding]::new($false))
+    if (-not (Test-Path -LiteralPath $installedTargetPath -PathType Leaf)) {
+        throw "Installed Codex++ target is not reachable: $installedTargetPath"
+    }
+    $targetPointerTempPath = "$targetPointerPath.$PID.tmp"
+    $targetPointerBackupPath = "$targetPointerPath.$PID.bak"
+    try {
+        [System.IO.File]::WriteAllText(
+            $targetPointerTempPath,
+            $releaseName,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        if ($existingTarget) {
+            [System.IO.File]::Replace(
+                $targetPointerTempPath,
+                $targetPointerPath,
+                $targetPointerBackupPath
+            )
+        } else {
+            Move-Item -LiteralPath $targetPointerTempPath -Destination $targetPointerPath
+        }
+    } finally {
+        Remove-Item -LiteralPath $targetPointerTempPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $targetPointerBackupPath -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "==> Installed shims at $shimPath and $cmdShimPath"
+    Write-Host "==> Active release: $releaseDir"
+    Remove-StaleReleases `
+        -ReleasesDir $releasesDir `
+        -GenerationLinksDir $generationLinksDir `
+        -GenerationLeasesDir $generationLeasesDir `
+        -KeepReleaseDirs @($releaseDir, $previousReleaseDir)
 }
-New-Item -ItemType Junction -Path $targetLinkPath -Target (Split-Path -Parent $targetPath) | Out-Null
-[System.IO.File]::WriteAllText($cmdShimPath, $cmdContent, [System.Text.UTF8Encoding]::new($false))
-[System.IO.File]::WriteAllText($markerPath, (Get-FileHash -LiteralPath $cmdShimPath -Algorithm SHA256).Hash, [System.Text.UTF8Encoding]::new($false))
-Write-Host "==> Installed shims at $shimPath and $cmdShimPath"
 
 if ($AddToUserPath) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

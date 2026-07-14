@@ -2,6 +2,7 @@
 
 import argparse
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from .archive import write_archive
@@ -19,7 +20,7 @@ from .zsh import resolve_zsh_bin
 from .version import read_workspace_version
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a canonical Codex package directory and optional archive.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -132,7 +133,7 @@ def parse_args() -> argparse.Namespace:
             "scripts/codex_package/rg."
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> int:
