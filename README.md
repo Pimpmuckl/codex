@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/codex-plus-plus-splash.png" alt="Codex++ splash" width="80%" />
+</p>
+
 # Codex++
 
 Codex++ is a lean fork of upstream [OpenAI Codex](https://github.com/openai/codex), focused on multi-account workflows, safer hook-driven automation, and Windows reliability.
