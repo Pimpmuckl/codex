@@ -164,17 +164,6 @@ impl McpHandler {
 }
 
 impl CoreToolRuntime for McpHandler {
-    fn approvals_reviewer(
-        &self,
-        invocation: &ToolInvocation,
-    ) -> codex_protocol::config_types::ApprovalsReviewer {
-        crate::connectors::mcp_approvals_reviewer(
-            invocation.turn.config.as_ref(),
-            &self.tool_info.server_name,
-            self.tool_info.connector_id.as_deref(),
-        )
-    }
-
     fn telemetry_tags<'a>(
         &'a self,
         _invocation: &'a ToolInvocation,
