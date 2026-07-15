@@ -62,7 +62,7 @@ const BLOCKED_PROMPT_CONTEXT: &str = "Remember the blocked lighthouse note.";
 const PERMISSION_REQUEST_HOOK_MATCHER: &str = "^Bash$";
 const PERMISSION_REQUEST_ALLOW_REASON: &str = "should not be used for allow";
 
-async fn submit_yolo_auto_review_turn(test: &TestCodex, prompt: &str) -> Result<()> {
+async fn submit_yolo_hook_review_turn(test: &TestCodex, prompt: &str) -> Result<()> {
     test.codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
@@ -74,7 +74,7 @@ async fn submit_yolo_auto_review_turn(test: &TestCodex, prompt: &str) -> Result<
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 approval_policy: Some(AskForApproval::Never),
-                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                approvals_reviewer: Some(ApprovalsReviewer::User),
                 sandbox_policy: Some(SandboxPolicy::DangerFullAccess),
                 ..Default::default()
             },
@@ -3700,7 +3700,7 @@ async fn pre_tool_use_ask_reviews_generic_tool_under_yolo() -> Result<()> {
         .with_config(trust_discovered_hooks);
     let test = builder.build(&server).await?;
 
-    submit_yolo_auto_review_turn(&test, "review the generic function tool").await?;
+    submit_yolo_hook_review_turn(&test, "review the generic function tool").await?;
 
     let requests = responses.requests();
     let guardian_request = requests
