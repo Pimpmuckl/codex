@@ -392,6 +392,7 @@ if ($ShimDir.Equals($releasesRoot, [System.StringComparison]::OrdinalIgnoreCase)
 $cmdContent = @"
 @echo off
 setlocal DisableDelayedExpansion
+for %%I in ("%~dp0.") do set "CODEX_PLUS_PLUS_SHIM_DIR=%%~fI"
 set "CODEX_PLUS_PLUS_IDENTITY_FILE=%~dp0.codex-plus-plus-leases\.identity.%RANDOM%%RANDOM%%RANDOM%"
 set "CODEX_PLUS_PLUS_PARENT_IDENTITY=1"
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -InputFormat None -ExecutionPolicy Bypass -File "%~dp0codex.ps1" >"%CODEX_PLUS_PLUS_IDENTITY_FILE%"
@@ -535,6 +536,7 @@ namespace CodexPlusPlus {
     [Console]::Out.WriteLine("{0} {1}", `$parent.Id, `$parent.StartTime.ToUniversalTime().Ticks)
     exit 0
 }
+`$env:CODEX_PLUS_PLUS_SHIM_DIR = `$PSScriptRoot
 while (`$true) {
     `$generation = [System.IO.File]::ReadAllText((Join-Path `$PSScriptRoot '.codex-plus-plus-current')).Trim()
     `$leasePath = Join-Path `$PSScriptRoot ".codex-plus-plus-leases\`$generation\powershell.lock"
