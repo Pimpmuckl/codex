@@ -19,7 +19,9 @@ impl Outcome {
 #[derive(Clone, Copy)]
 enum Start {
     Package,
+    Standalone,
     AlreadyUpstream,
+    PreflightError,
 }
 
 struct FakeAdapter {
@@ -34,7 +36,9 @@ struct FakeAdapter {
 impl SwitchAdapter for FakeAdapter {
     async fn preflight(&mut self) -> anyhow::Result<Preflight> {
         self.events.push("preflight");
-        Ok(self.preflight.take().expect("one preflight"))
+        self.preflight
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Codex++ shim provenance is missing"))
     }
 
     fn export_selected_profile(&mut self) -> anyhow::Result<ProfileHandoff> {
@@ -95,7 +99,7 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
     let cases = [
         Case {
             name: "success",
-            start: Start::Package,
+            start: Start::Standalone,
             handoff: ProfileHandoff::Selected,
             install: Outcome::Ok,
             verify: Outcome::Ok,
@@ -119,7 +123,7 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
         },
         Case {
             name: "install failure rolls back",
-            start: Start::Package,
+            start: Start::Standalone,
             handoff: ProfileHandoff::Selected,
             install: Outcome::Err("install failed"),
             verify: Outcome::Ok,
@@ -131,7 +135,7 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
         },
         Case {
             name: "verification failure rolls back",
-            start: Start::Package,
+            start: Start::Standalone,
             handoff: ProfileHandoff::Selected,
             install: Outcome::Ok,
             verify: Outcome::Err("verification failed"),
@@ -150,7 +154,7 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
         },
         Case {
             name: "rollback failure is reported",
-            start: Start::Package,
+            start: Start::Standalone,
             handoff: ProfileHandoff::Selected,
             install: Outcome::Err("install failed"),
             verify: Outcome::Ok,
@@ -159,6 +163,18 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
             expected_events: &["preflight", "handoff", "install", "rollback", "reconcile"],
             stdout: "",
             error: Some("rollback failed"),
+        },
+        Case {
+            name: "missing provenance stops before mutation",
+            start: Start::PreflightError,
+            handoff: ProfileHandoff::Selected,
+            install: Outcome::Ok,
+            verify: Outcome::Ok,
+            rollback: Outcome::Ok,
+            expected_ok: false,
+            expected_events: &["preflight"],
+            stdout: "",
+            error: Some("shim provenance is missing"),
         },
         Case {
             name: "no profile still switches",
@@ -179,10 +195,14 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
 
     for case in cases {
         let mut adapter = FakeAdapter {
-            preflight: Some(match case.start {
-                Start::Package => package_preflight(),
-                Start::AlreadyUpstream => Preflight::AlreadyUpstream,
-            }),
+            preflight: match case.start {
+                Start::Package => Some(package_preflight()),
+                Start::Standalone => Some(Preflight::Standalone(
+                    standalone_switch::tests::fake_switch(),
+                )),
+                Start::AlreadyUpstream => Some(Preflight::AlreadyUpstream),
+                Start::PreflightError => None,
+            },
             handoff: case.handoff,
             install: case.install,
             verify: case.verify,
