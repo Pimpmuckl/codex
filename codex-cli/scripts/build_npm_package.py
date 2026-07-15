@@ -18,9 +18,17 @@ CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
 CODEX_NPM_NAME = "@openai/codex"
 CODEX_PACKAGE_COMPONENT = "codex-package"
 
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from codex_plus_plus.npm import (  # noqa: E402
+    PLATFORM_PACKAGES as CODEX_PLUS_PLUS_PLATFORM_PACKAGES,
+)
+from codex_plus_plus.npm import ROOT_CONFIG as CODEX_PLUS_PLUS_ROOT_CONFIG  # noqa: E402
+from codex_plus_plus.npm import ROOT_PACKAGE as CODEX_PLUS_PLUS_ROOT_PACKAGE  # noqa: E402
+from codex_plus_plus.npm import native_artifact_version as fork_native_artifact_version  # noqa: E402
+
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
-# The underlying package published to npm is always `@openai/codex`.
-CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
+UPSTREAM_CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
         "npm_name": "@openai/codex-linux-x64",
         "npm_tag": "linux-x64",
@@ -65,18 +73,32 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     },
 }
 
+CODEX_ROOT_PACKAGES = {
+    "codex": {
+        "npm_name": CODEX_NPM_NAME,
+        "bin": {"codex": "bin/codex.js"},
+        "platform_packages": UPSTREAM_CODEX_PLATFORM_PACKAGES,
+    },
+    CODEX_PLUS_PLUS_ROOT_PACKAGE: CODEX_PLUS_PLUS_ROOT_CONFIG,
+}
+
+CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
+    package: {**config, "root_package": root_package}
+    for root_package, root_config in CODEX_ROOT_PACKAGES.items()
+    for package, config in root_config["platform_packages"].items()
+}
+
 PACKAGE_EXPANSIONS: dict[str, list[str]] = {
-    "codex": ["codex", *CODEX_PLATFORM_PACKAGES],
+    root_package: [root_package, *config["platform_packages"]]
+    for root_package, config in CODEX_ROOT_PACKAGES.items()
 }
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
-    "codex": [],
-    "codex-linux-x64": [CODEX_PACKAGE_COMPONENT],
-    "codex-linux-arm64": [CODEX_PACKAGE_COMPONENT],
-    "codex-darwin-x64": [CODEX_PACKAGE_COMPONENT],
-    "codex-darwin-arm64": [CODEX_PACKAGE_COMPONENT],
-    "codex-win32-x64": [CODEX_PACKAGE_COMPONENT],
-    "codex-win32-arm64": [CODEX_PACKAGE_COMPONENT],
+    **{root_package: [] for root_package in CODEX_ROOT_PACKAGES},
+    **{
+        platform_package: [CODEX_PACKAGE_COMPONENT]
+        for platform_package in CODEX_PLATFORM_PACKAGES
+    },
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
 }
@@ -88,8 +110,21 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 
+
+def native_artifact_version(version: str, packages: list[str]) -> str:
+    fork_packages = {
+        CODEX_PLUS_PLUS_ROOT_PACKAGE,
+        *CODEX_PLUS_PLUS_PLATFORM_PACKAGES,
+    }
+    if any(package in fork_packages for package in packages):
+        return fork_native_artifact_version(version)
+    return version
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build or stage the Codex CLI npm package.")
+    parser = argparse.ArgumentParser(
+        description="Build or stage the Codex CLI npm package."
+    )
     parser.add_argument(
         "--package",
         choices=PACKAGE_CHOICES,
@@ -102,9 +137,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--release-version",
-        help=(
-            "Version to stage for npm release."
-        ),
+        help=("Version to stage for npm release."),
     )
     parser.add_argument(
         "--staging-dir",
@@ -141,7 +174,9 @@ def main() -> int:
     release_version = args.release_version
     if release_version:
         if version and version != release_version:
-            raise RuntimeError("--version and --release-version must match when both are provided.")
+            raise RuntimeError(
+                "--version and --release-version must match when both are provided."
+            )
         version = release_version
 
     if not version:
@@ -174,7 +209,7 @@ def main() -> int:
 
         if release_version:
             staging_dir_str = str(staging_dir)
-            if package == "codex":
+            if package in CODEX_ROOT_PACKAGES:
                 print(
                     f"Staged version {version} for release in {staging_dir_str}\n\n"
                     "Verify the CLI:\n"
@@ -230,7 +265,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     package_json: dict
     package_json_path: Path | None = None
 
-    if package == "codex":
+    if package in CODEX_ROOT_PACKAGES:
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
@@ -243,6 +278,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_json_path = CODEX_CLI_ROOT / "package.json"
     elif package in CODEX_PLATFORM_PACKAGES:
         platform_package = CODEX_PLATFORM_PACKAGES[package]
+        root_package = CODEX_ROOT_PACKAGES[platform_package["root_package"]]
         platform_npm_tag = platform_package["npm_tag"]
         platform_version = compute_platform_package_version(version, platform_npm_tag)
 
@@ -254,7 +290,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             codex_package_json = json.load(fh)
 
         package_json = {
-            "name": CODEX_NPM_NAME,
+            "name": root_package["npm_name"],
             "version": platform_version,
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
@@ -273,7 +309,9 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     elif package == "codex-responses-api-proxy":
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
-        launcher_src = RESPONSES_API_PROXY_NPM_ROOT / "bin" / "codex-responses-api-proxy.js"
+        launcher_src = (
+            RESPONSES_API_PROXY_NPM_ROOT / "bin" / "codex-responses-api-proxy.js"
+        )
         shutil.copy2(launcher_src, bin_dir / "codex-responses-api-proxy.js")
 
         readme_src = RESPONSES_API_PROXY_NPM_ROOT / "README.md"
@@ -292,15 +330,18 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             package_json = json.load(fh)
         package_json["version"] = version
 
-    if package == "codex":
+    if package in CODEX_ROOT_PACKAGES:
+        root_package = CODEX_ROOT_PACKAGES[package]
+        platform_packages = root_package["platform_packages"]
+        package_json["name"] = root_package["npm_name"]
+        package_json["bin"] = root_package["bin"]
         package_json["files"] = ["bin/codex.js", "bin/launcher.js"]
         package_json["optionalDependencies"] = {
-            CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
-                f"npm:{CODEX_NPM_NAME}@"
-                f"{compute_platform_package_version(version, CODEX_PLATFORM_PACKAGES[platform_package]['npm_tag'])}"
+            platform_config["npm_name"]: (
+                f"npm:{root_package['npm_name']}@"
+                f"{compute_platform_package_version(version, platform_config['npm_tag'])}"
             )
-            for platform_package in PACKAGE_EXPANSIONS["codex"]
-            if platform_package != "codex"
+            for platform_config in platform_packages.values()
         }
 
     elif package == "codex-sdk":
@@ -406,7 +447,10 @@ def copy_native_binaries(
         missing_targets = sorted(target_filter - copied_targets)
         if missing_targets:
             missing_list = ", ".join(missing_targets)
-            raise RuntimeError(f"Missing target directories in vendor source: {missing_list}")
+            raise RuntimeError(
+                f"Missing target directories in vendor source: {missing_list}"
+            )
+
 
 def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:
     output_path = output_path.resolve()
