@@ -47,6 +47,7 @@ use supports_color::Stream;
 mod account_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
+mod codex_plus_plus;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
@@ -163,7 +164,7 @@ enum Subcommand {
     Completion(CompletionCommand),
 
     /// Update Codex to the latest version.
-    Update,
+    Update(UpdateCommand),
 
     /// Diagnose local Codex installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
@@ -221,6 +222,18 @@ struct CompletionCommand {
     /// Shell to generate completions for
     #[clap(value_enum, default_value_t = Shell::Bash)]
     shell: Shell,
+}
+
+#[derive(Debug, Args)]
+struct UpdateCommand {
+    #[command(subcommand)]
+    channel: Option<UpdateChannelCommand>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum UpdateChannelCommand {
+    /// Switch this Codex++ installation to upstream Codex.
+    Upstream,
 }
 
 #[derive(Debug, Parser)]
@@ -801,9 +814,13 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_update_command() -> anyhow::Result<()> {
+async fn run_update_command(
+    command: UpdateCommand,
+    config_overrides: CliConfigOverrides,
+) -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     {
+        let _ = (command, config_overrides);
         anyhow::bail!(
             "`codex update` is not available in debug builds. Install a release build of Codex to use this command."
         );
@@ -811,6 +828,9 @@ fn run_update_command() -> anyhow::Result<()> {
 
     #[cfg(not(debug_assertions))]
     {
+        if matches!(command.channel, Some(UpdateChannelCommand::Upstream)) {
+            return codex_plus_plus::run_upstream_switch(config_overrides).await;
+        }
         let Some(action) = codex_tui::get_update_action() else {
             let plan = UpdateAction::current_plan();
             let install_url = plan.channel().install_url();
@@ -1419,13 +1439,13 @@ async fn cli_main(
             )?;
             print_completion(completion_cli);
         }
-        Some(Subcommand::Update) => {
+        Some(Subcommand::Update(update_command)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),
                 "update",
             )?;
-            run_update_command()?;
+            run_update_command(update_command, root_config_overrides.clone()).await?;
         }
         Some(Subcommand::Doctor(doctor_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -2149,7 +2169,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Logout(_)) => Some("logout"),
         Some(Subcommand::Account(_)) => Some("account"),
         Some(Subcommand::Completion(_)) => Some("completion"),
-        Some(Subcommand::Update) => Some("update"),
+        Some(Subcommand::Update(_)) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
         Some(Subcommand::Sandbox(_)) => Some("sandbox"),
         Some(Subcommand::Debug(_)) => Some("debug"),
@@ -2950,7 +2970,29 @@ mod tests {
     #[test]
     fn update_parses_as_update_subcommand() {
         let cli = MultitoolCli::try_parse_from(["codex", "update"]).expect("parse");
-        assert!(matches!(cli.subcommand, Some(Subcommand::Update)));
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Update(UpdateCommand { channel: None }))
+        ));
+    }
+
+    #[test]
+    fn update_upstream_is_the_only_supported_extra_form() {
+        let cli = MultitoolCli::try_parse_from(["codex", "update", "upstream"]).expect("parse");
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::Update(UpdateCommand {
+                channel: Some(UpdateChannelCommand::Upstream)
+            }))
+        ));
+
+        for args in [
+            vec!["codex", "update", "fork"],
+            vec!["codex", "update", "upstream", "extra"],
+            vec!["codex", "update", "upstream", "--force"],
+        ] {
+            assert_eq!(MultitoolCli::try_parse_from(args).unwrap_err().exit_code(), 2);
+        }
     }
 
     #[test]
