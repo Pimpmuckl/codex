@@ -38,8 +38,12 @@ _SPEC.loader.exec_module(_BUILD_MODULE)
 PACKAGE_NATIVE_COMPONENTS = getattr(_BUILD_MODULE, "PACKAGE_NATIVE_COMPONENTS", {})
 PACKAGE_EXPANSIONS = getattr(_BUILD_MODULE, "PACKAGE_EXPANSIONS", {})
 CODEX_PLATFORM_PACKAGES = getattr(_BUILD_MODULE, "CODEX_PLATFORM_PACKAGES", {})
+PACKAGE_TARGET_FILTERS = getattr(_BUILD_MODULE, "PACKAGE_TARGET_FILTERS", {})
 CODEX_PACKAGE_COMPONENT = getattr(
     _BUILD_MODULE, "CODEX_PACKAGE_COMPONENT", "codex-package"
+)
+NATIVE_ARTIFACT_VERSION = getattr(
+    _BUILD_MODULE, "native_artifact_version", lambda version, _packages: version
 )
 
 
@@ -108,6 +112,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing previously downloaded workflow artifacts.",
     )
     parser.add_argument(
+        "--vendor-src",
+        type=Path,
+        help="Prehydrated vendor directory to stage without downloading artifacts.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -135,6 +144,20 @@ def collect_native_component_sets(packages: list[str]) -> list[tuple[str, ...]]:
         seen.add(components)
         component_sets.append(components)
     return component_sets
+
+
+def native_targets_for_component_set(
+    packages: list[str], components: tuple[str, ...]
+) -> tuple[str, ...]:
+    targets = {
+        PACKAGE_TARGET_FILTERS[package]
+        for package in packages
+        if native_components_for_package(package) == components
+        and package in PACKAGE_TARGET_FILTERS
+    }
+    if not targets:
+        return BINARY_TARGETS
+    return tuple(target for target in BINARY_TARGETS if target in targets)
 
 
 def expand_packages(packages: list[str]) -> list[str]:
@@ -184,6 +207,7 @@ def resolve_workflow_url(version: str, override: str | None) -> tuple[str, str |
 def install_native_components(
     workflow_url: str,
     components: set[str],
+    targets: Sequence[str],
     vendor_root: Path,
     artifacts_dir: Path,
 ) -> None:
@@ -201,6 +225,7 @@ def install_native_components(
             workflow_id,
             artifacts_dir,
             sorted(components),
+            targets,
             vendor_dir,
         )
     print(f"Installed native dependencies into {vendor_dir}", flush=True)
@@ -210,22 +235,25 @@ def install_from_workflow_artifacts(
     workflow_id: str,
     artifacts_dir: Path,
     components: Sequence[str],
+    targets: Sequence[str],
     vendor_dir: Path,
 ) -> None:
-    artifacts = select_target_artifacts(workflow_id, components)
+    artifacts = select_target_artifacts(workflow_id, components, targets)
     download_artifacts(workflow_id, artifacts_dir, artifacts)
     if CODEX_PACKAGE_COMPONENT in components:
-        install_codex_package_archives(artifacts_dir, vendor_dir, BINARY_TARGETS)
+        install_codex_package_archives(artifacts_dir, vendor_dir, targets)
     install_binary_components(
         artifacts_dir,
         vendor_dir,
         [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS],
+        targets,
     )
 
 
 def select_target_artifacts(
     workflow_id: str,
     components: Sequence[str],
+    targets: Sequence[str],
 ) -> list[WorkflowArtifact]:
     needs_target_artifacts = CODEX_PACKAGE_COMPONENT in components or any(
         component in BINARY_COMPONENTS for component in components
@@ -237,7 +265,7 @@ def select_target_artifacts(
         artifact.name: artifact for artifact in list_workflow_artifacts(workflow_id)
     }
     selected_artifacts: list[WorkflowArtifact] = []
-    for target in BINARY_TARGETS:
+    for target in targets:
         for artifact_name in [target, f"{target}-unsigned"]:
             artifact = artifacts_by_name.get(artifact_name)
             if artifact is not None:
@@ -363,9 +391,10 @@ def install_binary_components(
     artifacts_dir: Path,
     vendor_dir: Path,
     selected_components: Sequence[BinaryComponent],
+    targets: Sequence[str],
 ) -> None:
     for component in selected_components:
-        component_targets = list(BINARY_TARGETS)
+        component_targets = list(targets)
 
         print(
             f"Installing {component.binary_basename} binaries for targets: "
@@ -474,13 +503,20 @@ def run_command(cmd: list[str]) -> None:
 
 def tarball_name_for_package(package: str, version: str) -> str:
     if package in CODEX_PLATFORM_PACKAGES:
-        platform = package.removeprefix("codex-")
-        return f"codex-npm-{platform}-{version}.tgz"
+        config = CODEX_PLATFORM_PACKAGES[package]
+        return f"{config['root_package']}-npm-{config['npm_tag']}-{version}.tgz"
     return f"{package}-npm-{version}.tgz"
 
 
 def main() -> int:
     args = parse_args()
+
+    if args.vendor_src is not None and (
+        args.workflow_url is not None or args.artifacts_dir is not None
+    ):
+        raise RuntimeError(
+            "--vendor-src cannot be combined with --workflow-url or --artifacts-dir."
+        )
 
     output_dir = args.output_dir or (REPO_ROOT / "dist" / "npm")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -507,9 +543,18 @@ def main() -> int:
     staging_jobs: list[tuple[Path, list[str], str]] = []
 
     try:
-        if native_component_sets:
+        if native_component_sets and args.vendor_src is not None:
+            vendor_src = args.vendor_src.resolve()
+            if not vendor_src.is_dir():
+                raise RuntimeError(f"Vendor source directory not found: {vendor_src}")
+            print(f"Using prehydrated native artifacts from {vendor_src}", flush=True)
+            vendor_src_by_components = {
+                components: vendor_src for components in native_component_sets
+            }
+        elif native_component_sets:
+            artifact_version = NATIVE_ARTIFACT_VERSION(args.release_version, packages)
             workflow_url, resolved_head_sha = resolve_workflow_url(
-                args.release_version, args.workflow_url
+                artifact_version, args.workflow_url
             )
             print(f"Using native artifacts from {workflow_url}", flush=True)
             if args.artifacts_dir is not None:
@@ -522,6 +567,7 @@ def main() -> int:
                 remove_artifacts_temp_root = True
             print(f"Using artifact cache at {artifacts_temp_root}", flush=True)
             for components in native_component_sets:
+                targets = native_targets_for_component_set(packages, components)
                 vendor_temp_root = Path(
                     tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp)
                 )
@@ -535,6 +581,7 @@ def main() -> int:
                 install_native_components(
                     workflow_url,
                     set(components),
+                    targets,
                     vendor_temp_root,
                     artifacts_temp_root,
                 )
