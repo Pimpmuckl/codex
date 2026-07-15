@@ -19,6 +19,21 @@ TAG = "codex-plus-plus-v1.2.3-fork.1"
 VERSION = TAG.removeprefix("codex-plus-plus-v")
 
 
+def is_supported_host() -> bool:
+    if os.name == "nt":
+        architecture = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get(
+            "PROCESSOR_ARCHITECTURE", ""
+        )
+        return architecture.lower() in {"amd64", "x86_64"}
+    host = os.uname()
+    return (host.sysname, host.machine.lower()) in {
+        ("Darwin", "arm64"),
+        ("Darwin", "aarch64"),
+        ("Linux", "x86_64"),
+        ("Linux", "amd64"),
+    }
+
+
 class ReleaseFixture:
     def __init__(self, root: Path) -> None:
         self.requests: list[str] = []
@@ -76,6 +91,7 @@ class ReleaseFixture:
         self.thread.join()
 
 
+@unittest.skipUnless(is_supported_host(), "unsupported Codex++ release target")
 class InstallLatestTest(unittest.TestCase):
     def test_verified_release_installs_idempotently(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
