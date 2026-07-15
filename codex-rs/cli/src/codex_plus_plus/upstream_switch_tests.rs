@@ -195,7 +195,12 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
 
         assert_eq!(result.is_ok(), case.expected_ok, "{}", case.name);
         assert_eq!(adapter.events, case.expected_events, "{}", case.name);
-        assert_eq!(String::from_utf8(stdout).expect("stdout"), case.stdout, "{}", case.name);
+        assert_eq!(
+            String::from_utf8(stdout).expect("stdout"),
+            case.stdout,
+            "{}",
+            case.name
+        );
         if let Some(expected) = case.error {
             assert!(
                 result.expect_err(case.name).to_string().contains(expected),

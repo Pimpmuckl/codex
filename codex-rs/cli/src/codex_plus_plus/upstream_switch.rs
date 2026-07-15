@@ -65,7 +65,10 @@ async fn run_with_adapter(
         return Ok(());
     }
 
-    line(stderr, "Preparing the selected account for upstream Codex...");
+    line(
+        stderr,
+        "Preparing the selected account for upstream Codex...",
+    );
     let handoff = adapter.export_selected_profile()?;
     line(stderr, "Installing and verifying upstream Codex...");
     let switch_result = adapter
@@ -93,10 +96,16 @@ async fn run_with_adapter(
 
     line(
         stdout,
-        &format!("Switched to upstream Codex {}.", preflight.upstream_version()),
+        &format!(
+            "Switched to upstream Codex {}.",
+            preflight.upstream_version()
+        ),
     );
     if handoff == ProfileHandoff::NoUsableProfile {
-        line(stdout, "No usable Codex++ profile was selected; run `codex login` to sign in.");
+        line(
+            stdout,
+            "No usable Codex++ profile was selected; run `codex login` to sign in.",
+        );
     }
     Ok(())
 }
@@ -370,9 +379,8 @@ fn stable_release_version(release: &GithubRelease, prefix: &str) -> anyhow::Resu
 }
 
 fn absolute_env(name: &str) -> anyhow::Result<PathBuf> {
-    let path = PathBuf::from(
-        std::env::var_os(name).ok_or_else(|| anyhow::anyhow!("{name} is not set"))?,
-    );
+    let path =
+        PathBuf::from(std::env::var_os(name).ok_or_else(|| anyhow::anyhow!("{name} is not set"))?);
     if !path.is_absolute() {
         anyhow::bail!("{name} is not an absolute path");
     }

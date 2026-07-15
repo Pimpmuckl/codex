@@ -2991,7 +2991,10 @@ mod tests {
             vec!["codex", "update", "upstream", "extra"],
             vec!["codex", "update", "upstream", "--force"],
         ] {
-            assert_eq!(MultitoolCli::try_parse_from(args).unwrap_err().exit_code(), 2);
+            assert_eq!(
+                MultitoolCli::try_parse_from(args).unwrap_err().exit_code(),
+                2
+            );
         }
     }
 
