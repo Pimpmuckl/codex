@@ -3,16 +3,16 @@ use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
 
+use crate::codex_plus_plus::WELCOME_TIP;
+
 const ANNOUNCEMENT_TIP_URL: &str =
     "https://raw.githubusercontent.com/openai/codex/main/announcement_tip.toml";
 
 const IS_MACOS: bool = cfg!(target_os = "macos");
 const IS_WINDOWS: bool = cfg!(target_os = "windows");
 
-const APP_TOOLTIP: &str = "Try the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
 const FAST_TOOLTIP: &str =
     "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
-const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
 const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codex.";
 const FREE_GO_TOOLTIP: &str =
     "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
@@ -27,11 +27,9 @@ lazy_static! {
             if line.is_empty() || line.starts_with('#') {
                 return false;
             }
-            if !IS_MACOS && !IS_WINDOWS && line.contains("codex app") {
-                return false;
-            }
             true
         })
+        .map(crate::codex_plus_plus::replace_upstream_app_promo)
         .collect();
     static ref ALL_TOOLTIPS: Vec<&'static str> = {
         let mut tips = Vec::new();
@@ -75,7 +73,7 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
             }
             _ => {
                 let tooltip = if IS_MACOS {
-                    OTHER_TOOLTIP
+                    WELCOME_TIP
                 } else {
                     OTHER_TOOLTIP_NON_MAC
                 };
@@ -89,7 +87,7 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
 
 fn paid_app_tooltip() -> Option<&'static str> {
     if IS_MACOS || IS_WINDOWS {
-        Some(APP_TOOLTIP)
+        Some(WELCOME_TIP)
     } else {
         None
     }
@@ -333,6 +331,11 @@ mod tests {
     fn random_tooltip_returns_some_tip_when_available() {
         let mut rng = StdRng::seed_from_u64(42);
         assert!(pick_tooltip(&mut rng).is_some());
+    }
+
+    #[test]
+    fn file_backed_app_promo_uses_welcome_tip() {
+        assert!(TOOLTIPS.contains(&WELCOME_TIP));
     }
 
     #[test]

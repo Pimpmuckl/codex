@@ -162,7 +162,7 @@ pub(crate) fn new_session_info(
 
     if is_first_event {
         // Help lines below the header (new copy and list)
-        let help_lines: Vec<Line<'static>> = vec![
+        let mut help_lines: Vec<Line<'static>> = vec![
             "  To get started, describe a task or try one of these commands:"
                 .dim()
                 .into(),
@@ -192,8 +192,8 @@ pub(crate) fn new_session_info(
                 "/review".into(),
                 " - review any changes and find issues".dim(),
             ]),
-            crate::codex_plus_plus::welcome_help_line(),
         ];
+        help_lines.extend(crate::codex_plus_plus::welcome_help_lines());
 
         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
     } else {
