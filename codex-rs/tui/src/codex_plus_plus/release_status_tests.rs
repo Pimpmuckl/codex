@@ -72,6 +72,23 @@ async fn refresh_recovers_corrupt_cache_and_offline_preserves_it() {
         (Some("0.144.4-fork.3"), Some("0.147.0"))
     );
 
+    probe::refresh_with_probes(
+        &path,
+        "0.144.4-fork.1",
+        async { Ok("0.144.4-fork.4".to_string()) },
+        async { Ok("0.148.0-beta.1".to_string()) },
+    )
+    .await
+    .expect("fork refresh should ignore upstream prerelease");
+    let prerelease = read_release_status(&path).expect("read prerelease refresh");
+    assert_eq!(
+        (
+            prerelease.latest_fork_version.as_deref(),
+            prerelease.latest_stable_upstream_version.as_deref()
+        ),
+        (Some("0.144.4-fork.4"), Some("0.147.0"))
+    );
+
     let error = probe::refresh_with_probes(
         &path,
         "0.144.4-fork.1",
@@ -83,6 +100,6 @@ async fn refresh_recovers_corrupt_cache_and_offline_preserves_it() {
     assert_eq!(error.to_string(), "fork offline");
     assert_eq!(
         read_release_status(&path).expect("read stale cache"),
-        partial
+        prerelease
     );
 }

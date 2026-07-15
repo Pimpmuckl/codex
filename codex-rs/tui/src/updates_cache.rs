@@ -4,13 +4,11 @@ use codex_install_context::codex_plus_plus::ForkReleaseStatus;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub(crate) type VersionInfo = ForkReleaseStatus;
-
 pub(crate) fn version_filepath(config: &Config) -> PathBuf {
     crate::codex_plus_plus::release_status_filepath(config.codex_home.as_path())
 }
 
-pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
+pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<ForkReleaseStatus> {
     crate::codex_plus_plus::read_release_status(version_file)
 }
 

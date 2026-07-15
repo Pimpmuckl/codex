@@ -26,7 +26,7 @@ impl ForkReleaseStatus {
         checked_at: SystemTime,
     ) -> Self {
         let latest_stable_upstream_version =
-            latest_stable_upstream_version.filter(|version| stable_version(version).is_some());
+            latest_stable_upstream_version.filter(|version| Self::is_stable_upstream(version));
         let fork_base = latest_fork_version.as_deref().and_then(fork_upstream_base);
         let upstream = latest_stable_upstream_version
             .as_deref()
@@ -75,6 +75,10 @@ impl ForkReleaseStatus {
 
     pub fn unavailable(installed_fork_version: String) -> Self {
         Self::new(installed_fork_version, None, None, std::time::UNIX_EPOCH)
+    }
+
+    pub fn is_stable_upstream(version: &str) -> bool {
+        stable_version(version).is_some()
     }
 
     pub fn is_stale(&self, now: SystemTime, max_age: Duration) -> bool {

@@ -98,7 +98,6 @@ mod probe {
     const MAX_BODY_BYTES: u64 = 2 * 1024 * 1024;
     const TIMEOUT: Duration = Duration::from_secs(5);
 
-    #[derive(Clone, Copy)]
     enum Kind {
         Fork,
         StableUpstream,
@@ -139,6 +138,7 @@ mod probe {
         let previous = read_release_status(path).ok();
         let latest_upstream = latest_upstream
             .ok()
+            .filter(|version| ForkReleaseStatus::is_stable_upstream(version))
             .or_else(|| previous.as_ref()?.latest_stable_upstream_version.clone());
         let dismissed_version = previous.and_then(|status| status.dismissed_version);
         let mut status = ForkReleaseStatus::new(
