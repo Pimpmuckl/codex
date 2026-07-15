@@ -1,0 +1,22 @@
+---
+source: tui/src/codex_plus_plus/lag_warning_tests.rs
+expression: cases
+---
+below threshold:
+<none>
+
+at threshold:
+⚠ Codex++ is 3 releases behind Codex. Run `codex update upstream` to switch to
+  upstream Codex. Your accounts stay saved in /home/alice/.codex/accounts and
+  will be ready if you switch back later.
+
+fork update takes precedence:
+<none>
+
+custom codex home:
+⚠ Codex++ is 4 releases behind Codex. Run `codex update upstream` to switch to
+  upstream Codex. Your accounts stay saved in /srv/codex-home/accounts and will
+  be ready if you switch back later.
+
+unavailable:
+<none>
