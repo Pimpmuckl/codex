@@ -1138,6 +1138,15 @@ fn standalone_windows_update_available_history_cell_snapshot() {
 }
 
 #[test]
+fn pnpm_update_available_history_cell_snapshot() {
+    let cell =
+        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn codex_plus_plus_update_available_history_cell_snapshots() {
     let cell = UpdateAvailableHistoryCell::new(
         "9.9.9".to_string(),
@@ -1157,12 +1166,10 @@ fn codex_plus_plus_update_available_history_cell_snapshots() {
     │ https://github.com/Pimpmuckl/codex/releases/latest   │
     ╰──────────────────────────────────────────────────────╯
     ");
-
     let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
     let rendered = render_lines(&cell.display_lines(/*width*/ 110))
         .join("\n")
         .replace(CODEX_CLI_VERSION, "0.0.0");
-
     insta::assert_snapshot!(rendered, @r"
     ╭────────────────────────────────────────────────────────────────────────────────────╮
     │ ✨ Update available! 0.0.0 -> 9.9.9                                              │
