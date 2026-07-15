@@ -18,3 +18,4 @@ pub use bedrock_api_key::login_with_bedrock_api_key;
 pub use error::RefreshTokenFailedError;
 pub use error::RefreshTokenFailedReason;
 pub use manager::*;
+pub(crate) use storage::save_file_auth_if_unchanged;
