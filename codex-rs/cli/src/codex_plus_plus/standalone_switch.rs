@@ -9,6 +9,7 @@ use serde::Deserialize;
 use sha2::Digest;
 use sha2::Sha256;
 use std::fs;
+use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -52,6 +53,29 @@ pub(super) async fn preflight(
     context: &InstallContext,
     upstream_plan: UpdatePlan,
 ) -> anyhow::Result<Option<StandaloneSwitch>> {
+    preflight_with_sources(
+        context,
+        upstream_plan,
+        || {
+            absolute_env("CODEX_PLUS_PLUS_SHIM_DIR")
+                .context("Codex++ shim provenance is missing; reinstall Codex++ before switching")
+        },
+        latest_release,
+    )
+    .await
+}
+
+async fn preflight_with_sources<ShimDir, Release, ReleaseFuture>(
+    context: &InstallContext,
+    upstream_plan: UpdatePlan,
+    shim_dir: ShimDir,
+    release: Release,
+) -> anyhow::Result<Option<StandaloneSwitch>>
+where
+    ShimDir: FnOnce() -> anyhow::Result<PathBuf>,
+    Release: FnOnce(UpdatePlan) -> ReleaseFuture,
+    ReleaseFuture: Future<Output = anyhow::Result<(GithubRelease, &'static str)>>,
+{
     let InstallMethod::Standalone { release_dir, .. } = &context.method else {
         unreachable!("standalone update plan requires a standalone install context")
     };
@@ -64,13 +88,12 @@ pub(super) async fn preflight(
         Some((base, revision)) if version_base(base) && revision.parse::<u64>().is_ok() => {}
         _ => anyhow::bail!("running standalone package has invalid version provenance"),
     }
-    let shim_dir = absolute_env("CODEX_PLUS_PLUS_SHIM_DIR")
-        .context("Codex++ shim provenance is missing; reinstall Codex++ before switching")?;
+    let shim_dir = shim_dir()?;
     let mut rollback = local_rollback(release_dir, platform, &shim_dir, &metadata)?;
     if platform == StandalonePlatform::Windows {
         rollback.windows_user_path = Some(read_windows_user_path()?);
     }
-    let (release, prefix) = latest_release(upstream_plan).await?;
+    let (release, prefix) = release(upstream_plan).await?;
     let upstream_version = stable_release_version(&release, prefix)?;
     asset_sha256(
         &release,

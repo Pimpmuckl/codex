@@ -25,10 +25,9 @@ pub(in crate::codex_plus_plus) fn fake_switch() -> StandaloneSwitch {
     }
 }
 
-#[test]
-fn release_preflight_requires_target_and_checksum_digests() {
+fn valid_release() -> GithubRelease {
     let digest = format!("sha256:{}", "a".repeat(64));
-    let mut release = GithubRelease {
+    GithubRelease {
         tag_name: "rust-v0.145.0".to_string(),
         draft: false,
         prerelease: false,
@@ -42,7 +41,12 @@ fn release_preflight_requires_target_and_checksum_digests() {
                 digest: Some(digest),
             },
         ],
-    };
+    }
+}
+
+#[test]
+fn release_preflight_requires_target_and_checksum_digests() {
+    let mut release = valid_release();
 
     assert!(asset_sha256(&release, "codex-package-x86_64-unknown-linux-musl.tar.gz").is_ok());
     release.assets[1].digest = None;
@@ -64,6 +68,48 @@ fn windows_user_path_prioritizes_upstream_and_removes_the_fork() {
         ),
         r"c:\upstream;C:\Tools"
     );
+}
+
+#[tokio::test]
+async fn valid_install_contexts_preflight_fork_and_upstream_provenance() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let generation = "20260715T1200000000000Z";
+    let release_dir = temp.path().join(generation);
+    let shim_dir = temp.path().join("shim");
+    fs::create_dir_all(release_dir.join("bin"))?;
+    fs::create_dir_all(&shim_dir)?;
+    fs::write(release_dir.join("bin/codex"), b"preserved fork")?;
+    fs::write(shim_dir.join("codex"), b"fork shim")?;
+    fs::write(shim_dir.join(".codex-plus-plus-current"), generation)?;
+    let context = InstallContext {
+        method: InstallMethod::Standalone {
+            release_dir: AbsolutePathBuf::from_absolute_path(&release_dir)?,
+            resources_dir: None,
+            platform: StandalonePlatform::Unix,
+        },
+        package_layout: None,
+    };
+    let plan = UpdatePlan::for_install_context(&context, UpdateChannel::Upstream);
+
+    for (version, expected) in [("0.144.4-fork.1", Some("0.145.0")), ("0.145.0", None)] {
+        fs::write(
+            release_dir.join("codex-package.json"),
+            format!(r#"{{"version":"{version}","target":"x86_64-unknown-linux-musl"}}"#),
+        )?;
+        let switch = preflight_with_sources(
+            &context,
+            plan,
+            || Ok(shim_dir.clone()),
+            |_| std::future::ready(Ok((valid_release(), "rust-v"))),
+        )
+        .await?;
+
+        assert_eq!(
+            switch.map(|switch| switch.upstream_version),
+            expected.map(str::to_string)
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
