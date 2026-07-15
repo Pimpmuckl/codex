@@ -1,3 +1,4 @@
+use super::standalone_switch;
 use anyhow::Context;
 use codex_core::config::Config;
 use codex_install_context::InstallContext;
@@ -130,12 +131,14 @@ enum ProfileHandoff {
 enum Preflight {
     AlreadyUpstream,
     Package(PackageSwitch),
+    Standalone(standalone_switch::StandaloneSwitch),
 }
 
 impl Preflight {
     fn upstream_version(&self) -> &str {
         match self {
             Self::Package(switch) => &switch.upstream.version,
+            Self::Standalone(switch) => &switch.upstream_version,
             Self::AlreadyUpstream => unreachable!("no-op switches have no target version"),
         }
     }
@@ -190,6 +193,11 @@ impl SwitchAdapter for SystemAdapter {
                 )
                 .await
             }
+            (UpdateTarget::Standalone { .. }, UpdateTarget::Standalone { .. }) => {
+                Ok(standalone_switch::preflight(&self.context, upstream_plan)
+                    .await?
+                    .map_or(Preflight::AlreadyUpstream, Preflight::Standalone))
+            }
             _ => anyhow::bail!(
                 "this Codex++ installation cannot be switched automatically; reinstall upstream Codex manually"
             ),
@@ -217,6 +225,7 @@ impl SwitchAdapter for SystemAdapter {
                 uninstall_package(switch.manager, switch.rollback.package)?;
                 install_package(switch.manager, &switch.upstream.exact_spec())
             }
+            Preflight::Standalone(switch) => standalone_switch::install_upstream(switch),
             Preflight::AlreadyUpstream => Ok(()),
         }
     }
@@ -224,6 +233,7 @@ impl SwitchAdapter for SystemAdapter {
     fn verify_upstream(&mut self, preflight: &Preflight) -> anyhow::Result<()> {
         match preflight {
             Preflight::Package(switch) => verify_visible_version(&switch.upstream.version),
+            Preflight::Standalone(switch) => standalone_switch::verify_upstream(switch),
             Preflight::AlreadyUpstream => Ok(()),
         }
     }
@@ -235,6 +245,7 @@ impl SwitchAdapter for SystemAdapter {
                 install_package(switch.manager, &switch.rollback.exact_spec())?;
                 verify_visible_version(&switch.rollback.version)
             }
+            Preflight::Standalone(switch) => standalone_switch::rollback_fork(switch),
             Preflight::AlreadyUpstream => Ok(()),
         }
     }
@@ -306,10 +317,18 @@ struct NpmDist {
 }
 
 #[derive(Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    draft: bool,
-    prerelease: bool,
+pub(super) struct GithubRelease {
+    pub(super) tag_name: String,
+    pub(super) draft: bool,
+    pub(super) prerelease: bool,
+    #[serde(default)]
+    pub(super) assets: Vec<GithubAsset>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GithubAsset {
+    pub(super) name: String,
+    pub(super) digest: Option<String>,
 }
 
 enum PackageSelector<'a> {
@@ -352,7 +371,9 @@ async fn verified_package(
     Ok(VerifiedPackageArtifact { package, version })
 }
 
-async fn latest_release(plan: UpdatePlan) -> anyhow::Result<(GithubRelease, &'static str)> {
+pub(super) async fn latest_release(
+    plan: UpdatePlan,
+) -> anyhow::Result<(GithubRelease, &'static str)> {
     let LatestVersionSource::GitHub {
         api_url,
         tag_prefix,
@@ -374,7 +395,10 @@ async fn fetch_json<T: DeserializeOwned>(url: &str) -> anyhow::Result<T> {
         .await?)
 }
 
-fn stable_release_version(release: &GithubRelease, prefix: &str) -> anyhow::Result<String> {
+pub(super) fn stable_release_version(
+    release: &GithubRelease,
+    prefix: &str,
+) -> anyhow::Result<String> {
     let version = release.tag_name.strip_prefix(prefix).unwrap_or_default();
     if release.draft
         || release.prerelease
@@ -386,7 +410,7 @@ fn stable_release_version(release: &GithubRelease, prefix: &str) -> anyhow::Resu
     Ok(version.to_string())
 }
 
-fn absolute_env(name: &str) -> anyhow::Result<PathBuf> {
+pub(super) fn absolute_env(name: &str) -> anyhow::Result<PathBuf> {
     let path =
         PathBuf::from(std::env::var_os(name).ok_or_else(|| anyhow::anyhow!("{name} is not set"))?);
     if !path.is_absolute() {
@@ -395,7 +419,7 @@ fn absolute_env(name: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn read_json<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
+pub(super) fn read_json<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     serde_json::from_reader(
         std::fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
@@ -476,7 +500,7 @@ fn manager_global_root(
     }
 }
 
-fn run_quiet(mut command: Command, label: &str) -> anyhow::Result<()> {
+pub(super) fn run_quiet(mut command: Command, label: &str) -> anyhow::Result<()> {
     let output = command
         .output()
         .with_context(|| format!("failed to run {label}"))?;
