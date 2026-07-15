@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -552,6 +553,7 @@ def main() -> int:
             print(f"Staging {package} in {staging_dir}", flush=True)
 
             cmd = [
+                sys.executable,
                 str(BUILD_SCRIPT),
                 "--package",
                 package,
