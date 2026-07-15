@@ -618,6 +618,16 @@ pub(super) fn create_auth_storage(
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
 }
 
+pub(crate) fn save_file_auth_if_unchanged(
+    codex_home: &Path,
+    expected: &AuthDotJson,
+    auth: &AuthDotJson,
+    guard: &AuthRefreshGuard,
+) -> std::io::Result<()> {
+    guard.ensure_matches(codex_home)?;
+    atomic_file::AtomicFileStorage::new(codex_home.to_path_buf()).save_if_unchanged(expected, auth)
+}
+
 pub(super) fn create_auth_storage_with_store(
     codex_home: PathBuf,
     mode: AuthCredentialsStoreMode,

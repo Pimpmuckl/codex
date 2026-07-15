@@ -39,6 +39,20 @@ fn save_recovers_at_every_durable_boundary() -> anyhow::Result<()> {
     std::fs::write(home.path().join("auth.json"), drift)?;
     let error = storage.load().unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let home = tempdir()?;
+    let storage = AtomicFileStorage::new(home.path().to_path_buf());
+    let old = auth("old");
+    storage.save(&old)?;
+    storage.fail_once(FaultPoint::BeforeReplace);
+    assert!(storage.save_if_unchanged(&old, &auth("new")).is_err());
+    let drift = auth("drift");
+    std::fs::write(storage.auth_path(), serde_json::to_vec_pretty(&drift)?)?;
+    assert_eq!(storage.load()?, Some(drift));
+    assert!(artifacts(home.path())?.is_empty());
+    let pending = format!("{PENDING_PREFIX}cas-{NONE_FINGERPRINT}-{NONE_FINGERPRINT}");
+    std::fs::write(home.path().join(pending), b"not json")?;
+    assert_eq!(storage.load()?, Some(auth("drift")));
+    assert!(artifacts(home.path())?.is_empty());
     for bytes in [
         b"not json".to_vec(),
         vec![b'x'; MAX_AUTH_BYTES as usize + 1],
@@ -54,5 +68,16 @@ fn save_recovers_at_every_durable_boundary() -> anyhow::Result<()> {
         assert_eq!(storage.load()?, None);
         assert!(artifacts(home.path())?.is_empty());
     }
+    let home = tempdir()?;
+    let storage = AtomicFileStorage::new(home.path().to_path_buf());
+    let expected = auth("expected");
+    let changed = auth("changed");
+    storage.save(&expected)?;
+    std::fs::write(storage.auth_path(), serde_json::to_vec_pretty(&changed)?)?;
+    let error = storage
+        .save_if_unchanged(&expected, &auth("new"))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(storage.load()?, Some(changed));
     Ok(())
 }

@@ -45,6 +45,21 @@ impl AtomicFileStorage {
         read_auth(&self.auth_path())
     }
     pub(in crate::auth::storage) fn save(&self, auth: &AuthDotJson) -> io::Result<()> {
+        self.save_inner(/*expected*/ None, auth).map(drop)
+    }
+    pub(in crate::auth::storage) fn save_if_unchanged(
+        &self,
+        expected: &AuthDotJson,
+        auth: &AuthDotJson,
+    ) -> io::Result<()> {
+        let expected = fingerprint(expected)?;
+        if self.save_inner(Some(&expected), auth)? {
+            Ok(())
+        } else {
+            Err(auth_changed())
+        }
+    }
+    fn save_inner(&self, expected: Option<&str>, auth: &AuthDotJson) -> io::Result<bool> {
         std::fs::create_dir_all(&self.codex_home)?;
         if let Some(parent) = self.codex_home.parent() {
             sync_directory(parent)?;
@@ -52,10 +67,14 @@ impl AtomicFileStorage {
         self.recover_save()?;
         let prior_fingerprint =
             file_fingerprint(&self.auth_path())?.unwrap_or_else(|| NONE_FINGERPRINT.to_string());
+        if expected.is_some_and(|expected| expected != prior_fingerprint) {
+            return Ok(false);
+        }
         let new_fingerprint = fingerprint(auth)?;
         let prior_short = short_fingerprint(&prior_fingerprint);
         let new_short = short_fingerprint(&new_fingerprint);
-        let pending = format!("{PENDING_PREFIX}{prior_short}-{new_short}");
+        let prefix = expected.map_or(PENDING_PREFIX, |_| ".codex-auth-cas-");
+        let pending = format!("{prefix}{prior_short}-{new_short}");
         let pending = self.codex_home.join(pending);
         let bytes = serde_json::to_vec_pretty(auth).map_err(io::Error::other)?;
         if bytes.len() as u64 > MAX_AUTH_BYTES {
@@ -72,16 +91,24 @@ impl AtomicFileStorage {
         self.hit(FaultPoint::AfterPendingSync)?;
         sync_directory(&self.codex_home)?;
         self.hit(FaultPoint::BeforeReplace)?;
-        self.promote_pending(&pending, prior_short, new_short)?;
+        if !self.promote_pending(&pending, prior_short, new_short)? {
+            if expected.is_some() {
+                std::fs::remove_file(&pending)?;
+                sync_directory(&self.codex_home)?;
+                return Ok(false);
+            }
+            return Err(invalid_data("current auth fingerprint changed"));
+        }
         self.hit(FaultPoint::AfterReplace)?;
         sync_directory(&self.codex_home)?;
-        self.hit(FaultPoint::AfterReplaceDirectorySync)
+        self.hit(FaultPoint::AfterReplaceDirectorySync)?;
+        Ok(true)
     }
     pub(super) fn recover_save(&self) -> io::Result<()> {
         let Some(pending) = single_artifact(&self.codex_home)? else {
             return Ok(());
         };
-        let (prior, new) = pending
+        let (prior, new, conditional) = pending
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(pending_hashes)
@@ -94,7 +121,7 @@ impl AtomicFileStorage {
             let current = file_fingerprint(&self.auth_path())?;
             let current = current.as_deref().map(short_fingerprint);
             let expected_prior = (prior != NONE_FINGERPRINT).then_some(prior);
-            if current == expected_prior || current == Some(new) {
+            if conditional || current == expected_prior || current == Some(new) {
                 std::fs::remove_file(pending)?;
                 return sync_directory(&self.codex_home);
             }
@@ -105,10 +132,16 @@ impl AtomicFileStorage {
             Err(err) => return Err(err),
         }
         OpenOptions::new().write(true).open(&pending)?.sync_all()?;
-        self.promote_pending(&pending, prior, new)?;
+        if !self.promote_pending(&pending, prior, new)? {
+            if conditional {
+                std::fs::remove_file(pending)?;
+                return sync_directory(&self.codex_home);
+            }
+            return Err(invalid_data("current auth fingerprint changed"));
+        }
         sync_directory(&self.codex_home)
     }
-    fn promote_pending(&self, pending: &Path, prior: &str, new: &str) -> io::Result<()> {
+    fn promote_pending(&self, pending: &Path, prior: &str, new: &str) -> io::Result<bool> {
         let pending_auth =
             read_auth(pending)?.ok_or_else(|| invalid_data("pending auth payload is missing"))?;
         if short_fingerprint(&fingerprint(&pending_auth)?) != new {
@@ -118,13 +151,14 @@ impl AtomicFileStorage {
         let current_fingerprint = current_fingerprint.as_deref().map(short_fingerprint);
         if current_fingerprint == Some(new) {
             std::fs::remove_file(pending)?;
-            return Ok(());
+            return Ok(true);
         }
         let expected_prior = (prior != NONE_FINGERPRINT).then_some(prior);
         if current_fingerprint != expected_prior {
-            return Err(invalid_data("current auth fingerprint changed"));
+            return Ok(false);
         }
-        crate::account::replace_file(pending, &self.auth_path())
+        crate::account::replace_file(pending, &self.auth_path())?;
+        Ok(true)
     }
     fn auth_path(&self) -> PathBuf {
         self.codex_home.join("auth.json")
@@ -228,11 +262,14 @@ fn single_artifact(directory: &Path) -> io::Result<Option<PathBuf>> {
     }
     Ok(matches.into_iter().next())
 }
-fn pending_hashes(name: &str) -> Option<(&str, &str)> {
+fn pending_hashes(name: &str) -> Option<(&str, &str, bool)> {
     let encoded = name.strip_prefix(PENDING_PREFIX)?;
+    let conditional = encoded.starts_with("cas-");
+    let encoded = encoded.strip_prefix("cas-").unwrap_or(encoded);
     encoded
         .split_once('-')
         .filter(|(prior, new)| valid_hash(prior) && valid_hash(new))
+        .map(|(prior, new)| (prior, new, conditional))
 }
 fn valid_hash(value: &str) -> bool {
     value.len() == NONE_FINGERPRINT.len()
@@ -245,6 +282,12 @@ fn short_fingerprint(value: &str) -> &str {
 }
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+fn auth_changed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "current auth fingerprint changed",
+    )
 }
 #[cfg(unix)]
 fn sync_directory(directory: &Path) -> io::Result<()> {
