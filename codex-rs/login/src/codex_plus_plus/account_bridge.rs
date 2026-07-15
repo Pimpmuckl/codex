@@ -3,8 +3,10 @@ use super::*;
 #[derive(Clone, Debug, PartialEq)]
 pub enum AccountHandoffOutcome {
     NoHandoff,
+    UnavailableForEphemeralStore,
     Completed(AccountProfile),
     PreservedNewerProfile(AccountProfile),
+    RootRetained(AccountProfile),
 }
 
 impl AccountStore {
@@ -13,6 +15,9 @@ impl AccountStore {
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> io::Result<AccountHandoffOutcome> {
+        if root_store_mode == AuthCredentialsStoreMode::Ephemeral {
+            return Ok(AccountHandoffOutcome::UnavailableForEphemeralStore);
+        }
         let root_refresh_guard = AuthRefreshGuard::acquire(&self.codex_home)?;
         let Some(root_marker) = load_auth_dot_json_with_guard(
             &self.codex_home,
@@ -51,13 +56,22 @@ impl AccountStore {
             return Ok(AccountHandoffOutcome::NoHandoff);
         }
 
-        save_auth_with_guard(
-            &self.codex_home,
-            &auth,
-            root_store_mode,
-            root_keyring_backend_kind,
-            &root_refresh_guard,
-        )?;
+        if root_store_mode == AuthCredentialsStoreMode::File {
+            save_file_auth_if_unchanged(
+                &self.codex_home,
+                &root_marker,
+                &auth,
+                &root_refresh_guard,
+            )?;
+        } else {
+            save_auth_with_guard(
+                &self.codex_home,
+                &auth,
+                root_store_mode,
+                root_keyring_backend_kind,
+                &root_refresh_guard,
+            )?;
+        }
         Ok(AccountHandoffOutcome::Completed(profile))
     }
 
@@ -66,6 +80,9 @@ impl AccountStore {
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> io::Result<AccountHandoffOutcome> {
+        if root_store_mode == AuthCredentialsStoreMode::Ephemeral {
+            return Ok(AccountHandoffOutcome::UnavailableForEphemeralStore);
+        }
         let root_refresh_guard = AuthRefreshGuard::acquire(&self.codex_home)?;
         let Some(root_auth) = load_auth_dot_json_with_guard(
             &self.codex_home,
@@ -132,13 +149,17 @@ impl AccountStore {
             return Err(err);
         }
 
-        if let Err(err) = save_root_account_marker(
-            &self.codex_home,
-            reconciled_auth,
-            root_store_mode,
-            root_keyring_backend_kind,
-            &root_refresh_guard,
-        ) {
+        if root_store_mode != AuthCredentialsStoreMode::File {
+            return Ok(AccountHandoffOutcome::RootRetained(profile));
+        }
+
+        let mut marker = reconciled_auth.clone();
+        if let Some(tokens) = marker.tokens.as_mut() {
+            tokens.refresh_token.clear();
+        }
+        if let Err(err) =
+            save_file_auth_if_unchanged(&self.codex_home, &root_auth, &marker, &root_refresh_guard)
+        {
             let mut rollback_errors = Vec::new();
             if index_changed && let Err(rollback_err) = self.save_index(&previous_index) {
                 rollback_errors.push(format!("restore account index: {rollback_err}"));
@@ -152,14 +173,19 @@ impl AccountStore {
             {
                 rollback_errors.push(format!("restore account auth: {rollback_err}"));
             }
-            if let Err(rollback_err) = save_auth_with_guard(
-                &self.codex_home,
-                &root_auth,
-                root_store_mode,
-                root_keyring_backend_kind,
-                &root_refresh_guard,
-            ) {
-                rollback_errors.push(format!("restore root auth: {rollback_err}"));
+            if err.kind() != io::ErrorKind::WouldBlock {
+                match save_file_auth_if_unchanged(
+                    &self.codex_home,
+                    &marker,
+                    &root_auth,
+                    &root_refresh_guard,
+                ) {
+                    Ok(()) => {}
+                    Err(rollback_err) if rollback_err.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(rollback_err) => {
+                        rollback_errors.push(format!("restore root auth: {rollback_err}"));
+                    }
+                }
             }
             return if rollback_errors.is_empty() {
                 Err(err)
