@@ -511,9 +511,17 @@ def tarball_name_for_package(package: str, version: str) -> str:
 def main() -> int:
     args = parse_args()
 
-    if args.vendor_src is None and any(
+    requires_fork_vendor = any(
         package in PACKAGES_REQUIRING_VENDOR_SRC for package in args.packages
-    ):
+    )
+    mixes_upstream = requires_fork_vendor and any(
+        package not in PACKAGES_REQUIRING_VENDOR_SRC
+        and (package in PACKAGE_EXPANSIONS or package in CODEX_PLATFORM_PACKAGES)
+        for package in args.packages
+    )
+    if mixes_upstream:
+        raise RuntimeError("Codex and Codex++ npm packages must be staged separately.")
+    if requires_fork_vendor and args.vendor_src is None:
         raise RuntimeError("--vendor-src is required for Codex++ npm packages.")
     if args.vendor_src is not None and (
         args.workflow_url is not None or args.artifacts_dir is not None

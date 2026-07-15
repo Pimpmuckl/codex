@@ -64,7 +64,6 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
     def test_expands_only_supported_payloads_and_requires_fork_artifacts(self):
         packages = stage.expand_packages(["codex-plus-plus"])
         self.assertEqual(packages, ["codex-plus-plus", *PLATFORMS])
-        self.assertNotIn("codex", build.PACKAGES_REQUIRING_VENDOR_SRC)
         components = stage.native_components_for_package(next(iter(PLATFORMS)))
         self.assertEqual(
             stage.native_targets_for_component_set(packages, components),
@@ -79,6 +78,10 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         ]
         with patch.object(sys, "argv", argv):
             with self.assertRaisesRegex(RuntimeError, "--vendor-src is required"):
+                stage.main()
+        argv.extend(["--package", "codex", "--vendor-src", "."])
+        with patch.object(sys, "argv", argv):
+            with self.assertRaisesRegex(RuntimeError, "must be staged separately"):
                 stage.main()
 
     def test_stages_root_and_platform_tarballs_from_fixture_vendor(self):
@@ -172,7 +175,3 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             if manifest_file is None:
                 raise AssertionError(f"Missing package.json in {path}")
             return json.load(manifest_file), set(archive.getnames())
-
-
-if __name__ == "__main__":
-    unittest.main()
