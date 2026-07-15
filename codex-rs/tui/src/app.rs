@@ -1173,6 +1173,23 @@ See the Codex keymap documentation for supported actions and examples."
                 AppRunControl::Continue => None,
                 AppRunControl::Exit(exit_reason) => Some(exit_reason),
             }
+        } else if let Some(lag_warning) = crate::codex_plus_plus::lag_warning(
+            &UpdateAction::read_cached_fork_release_status(
+                app.config.codex_home.as_path(),
+                CODEX_CLI_VERSION,
+            ),
+            app.config.codex_home.as_path(),
+        ) {
+            let control = Box::pin(app.handle_event(
+                tui,
+                &mut app_server,
+                AppEvent::InsertHistoryCell(Box::new(lag_warning)),
+            ))
+            .await?;
+            match control {
+                AppRunControl::Continue => None,
+                AppRunControl::Exit(exit_reason) => Some(exit_reason),
+            }
         } else {
             None
         };
