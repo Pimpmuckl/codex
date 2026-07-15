@@ -439,18 +439,16 @@ fn ensure_manager_targets_root(
         PackageManager::Npm | PackageManager::Pnpm => command.args(["root", "-g"]),
         PackageManager::Bun => command.args(["pm", "bin", "-g"]),
     };
-    let output = command.output().context("failed to inspect package-manager root")?;
-    if !output.status.success() {
-        anyhow::bail!("package-manager root check failed with status {}", output.status);
-    }
+    let output = command
+        .output()
+        .context("failed to inspect package-manager root")?;
+    anyhow::ensure!(output.status.success(), "package-manager root check failed");
     let stdout = String::from_utf8(output.stdout).context("package-manager root was not UTF-8")?;
     let bun_global_dir = std::env::var_os("BUN_INSTALL_GLOBAL_DIR").map(PathBuf::from);
     let target = manager_global_root(manager, &stdout, bun_global_dir.as_deref())?.join(package);
-    let running = running_root.canonicalize().context("failed to resolve running package")?;
-    let target = target.canonicalize().context("failed to resolve package-manager target")?;
-    if running != target {
-        anyhow::bail!("package manager targets {}, not running package {}", target.display(), running.display());
-    }
+    let running = running_root.canonicalize()?;
+    let target = target.canonicalize()?;
+    anyhow::ensure!(running == target, "wrong package-manager target");
     Ok(())
 }
 
@@ -459,11 +457,8 @@ fn manager_global_root(
     stdout: &str,
     bun_global_dir: Option<&Path>,
 ) -> anyhow::Result<PathBuf> {
-    let reported = stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("package manager returned an empty root"))?;
+    let reported = stdout.trim();
+    anyhow::ensure!(!reported.is_empty(), "empty package-manager root");
     match (manager, bun_global_dir) {
         (PackageManager::Bun, Some(path)) => Ok(path.join("node_modules")),
         (PackageManager::Bun, None) => Ok(Path::new(reported)
