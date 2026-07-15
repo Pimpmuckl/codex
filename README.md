@@ -10,11 +10,11 @@ Codex++ is a lean fork of upstream [OpenAI Codex](https://github.com/openai/code
 
 - Multi-account support
   - Add ChatGPT accounts with `codex account add`.
-  - Automatically fail over when the active account reaches a usage limit.
+  - Automatically fail over with no interruption when the active account reaches a usage limit.
   - Use `/accounts` to enable or disable accounts and their automation.
-  - Auto-chooses a reasonable available account on startup while respecting five-hour and weekly usage windows.
+  - Auto-chooses an account on startup, respecting five-hour and weekly usage windows.
   - Avoids accounts already in use by another Codex++ process.
-  - Automatically starts usage weekly limits
+  - Automatically starts usage weekly limits when configured.
 - Hook-requested review under `--yolo`
   - Supports `permissionDecision: "ask"` from `PreToolUse` hooks even when Codex runs with `--yolo`.
   - For example, a destructive-command guard can request a Guardian auto-review instead of only allowing or denying the command itself.
