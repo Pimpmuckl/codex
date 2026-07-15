@@ -23,6 +23,13 @@ use std::process::Command;
 const MANAGED_PACKAGE_ROOT_ENV: &str = "CODEX_MANAGED_PACKAGE_ROOT";
 
 pub(crate) async fn run(config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    if !std::env::args_os()
+        .skip(1)
+        .eq(["update", "upstream"].map(std::ffi::OsString::from))
+    {
+        anyhow::bail!("on Windows, rerun exactly as `codex update upstream`");
+    }
     let overrides = config_overrides
         .parse_overrides()
         .map_err(|err| anyhow::anyhow!("error parsing -c overrides: {err}"))?;
