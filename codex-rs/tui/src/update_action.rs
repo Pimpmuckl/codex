@@ -1,9 +1,12 @@
-#[cfg(any(not(debug_assertions), test))]
 use codex_install_context::InstallContext;
-#[cfg(any(not(debug_assertions), test))]
-use codex_install_context::InstallMethod;
-#[cfg(any(not(debug_assertions), test))]
 use codex_install_context::StandalonePlatform;
+use codex_install_context::codex_plus_plus::PackageManager;
+use codex_install_context::codex_plus_plus::UpdateChannel;
+use codex_install_context::codex_plus_plus::UpdatePlan;
+use codex_install_context::codex_plus_plus::UpdateTarget;
+
+#[path = "codex_plus_plus/update_action.rs"]
+mod codex_plus_plus;
 
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,39 +23,69 @@ pub enum UpdateAction {
     StandaloneUnix,
     /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
     StandaloneWindows,
+    CodexPlusPlusPackageManager(PackageManager),
+    CodexPlusPlusStandalone(StandalonePlatform),
 }
 
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
-        match &context.method {
-            InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
-            InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
-            InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
-            InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
-            InstallMethod::Standalone { platform, .. } => Some(match platform {
-                StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
-                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
-            }),
-            InstallMethod::Other => None,
+        Self::from_update_plan(UpdatePlan::for_install_context(
+            context,
+            UpdateChannel::CodexPlusPlus,
+        ))
+    }
+
+    pub fn from_update_plan(plan: UpdatePlan) -> Option<Self> {
+        if plan.channel() == UpdateChannel::CodexPlusPlus {
+            let shim_dir =
+                std::env::var_os("CODEX_PLUS_PLUS_SHIM_DIR").map(std::path::PathBuf::from);
+            return codex_plus_plus::from_target(plan.target(), shim_dir.as_deref());
         }
+        match plan.target() {
+            UpdateTarget::PackageManager { manager, .. } => Some(match manager {
+                PackageManager::Npm => Self::NpmGlobalLatest,
+                PackageManager::Bun => Self::BunGlobalLatest,
+                PackageManager::Pnpm => Self::PnpmGlobalLatest,
+            }),
+            UpdateTarget::Standalone { platform, .. } => Some(match platform {
+                StandalonePlatform::Unix => Self::StandaloneUnix,
+                StandalonePlatform::Windows => Self::StandaloneWindows,
+            }),
+            UpdateTarget::Homebrew => Some(Self::BrewUpgrade),
+            UpdateTarget::Manual => None,
+        }
+    }
+
+    pub fn current_plan() -> UpdatePlan {
+        UpdatePlan::for_install_context(InstallContext::current(), UpdateChannel::CodexPlusPlus)
+    }
+
+    pub(crate) fn release_notes_url(self) -> &'static str {
+        match self {
+            Self::CodexPlusPlusPackageManager(_) | Self::CodexPlusPlusStandalone(_) => {
+                UpdateChannel::CodexPlusPlus
+            }
+            _ => UpdateChannel::Upstream,
+        }
+        .release_notes_url()
     }
 
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
+            Self::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
+            Self::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            Self::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
+            Self::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            Self::StandaloneUnix => (
                 "sh",
                 &[
                     "-c",
                     "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
                 ],
             ),
-            UpdateAction::StandaloneWindows => (
+            Self::StandaloneWindows => (
                 "powershell",
                 &[
                     "-ExecutionPolicy",
@@ -61,7 +94,20 @@ impl UpdateAction {
                     "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
                 ],
             ),
+            Self::CodexPlusPlusPackageManager(manager) => {
+                codex_plus_plus::package_manager_command_args(manager)
+            }
+            Self::CodexPlusPlusStandalone(platform) => {
+                codex_plus_plus::standalone_command_args(platform)
+            }
         }
+    }
+
+    pub fn requires_direct_execution(self) -> bool {
+        matches!(
+            self,
+            Self::StandaloneWindows | Self::CodexPlusPlusStandalone(StandalonePlatform::Windows)
+        )
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
@@ -79,7 +125,15 @@ pub fn get_update_action() -> Option<UpdateAction> {
 
 #[cfg(test)]
 mod tests {
+    use super::codex_plus_plus::from_target;
     use super::*;
+    use codex_install_context::InstallMethod;
+    use codex_install_context::StandalonePlatform::Unix;
+    use codex_install_context::StandalonePlatform::Windows;
+    use codex_install_context::codex_plus_plus::PackageManager::Bun;
+    use codex_install_context::codex_plus_plus::PackageManager::Npm;
+    use codex_install_context::codex_plus_plus::PackageManager::Pnpm;
+    use codex_install_context::codex_plus_plus::UpdateTarget::Standalone;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
 
@@ -88,6 +142,12 @@ mod tests {
         let native_release_dir =
             AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
                 .expect("temp dir path should be absolute");
+        let target = Standalone {
+            platform: Unix,
+            installer_url: "unused",
+        };
+        let shim_dir = std::env::var_os("CODEX_PLUS_PLUS_SHIM_DIR").map(std::path::PathBuf::from);
+        let available = shim_dir.is_some_and(|dir| from_target(target, Some(&dir)).is_some());
 
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -101,28 +161,28 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            Some(UpdateAction::NpmGlobalLatest)
+            Some(UpdateAction::CodexPlusPlusPackageManager(Npm))
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Bun,
                 package_layout: None,
             }),
-            Some(UpdateAction::BunGlobalLatest)
+            Some(UpdateAction::CodexPlusPlusPackageManager(Bun))
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            Some(UpdateAction::PnpmGlobalLatest)
+            Some(UpdateAction::CodexPlusPlusPackageManager(Pnpm))
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Brew,
                 package_layout: None,
             }),
-            Some(UpdateAction::BrewUpgrade)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -133,7 +193,7 @@ mod tests {
                 },
                 package_layout: None,
             }),
-            Some(UpdateAction::StandaloneUnix)
+            available.then_some(UpdateAction::CodexPlusPlusStandalone(Unix))
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -144,8 +204,12 @@ mod tests {
                 },
                 package_layout: None,
             }),
-            Some(UpdateAction::StandaloneWindows)
+            available.then_some(UpdateAction::CodexPlusPlusStandalone(Windows))
         );
+        let shim_dir = tempfile::tempdir().expect("tempdir");
+        let expected = Some(UpdateAction::CodexPlusPlusStandalone(Unix));
+        assert_eq!(from_target(target, Some(shim_dir.path())), expected);
+        assert!(from_target(target, Some(&shim_dir.path().join("missing"))).is_none());
     }
 
     #[test]

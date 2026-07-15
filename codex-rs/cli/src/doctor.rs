@@ -43,6 +43,8 @@ use codex_install_context::CodexPackageLayout;
 use codex_install_context::InstallContext;
 use codex_install_context::InstallMethod;
 use codex_install_context::StandalonePlatform;
+use codex_install_context::codex_plus_plus::UpdateChannel;
+use codex_install_context::codex_plus_plus::UpdatePlan;
 use codex_login::AuthDotJson;
 use codex_login::AuthManager;
 use codex_login::CODEX_ACCESS_TOKEN_ENV_VAR;
@@ -828,8 +830,12 @@ fn installation_check(show_details: bool) -> DoctorCheck {
         );
     }
 
-    if doctor_managed_by_npm(current_exe.as_deref()) {
-        match npm_global_root_check() {
+    if doctor_managed_by_npm(current_exe.as_deref())
+        && let Some(package) =
+            UpdatePlan::for_install_context(&install_context, UpdateChannel::CodexPlusPlus)
+                .package_manager_package()
+    {
+        match npm_global_root_check(package) {
             NpmRootCheck::Match { package_root } => {
                 details.push(format!("npm update target: {}", package_root.display()));
             }
@@ -838,8 +844,7 @@ fn installation_check(show_details: bool) -> DoctorCheck {
                 npm_package_root,
             } => {
                 status = CheckStatus::Fail;
-                summary =
-                    "npm install -g @openai/codex would update a different install".to_string();
+                summary = format!("npm install -g {package} would update a different install");
                 remediation = Some(format!(
                     "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
                     running_package_root.display(),
@@ -994,7 +999,7 @@ enum NpmRootCheck {
     NpmUnavailable(String),
 }
 
-fn npm_global_root_check() -> NpmRootCheck {
+fn npm_global_root_check(package: &str) -> NpmRootCheck {
     let Some(running_package_root) = env::var_os("CODEX_MANAGED_PACKAGE_ROOT").map(PathBuf::from)
     else {
         return NpmRootCheck::MissingPackageRoot;
@@ -1008,11 +1013,15 @@ fn npm_global_root_check() -> NpmRootCheck {
         return NpmRootCheck::NpmUnavailable("empty output from npm root -g".to_string());
     };
 
-    compare_npm_package_roots(&running_package_root, &PathBuf::from(npm_root))
+    compare_npm_package_roots(&running_package_root, &PathBuf::from(npm_root), package)
 }
 
-fn compare_npm_package_roots(running_package_root: &Path, npm_root: &Path) -> NpmRootCheck {
-    let npm_package_root = npm_root.join("@openai").join("codex");
+fn compare_npm_package_roots(
+    running_package_root: &Path,
+    npm_root: &Path,
+    package: &str,
+) -> NpmRootCheck {
+    let npm_package_root = npm_root.join(package);
     let running = normalize_path_for_compare(running_package_root);
     let target = normalize_path_for_compare(&npm_package_root);
     if running == target {
@@ -3210,7 +3219,7 @@ mod tests {
         let running = PathBuf::from("/prefix/lib/node_modules/@openai/codex");
         let npm_root = PathBuf::from("/prefix/lib/node_modules");
         assert_eq!(
-            compare_npm_package_roots(&running, &npm_root),
+            compare_npm_package_roots(&running, &npm_root, "@openai/codex"),
             NpmRootCheck::Match {
                 package_root: npm_root.join("@openai").join("codex")
             }
@@ -3222,7 +3231,7 @@ mod tests {
         let running = PathBuf::from("/old/lib/node_modules/@openai/codex");
         let npm_root = PathBuf::from("/new/lib/node_modules");
         assert_eq!(
-            compare_npm_package_roots(&running, &npm_root),
+            compare_npm_package_roots(&running, &npm_root, "@openai/codex"),
             NpmRootCheck::Mismatch {
                 running_package_root: running,
                 npm_package_root: npm_root.join("@openai").join("codex"),
