@@ -11,6 +11,7 @@ import {
   platformPackageForTarget,
   targetTripleForPlatform,
 } from "./launcher.js";
+import { stageWindowsUpstreamExecutable } from "./codex_plus_plus/windows_upstream_launcher.js";
 
 // __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -50,6 +51,8 @@ function findCodexExecutable() {
 }
 
 const binaryPath = findCodexExecutable();
+const args = process.argv.slice(2);
+const stagedExecutable = stageWindowsUpstreamExecutable(binaryPath, args);
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to
 // respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
@@ -134,12 +137,13 @@ delete env.CODEX_MANAGED_BY_BUN;
 delete env.CODEX_MANAGED_BY_PNPM;
 env[packageManagerEnvVar] = "1";
 
-const child = spawn(binaryPath, process.argv.slice(2), {
+const child = spawn(stagedExecutable.binaryPath, args, {
   stdio: "inherit",
   env,
 });
 
 child.on("error", (err) => {
+  stagedExecutable.cleanup?.();
   // Typically triggered when the binary is missing or not executable.
   // Re-throwing here will terminate the parent with a non-zero exit code
   // while still printing a helpful stack trace.
@@ -181,6 +185,8 @@ const childResult = await new Promise((resolve) => {
     }
   });
 });
+
+stagedExecutable.cleanup?.();
 
 if (childResult.type === "signal") {
   // Re-emit the same signal so that the parent terminates with the expected

@@ -12,7 +12,8 @@
   },
   "files": [
     "bin/codex.js",
-    "bin/launcher.js"
+    "bin/launcher.js",
+    "bin/codex_plus_plus/windows_upstream_launcher.js"
   ],
   "repository": {
     "type": "git",

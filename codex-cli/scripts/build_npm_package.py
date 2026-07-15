@@ -262,6 +262,15 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "launcher.js", bin_dir / "launcher.js")
+        codex_plus_plus_dir = bin_dir / "codex_plus_plus"
+        codex_plus_plus_dir.mkdir()
+        shutil.copy2(
+            CODEX_CLI_ROOT
+            / "bin"
+            / "codex_plus_plus"
+            / "windows_upstream_launcher.js",
+            codex_plus_plus_dir / "windows_upstream_launcher.js",
+        )
 
         readme_src = REPO_ROOT / "README.md"
         if readme_src.exists():
@@ -327,7 +336,11 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         platform_packages = root_package["platform_packages"]
         package_json["name"] = root_package["npm_name"]
         package_json["bin"] = root_package["bin"]
-        package_json["files"] = ["bin/codex.js", "bin/launcher.js"]
+        package_json["files"] = [
+            "bin/codex.js",
+            "bin/launcher.js",
+            "bin/codex_plus_plus/windows_upstream_launcher.js",
+        ]
         package_json["optionalDependencies"] = {
             platform_config["npm_name"]: (
                 f"npm:{root_package['npm_name']}@"
