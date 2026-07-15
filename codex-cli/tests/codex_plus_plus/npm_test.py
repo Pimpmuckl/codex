@@ -138,6 +138,10 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             )
             self.assertIn("package/bin/codex.js", root_members)
             self.assertIn("package/bin/launcher.js", root_members)
+            self.assertIn(
+                "package/bin/codex_plus_plus/windows_upstream_launcher.js",
+                root_members,
+            )
 
             for package, config in PLATFORMS.items():
                 with self.subTest(package=package):
