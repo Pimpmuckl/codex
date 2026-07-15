@@ -3,8 +3,7 @@ use super::*;
 use crate::account_lease::AccountLease;
 use crate::load_auth_dot_json;
 use crate::save_auth;
-use sha2::Digest;
-use sha2::Sha256;
+use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -163,6 +162,26 @@ fn handoff_refuses_disabled_unusable_and_unrelated_auth() {
     let second = import_test_account(&store, codex_home.path(), "second", "account-b");
     let second_home = store.account_home(&second.id);
     let second_auth = load_auth(&second_home).expect("second auth");
+    let before = snapshot(&store);
+    assert_eq!(
+        store
+            .export_selected_account_to_root_auth(
+                AuthCredentialsStoreMode::Ephemeral,
+                Default::default(),
+            )
+            .expect("ephemeral export"),
+        AccountHandoffOutcome::UnavailableForEphemeralStore
+    );
+    assert_eq!(
+        store
+            .reconcile_root_auth_to_matching_account(
+                AuthCredentialsStoreMode::Ephemeral,
+                Default::default(),
+            )
+            .expect("ephemeral reconciliation"),
+        AccountHandoffOutcome::UnavailableForEphemeralStore
+    );
+    assert_eq!(snapshot(&store), before);
     update_profile(&store, &second.id, |profile| profile.enabled = false);
     assert_no_handoff(&store, export);
     update_profile(&store, &second.id, |profile| profile.enabled = true);
@@ -197,12 +216,44 @@ fn reconcile_rolls_back_when_the_root_marker_write_fails() {
         worker_store.reconcile_root_auth_to_matching_account(FILE, Default::default())
     });
     wait_until_locked(&account_home.join(".auth-refresh.lock"));
-    let pending = stage_conflicting_pending_auth(codex_home.path(), &refreshed);
+    let drift = auth_version(refreshed, "drift", Some(2));
+    let bytes = serde_json::to_vec_pretty(&drift).expect("serialize drifted root auth");
+    std::fs::write(codex_home.path().join("auth.json"), bytes).expect("drift root auth");
     drop(index_guard);
     assert!(worker.join().expect("reconciliation thread").is_err());
-    std::fs::remove_file(pending).expect("remove conflicting save");
-    assert_eq!(snapshot(&store), before);
-    assert_ne!(reconcile(&store), AccountHandoffOutcome::NoHandoff);
+    let mut expected = before;
+    expected.2 = Some(drift);
+    assert_eq!(snapshot(&store), expected);
+}
+
+#[test]
+fn export_refuses_root_drift_without_touching_account_state() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let imported = import_test_account(&store, codex_home.path(), "first", "account-a");
+    store
+        .apply_imported_account_to_root_auth(&imported.id, FILE, Default::default())
+        .expect("select account");
+    let before = snapshot(&store);
+    let index_guard = store.acquire_index_lock().expect("hold account index");
+    let worker_store = store.clone();
+    let worker = std::thread::spawn(move || {
+        worker_store.export_selected_account_to_root_auth(FILE, Default::default())
+    });
+    wait_until_locked(&store.account_home(&imported.id).join(".auth-refresh.lock"));
+    let marker = load_auth(codex_home.path()).expect("root marker");
+    let drift = auth_version(marker, "drift", Some(1));
+    let bytes = serde_json::to_vec_pretty(&drift).expect("serialize drifted root auth");
+    std::fs::write(codex_home.path().join("auth.json"), bytes).expect("drift root auth");
+    drop(index_guard);
+    let err = worker
+        .join()
+        .expect("export thread")
+        .expect_err("export should reject root drift");
+    assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+    let mut expected = before;
+    expected.2 = Some(drift);
+    assert_eq!(snapshot(&store), expected);
 }
 
 fn wait_until_locked(lock_path: &Path) {
@@ -216,27 +267,4 @@ fn wait_until_locked(lock_path: &Path) {
         std::thread::sleep(Duration::from_millis(1));
     }
     panic!("reconciliation did not acquire the account auth guard");
-}
-
-fn stage_conflicting_pending_auth(auth_home: &Path, current: &AuthDotJson) -> PathBuf {
-    let current_hash = hash(current);
-    let prior = if &current_hash[..16] == "0000000000000000" {
-        "1111111111111111"
-    } else {
-        "0000000000000000"
-    };
-    let mut pending_auth = current.clone();
-    let tokens = pending_auth.tokens.as_mut().unwrap();
-    tokens.access_token.push_str("-pending");
-    let pending_hash = hash(&pending_auth);
-    assert_ne!(&current_hash[..16], &pending_hash[..16]);
-    let pending = auth_home.join(format!(".codex-auth-{prior}-{}", &pending_hash[..16]));
-    let bytes = serde_json::to_vec_pretty(&pending_auth).expect("serialize pending auth");
-    std::fs::write(&pending, bytes).expect("stage conflicting save");
-    pending
-}
-
-fn hash(auth: &AuthDotJson) -> String {
-    let bytes = serde_json::to_vec(auth).expect("serialize auth");
-    format!("{:x}", Sha256::digest(bytes))
 }

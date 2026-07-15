@@ -17,6 +17,7 @@ use crate::account_lease::AccountLease;
 use crate::account_lease::AuthRefreshGuard;
 use crate::auth::load_auth_dot_json_with_guard;
 use crate::auth::save_auth_with_guard;
+use crate::auth::save_file_auth_if_unchanged;
 use crate::load_auth_dot_json;
 
 #[path = "codex_plus_plus/account_bridge.rs"]
