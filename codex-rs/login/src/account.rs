@@ -19,11 +19,14 @@ use crate::auth::load_auth_dot_json_with_guard;
 use crate::auth::save_auth_with_guard;
 use crate::load_auth_dot_json;
 
+#[path = "codex_plus_plus/account_bridge.rs"]
+mod account_bridge;
 #[path = "codex_plus_plus/account_policy.rs"]
 pub(crate) mod account_policy;
 #[path = "codex_plus_plus/weekly_window_state.rs"]
 pub(crate) mod weekly_window_state;
 
+pub use account_bridge::AccountHandoffOutcome;
 const ACCOUNTS_DIR: &str = "accounts";
 const INDEX_FILE: &str = "index.json";
 const INDEX_LOCK_FILE: &str = "index.lock";
