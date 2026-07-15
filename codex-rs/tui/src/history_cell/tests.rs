@@ -1138,12 +1138,40 @@ fn standalone_windows_update_available_history_cell_snapshot() {
 }
 
 #[test]
-fn pnpm_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+fn codex_plus_plus_update_available_history_cell_snapshots() {
+    let cell = UpdateAvailableHistoryCell::new(
+        "9.9.9".to_string(),
+        Some(UpdateAction::CodexPlusPlusPackageManager(
+            codex_install_context::codex_plus_plus::PackageManager::Pnpm,
+        )),
+    );
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110))
+        .join("\n")
+        .replace(CODEX_CLI_VERSION, "0.0.0");
+    insta::assert_snapshot!(rendered, @r"
+    ╭──────────────────────────────────────────────────────╮
+    │ ✨ Update available! 0.0.0 -> 9.9.9                │
+    │ Run pnpm add -g @jjliebig/codex-plus-plus to update. │
+    │                                                      │
+    │ See full release notes:                              │
+    │ https://github.com/Pimpmuckl/codex/releases/latest   │
+    ╰──────────────────────────────────────────────────────╯
+    ");
 
-    insta::assert_snapshot!(rendered);
+    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110))
+        .join("\n")
+        .replace(CODEX_CLI_VERSION, "0.0.0");
+
+    insta::assert_snapshot!(rendered, @r"
+    ╭────────────────────────────────────────────────────────────────────────────────────╮
+    │ ✨ Update available! 0.0.0 -> 9.9.9                                              │
+    │ See https://github.com/Pimpmuckl/codex#install-a-release for installation options. │
+    │                                                                                    │
+    │ See full release notes:                                                            │
+    │ https://github.com/Pimpmuckl/codex/releases/latest                                 │
+    ╰────────────────────────────────────────────────────────────────────────────────────╯
+    ");
 }
 
 #[test]

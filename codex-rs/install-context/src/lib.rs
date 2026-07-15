@@ -5,12 +5,12 @@ use std::sync::OnceLock;
 
 use codex_utils_absolute_path::AbsolutePathBuf;
 
+pub mod codex_plus_plus;
+
 const BIN_DIRNAME: &str = "bin";
 const PACKAGE_METADATA_FILENAME: &str = "codex-package.json";
 const PATH_DIRNAME: &str = "codex-path";
-const RELEASES_DIRNAME: &str = "releases";
 const RESOURCES_DIRNAME: &str = "codex-resources";
-const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
 const ZSH_DIRNAME: &str = "zsh";
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
 
@@ -238,11 +238,10 @@ fn standalone_install_method(
     } else {
         canonical_absolute_path(exe_path)?.parent()?
     };
-    let releases_root = canonical_codex_home
-        .join("packages")
-        .join(STANDALONE_PACKAGES_DIRNAME)
-        .join(RELEASES_DIRNAME);
-    if !release_dir.starts_with(releases_root.as_path()) {
+    if !codex_plus_plus::is_managed_standalone_release_dir(
+        release_dir.as_path(),
+        canonical_codex_home.as_path(),
+    ) {
         return None;
     }
 
@@ -328,6 +327,45 @@ mod tests {
         assert_eq!(
             context.bundled_resource(TEST_RESOURCE_NAME),
             Some(canonical_resources_dir.join(TEST_RESOURCE_NAME))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detects_codex_plus_plus_generation_release_layout() -> std::io::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let release_dir = codex_home
+            .path()
+            .join("packages/codex-plus-plus/releases/shim-id/generation");
+        let bin_dir = release_dir.join(BIN_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::write(release_dir.join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        fs::write(&exe_path, "")?;
+        let canonical_release_dir =
+            AbsolutePathBuf::from_absolute_path(release_dir.canonicalize()?)?;
+        let canonical_bin_dir = AbsolutePathBuf::from_absolute_path(bin_dir.canonicalize()?)?;
+
+        assert_eq!(
+            InstallContext::from_exe_with_codex_home(
+                /*is_macos*/ false,
+                /*current_exe*/ Some(&exe_path),
+                /*method_override*/ None,
+                /*codex_home*/ Some(codex_home.path()),
+            ),
+            InstallContext {
+                method: InstallMethod::Standalone {
+                    release_dir: canonical_release_dir.clone(),
+                    resources_dir: None,
+                    platform: standalone_platform(),
+                },
+                package_layout: Some(CodexPackageLayout {
+                    package_dir: canonical_release_dir,
+                    bin_dir: canonical_bin_dir,
+                    resources_dir: None,
+                    path_dir: None,
+                }),
+            }
         );
         Ok(())
     }

@@ -23,15 +23,20 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         use ratatui_macros::line;
         use ratatui_macros::text;
+        let current_plan = UpdateAction::current_plan();
         let update_instruction = if let Some(update_action) = self.update_action {
             line!["Run ", update_action.command_str().cyan(), " to update."]
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                current_plan.channel().install_url().cyan().underlined(),
                 " for installation options."
             ]
         };
+        let release_notes_url = self
+            .update_action
+            .map(UpdateAction::release_notes_url)
+            .unwrap_or_else(|| current_plan.channel().release_notes_url());
 
         let content = text![
             line![
@@ -43,9 +48,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
+            release_notes_url.cyan().underlined(),
         ];
 
         let inner_width = content
@@ -57,18 +60,26 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
+        let current_plan = UpdateAction::current_plan();
         let update_instruction = if let Some(update_action) = self.update_action {
             format!("Run {} to update.", update_action.command_str())
         } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+            format!(
+                "See {} for installation options.",
+                current_plan.channel().install_url()
+            )
         };
+        let release_notes_url = self
+            .update_action
+            .map(UpdateAction::release_notes_url)
+            .unwrap_or_else(|| current_plan.channel().release_notes_url());
         vec![
             Line::from("Update available!"),
             Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
             Line::from(update_instruction),
             Line::from(""),
             Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
+            Line::from(release_notes_url),
         ]
     }
 

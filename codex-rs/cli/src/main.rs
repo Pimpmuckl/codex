@@ -767,7 +767,7 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     let status = {
         #[cfg(windows)]
         {
-            if action == UpdateAction::StandaloneWindows {
+            if action.requires_direct_execution() {
                 let (cmd, args) = action.command_args();
                 // Run the standalone PowerShell installer with PowerShell
                 // itself. Routing this through `cmd.exe /C` would parse
@@ -812,8 +812,10 @@ fn run_update_command() -> anyhow::Result<()> {
     #[cfg(not(debug_assertions))]
     {
         let Some(action) = codex_tui::get_update_action() else {
+            let plan = UpdateAction::current_plan();
+            let install_url = plan.channel().install_url();
             anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+                "Could not detect a safe automatic update for this Codex installation. Please update manually: {install_url}"
             );
         };
         run_update_action(action)
