@@ -108,6 +108,49 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
                 (current_target_dir(second_shim_dir) / "codex.exe").is_file()
             )
 
+    def test_custom_shim_reinstall_passes_directory_to_children(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_package(root / "package")
+            shim_dir = root / "custom shim" / "bin"
+            codex_home = root / "codex-home"
+
+            run_installer(package_dir, shim_dir, codex_home)
+            run_installer(package_dir, shim_dir, codex_home)
+            self.assertIn(
+                "CODEX_PLUS_PLUS_SHIM_DIR",
+                (shim_dir / "codex.cmd").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "CODEX_PLUS_PLUS_SHIM_DIR",
+                (shim_dir / "codex.ps1").read_text(encoding="utf-8-sig"),
+            )
+            command = (
+                "echo %CODEX_PLUS_PLUS_SHIM_DIR%&echo argument with spaces&exit /b 23"
+            )
+            launchers = (
+                [str(shim_dir / "codex.cmd")],
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-File",
+                    str(shim_dir / "codex.ps1"),
+                ],
+            )
+            for launcher in launchers:
+                with self.subTest(launcher=launcher[0]):
+                    launched = subprocess.run(
+                        [*launcher, "/d", "/s", "/c", command],
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                    )
+                    self.assertEqual(launched.returncode, 23, launched.stderr)
+                    self.assertEqual(
+                        launched.stdout.splitlines(),
+                        [str(shim_dir.resolve()), "argument with spaces"],
+                    )
+
     def test_install_rejects_a_shim_inside_the_release_store(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             root = Path(temp_dir)
@@ -236,6 +279,35 @@ class InstallCodexPlusPlusTest(unittest.TestCase):
 
 @unittest.skipIf(os.name == "nt", "POSIX installer test")
 class InstallCodexPlusPlusShellTest(unittest.TestCase):
+    def test_custom_shim_reinstall_passes_directory_to_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package_dir = create_posix_package(root / "package")
+            shim_dir = root / "custom shim" / "bin"
+            codex_home = root / "codex-home"
+
+            run_shell_installer(package_dir, shim_dir, codex_home)
+            run_shell_installer(package_dir, shim_dir, codex_home)
+            shim = shim_dir / "codex"
+            alias = root / "codex-alias"
+            alias.symlink_to(shim)
+            self.assertIn(
+                "CODEX_PLUS_PLUS_SHIM_DIR",
+                shim.read_text(encoding="utf-8"),
+            )
+            launched = subprocess.run(
+                [str(alias), "provenance", "argument with spaces", "23"],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+            self.assertEqual(launched.returncode, 23, launched.stderr)
+            self.assertEqual(
+                launched.stdout.splitlines(),
+                [str(shim_dir.resolve()), "argument with spaces"],
+            )
+
     def test_concurrent_installs_publish_a_valid_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -399,6 +471,10 @@ def create_posix_package(package_dir: Path) -> Path:
     target = package_dir / "bin" / "codex"
     target.write_text(
         "#!/bin/sh\n"
+        'if [ "${1-}" = provenance ]; then\n'
+        '  printf \'%s\\n\' "$CODEX_PLUS_PLUS_SHIM_DIR" "${2-}"\n'
+        '  exit "${3-}"\n'
+        "fi\n"
         'if [ "${1-}" = wait ]; then IFS= read -r line; exit 0; fi\n'
         "printf '%s\\n' \"${1-}\"\n",
         encoding="utf-8",

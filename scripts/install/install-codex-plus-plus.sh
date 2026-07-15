@@ -269,12 +269,14 @@ mv "$staging_dir" "$release_dir"
 mkdir "$leases_root/$release_name"
 
 shim_tmp="$shim_path.$$.tmp"
+quoted_shim_dir=$(shell_quote "$shim_dir")
 quoted_current_path=$(shell_quote "$current_path")
 quoted_releases_dir=$(shell_quote "$releases_dir")
 quoted_leases_root=$(shell_quote "$leases_root")
 {
   echo '#!/bin/sh'
   echo 'set -u'
+  echo "export CODEX_PLUS_PLUS_SHIM_DIR=$quoted_shim_dir"
   echo "current_path=$quoted_current_path"
   echo "releases_dir=$quoted_releases_dir"
   echo "leases_root=$quoted_leases_root"
