@@ -61,15 +61,25 @@ PLATFORMS = {
 
 
 class CodexPlusPlusNpmTest(unittest.TestCase):
-    def test_expands_only_supported_payloads_and_reuses_base_artifacts(self):
+    def test_expands_only_supported_payloads_and_requires_fork_artifacts(self):
         packages = stage.expand_packages(["codex-plus-plus"])
         self.assertEqual(packages, ["codex-plus-plus", *PLATFORMS])
-        self.assertEqual(build.native_artifact_version(VERSION, packages), "0.144.4")
+        self.assertNotIn("codex", build.PACKAGES_REQUIRING_VENDOR_SRC)
         components = stage.native_components_for_package(next(iter(PLATFORMS)))
         self.assertEqual(
             stage.native_targets_for_component_set(packages, components),
             tuple(config["target"] for config in PLATFORMS.values()),
         )
+        argv = [
+            str(STAGE_SCRIPT),
+            "--release-version",
+            VERSION,
+            "--package",
+            "codex-plus-plus",
+        ]
+        with patch.object(sys, "argv", argv):
+            with self.assertRaisesRegex(RuntimeError, "--vendor-src is required"):
+                stage.main()
 
     def test_stages_root_and_platform_tarballs_from_fixture_vendor(self):
         with tempfile.TemporaryDirectory() as temp_dir:

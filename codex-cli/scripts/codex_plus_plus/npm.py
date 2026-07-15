@@ -28,8 +28,5 @@ ROOT_CONFIG = {
     "npm_name": NPM_NAME,
     "bin": {"codex": "bin/codex.js", "codex-plus-plus": "bin/codex.js"},
     "platform_packages": PLATFORM_PACKAGES,
+    "requires_vendor_src": True,
 }
-
-
-def native_artifact_version(version: str) -> str:
-    return version.partition("-fork.")[0]

@@ -39,11 +39,11 @@ PACKAGE_NATIVE_COMPONENTS = getattr(_BUILD_MODULE, "PACKAGE_NATIVE_COMPONENTS", 
 PACKAGE_EXPANSIONS = getattr(_BUILD_MODULE, "PACKAGE_EXPANSIONS", {})
 CODEX_PLATFORM_PACKAGES = getattr(_BUILD_MODULE, "CODEX_PLATFORM_PACKAGES", {})
 PACKAGE_TARGET_FILTERS = getattr(_BUILD_MODULE, "PACKAGE_TARGET_FILTERS", {})
+PACKAGES_REQUIRING_VENDOR_SRC = getattr(
+    _BUILD_MODULE, "PACKAGES_REQUIRING_VENDOR_SRC", set()
+)
 CODEX_PACKAGE_COMPONENT = getattr(
     _BUILD_MODULE, "CODEX_PACKAGE_COMPONENT", "codex-package"
-)
-NATIVE_ARTIFACT_VERSION = getattr(
-    _BUILD_MODULE, "native_artifact_version", lambda version, _packages: version
 )
 
 
@@ -511,6 +511,10 @@ def tarball_name_for_package(package: str, version: str) -> str:
 def main() -> int:
     args = parse_args()
 
+    if args.vendor_src is None and any(
+        package in PACKAGES_REQUIRING_VENDOR_SRC for package in args.packages
+    ):
+        raise RuntimeError("--vendor-src is required for Codex++ npm packages.")
     if args.vendor_src is not None and (
         args.workflow_url is not None or args.artifacts_dir is not None
     ):
@@ -552,9 +556,8 @@ def main() -> int:
                 components: vendor_src for components in native_component_sets
             }
         elif native_component_sets:
-            artifact_version = NATIVE_ARTIFACT_VERSION(args.release_version, packages)
             workflow_url, resolved_head_sha = resolve_workflow_url(
-                artifact_version, args.workflow_url
+                args.release_version, args.workflow_url
             )
             print(f"Using native artifacts from {workflow_url}", flush=True)
             if args.artifacts_dir is not None:
