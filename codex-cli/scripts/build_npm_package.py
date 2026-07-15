@@ -20,12 +20,8 @@ CODEX_PACKAGE_COMPONENT = "codex-package"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from codex_plus_plus.npm import (  # noqa: E402
-    PLATFORM_PACKAGES as CODEX_PLUS_PLUS_PLATFORM_PACKAGES,
-)
 from codex_plus_plus.npm import ROOT_CONFIG as CODEX_PLUS_PLUS_ROOT_CONFIG  # noqa: E402
 from codex_plus_plus.npm import ROOT_PACKAGE as CODEX_PLUS_PLUS_ROOT_PACKAGE  # noqa: E402
-from codex_plus_plus.npm import native_artifact_version as fork_native_artifact_version  # noqa: E402
 
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
 UPSTREAM_CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
@@ -109,16 +105,12 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 }
 
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
-
-
-def native_artifact_version(version: str, packages: list[str]) -> str:
-    fork_packages = {
-        CODEX_PLUS_PLUS_ROOT_PACKAGE,
-        *CODEX_PLUS_PLUS_PLATFORM_PACKAGES,
-    }
-    if any(package in fork_packages for package in packages):
-        return fork_native_artifact_version(version)
-    return version
+PACKAGES_REQUIRING_VENDOR_SRC = {
+    package
+    for root_package, config in CODEX_ROOT_PACKAGES.items()
+    if config.get("requires_vendor_src")
+    for package in [root_package, *config["platform_packages"]]
+}
 
 
 def parse_args() -> argparse.Namespace:
