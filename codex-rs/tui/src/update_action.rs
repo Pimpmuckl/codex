@@ -142,12 +142,8 @@ mod tests {
         let native_release_dir =
             AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
                 .expect("temp dir path should be absolute");
-        let target = Standalone {
-            platform: Unix,
-            installer_url: "unused",
-        };
         let shim_dir = std::env::var_os("CODEX_PLUS_PLUS_SHIM_DIR").map(std::path::PathBuf::from);
-        let available = shim_dir.is_some_and(|dir| from_target(target, Some(&dir)).is_some());
+        let available = shim_dir.is_some_and(|dir| dir.is_absolute() && dir.is_dir());
 
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -207,9 +203,15 @@ mod tests {
             available.then_some(UpdateAction::CodexPlusPlusStandalone(Windows))
         );
         let shim_dir = tempfile::tempdir().expect("tempdir");
-        let expected = Some(UpdateAction::CodexPlusPlusStandalone(Unix));
-        assert_eq!(from_target(target, Some(shim_dir.path())), expected);
-        assert!(from_target(target, Some(&shim_dir.path().join("missing"))).is_none());
+        for platform in [Unix, Windows] {
+            let target = Standalone {
+                platform,
+                installer_url: "unused",
+            };
+            let expected = Some(UpdateAction::CodexPlusPlusStandalone(platform));
+            assert_eq!(from_target(target, Some(shim_dir.path())), expected);
+            assert!(from_target(target, Some(&shim_dir.path().join("missing"))).is_none());
+        }
     }
 
     #[test]
