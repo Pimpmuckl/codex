@@ -224,7 +224,7 @@ impl SwitchAdapter for SystemAdapter {
     fn rollback_fork(&mut self, preflight: &Preflight) -> anyhow::Result<()> {
         match preflight {
             Preflight::Package(switch) => {
-                uninstall_package(switch.manager, switch.upstream.package)?;
+                let _ = uninstall_package(switch.manager, switch.upstream.package);
                 install_package(switch.manager, &switch.rollback.exact_spec())?;
                 verify_visible_version(&switch.rollback.version)
             }
