@@ -53,20 +53,36 @@ async fn refresh_recovers_corrupt_cache_and_offline_preserves_it() {
     )
     .await
     .expect("repair cache");
-    let repaired = read_release_status(&path).expect("read repaired cache");
+    read_release_status(&path).expect("read repaired cache");
+
+    probe::refresh_with_probes(
+        &path,
+        "0.144.4-fork.1",
+        async { Ok("0.144.4-fork.3".to_string()) },
+        async { Err(anyhow::anyhow!("upstream offline")) },
+    )
+    .await
+    .expect("fork refresh should survive upstream failure");
+    let partial = read_release_status(&path).expect("read partial refresh");
+    assert_eq!(
+        (
+            partial.latest_fork_version.as_deref(),
+            partial.latest_stable_upstream_version.as_deref()
+        ),
+        (Some("0.144.4-fork.3"), Some("0.147.0"))
+    );
 
     let error = probe::refresh_with_probes(
         &path,
         "0.144.4-fork.1",
-        async { Err(anyhow::anyhow!("offline")) },
+        async { Err(anyhow::anyhow!("fork offline")) },
         async { Ok("0.148.0".to_string()) },
     )
     .await
-    .expect_err("offline refresh should fail");
-
-    assert_eq!(error.to_string(), "offline");
+    .expect_err("fork failure should leave cache unchanged");
+    assert_eq!(error.to_string(), "fork offline");
     assert_eq!(
         read_release_status(&path).expect("read stale cache"),
-        repaired
+        partial
     );
 }

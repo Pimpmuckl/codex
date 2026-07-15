@@ -135,14 +135,16 @@ mod probe {
         fork_probe: impl Future<Output = anyhow::Result<String>>,
         upstream_probe: impl Future<Output = anyhow::Result<String>>,
     ) -> anyhow::Result<()> {
-        let (latest_fork, latest_upstream) = tokio::try_join!(fork_probe, upstream_probe)?;
-        let dismissed_version = read_release_status(path)
+        let (latest_fork, latest_upstream) = tokio::join!(fork_probe, upstream_probe);
+        let previous = read_release_status(path).ok();
+        let latest_upstream = latest_upstream
             .ok()
-            .and_then(|status| status.dismissed_version);
+            .or_else(|| previous.as_ref()?.latest_stable_upstream_version.clone());
+        let dismissed_version = previous.and_then(|status| status.dismissed_version);
         let mut status = ForkReleaseStatus::new(
             installed_version.to_string(),
-            Some(latest_fork),
-            Some(latest_upstream),
+            Some(latest_fork?),
+            latest_upstream,
             SystemTime::now(),
         );
         status.dismissed_version = dismissed_version;

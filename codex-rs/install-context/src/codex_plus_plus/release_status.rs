@@ -31,7 +31,8 @@ impl ForkReleaseStatus {
         let upstream = latest_stable_upstream_version
             .as_deref()
             .and_then(stable_version);
-        let fork_upstream_base = fork_base.map(format_version);
+        let fork_upstream_base =
+            fork_base.map(|(major, minor, patch)| format!("{major}.{minor}.{patch}"));
         let stable_minor_lag = fork_base.zip(upstream).and_then(|(fork, upstream)| {
             (fork.0 == upstream.0).then_some(upstream.1.saturating_sub(fork.1))
         });
@@ -90,10 +91,6 @@ fn fork_upstream_base(version: &str) -> Option<(u64, u64, u64)> {
 fn stable_version(version: &str) -> Option<(u64, u64, u64)> {
     let (base, revision) = parse_version(version)?;
     revision.is_none().then_some(base)
-}
-
-fn format_version((major, minor, patch): (u64, u64, u64)) -> String {
-    format!("{major}.{minor}.{patch}")
 }
 
 #[cfg(test)]
