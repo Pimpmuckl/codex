@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/codex-plus-plus-splash.png" alt="Codex++ splash" width="80%" />
+  <img src=".github/codex-plus-plus-splash.png" alt="Codex++ splash" width="100%" />
 </p>
 
 # Codex++
