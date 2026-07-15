@@ -1,7 +1,10 @@
 use std::path::Path;
 
+mod release_status;
 mod update_plan;
 
+pub use release_status::FORK_RELEASE_STATUS_MAX_AGE;
+pub use release_status::ForkReleaseStatus;
 pub use update_plan::LatestVersionSource;
 pub use update_plan::PackageManager;
 pub use update_plan::UpdateChannel;

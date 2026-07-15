@@ -1,22 +1,16 @@
 #![cfg(not(debug_assertions))]
 
 use crate::legacy_core::config::Config;
-use crate::npm_registry;
-use crate::npm_registry::NpmPackageInfo;
 use crate::update_action::UpdateAction;
-use crate::update_versions::extract_version_from_latest_tag;
 use crate::update_versions::is_newer;
 use crate::update_versions::is_source_build_version;
-use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
-use chrono::Duration;
-use chrono::Utc;
-use codex_install_context::codex_plus_plus::LatestVersionSource;
+use codex_install_context::InstallContext;
+use codex_install_context::codex_plus_plus::FORK_RELEASE_STATUS_MAX_AGE;
+use codex_install_context::codex_plus_plus::UpdateChannel;
 use codex_install_context::codex_plus_plus::UpdatePlan;
-use codex_login::default_client::create_client;
-use serde::Deserialize;
-use std::path::Path;
+use std::time::SystemTime;
 
 use crate::version::CODEX_CLI_VERSION;
 
@@ -28,105 +22,38 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     }
 
     let plan = UpdateAction::current_plan();
+    let upstream_plan =
+        UpdatePlan::for_install_context(InstallContext::current(), UpdateChannel::Upstream);
     let version_file = version_filepath(config);
     let info = read_version_info(&version_file).ok();
 
     if match &info {
         None => true,
-        Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
+        Some(info) => info.is_stale(SystemTime::now(), FORK_RELEASE_STATUS_MAX_AGE),
     } {
         // Refresh the cached latest version in the background so TUI startup
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
         tokio::spawn(async move {
-            check_for_update(&version_file, plan)
-                .await
-                .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
+            crate::codex_plus_plus::refresh_release_status(
+                &version_file,
+                CODEX_CLI_VERSION,
+                plan,
+                upstream_plan,
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
         });
     }
 
     info.and_then(|info| {
-        if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
-            Some(info.latest_version)
+        let latest = info.latest_fork_version?;
+        if is_newer(&latest, CODEX_CLI_VERSION).unwrap_or(false) {
+            Some(latest)
         } else {
             None
         }
     })
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct ReleaseInfo {
-    tag_name: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct HomebrewCaskInfo {
-    version: String,
-}
-
-async fn check_for_update(version_file: &Path, plan: UpdatePlan) -> anyhow::Result<()> {
-    let source = plan.latest_version_source();
-    let latest_version = match source {
-        LatestVersionSource::Homebrew { api_url } => {
-            let HomebrewCaskInfo { version } = create_client()
-                .get(api_url)
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<HomebrewCaskInfo>()
-                .await?;
-            version
-        }
-        LatestVersionSource::GitHub {
-            api_url,
-            tag_prefix,
-            npm_registry_url,
-        } => {
-            let latest_version = fetch_latest_github_release_version(api_url, tag_prefix).await?;
-            if let Some(npm_registry_url) = npm_registry_url {
-                let package_info = create_client()
-                    .get(npm_registry_url)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<NpmPackageInfo>()
-                    .await?;
-                npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            }
-            latest_version
-        }
-    };
-
-    // Preserve any previously dismissed version if present.
-    let prev_info = read_version_info(version_file).ok();
-    let info = VersionInfo {
-        latest_version,
-        last_checked_at: Utc::now(),
-        dismissed_version: prev_info.and_then(|p| p.dismissed_version),
-    };
-
-    let json_line = format!("{}\n", serde_json::to_string(&info)?);
-    if let Some(parent) = version_file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    tokio::fs::write(version_file, json_line).await?;
-    Ok(())
-}
-
-async fn fetch_latest_github_release_version(
-    api_url: &str,
-    tag_prefix: &str,
-) -> anyhow::Result<String> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = create_client()
-        .get(api_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<ReleaseInfo>()
-        .await?;
-    extract_version_from_latest_tag(tag_prefix, &latest_tag_name)
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
