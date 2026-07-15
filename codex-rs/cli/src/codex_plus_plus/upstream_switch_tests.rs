@@ -212,3 +212,17 @@ async fn switch_transaction_handles_success_noop_failures_and_auth_absence() {
         assert!(stderr.starts_with("Resolving upstream and rollback artifacts...\n"));
     }
 }
+
+#[test]
+fn package_manager_roots_cover_npm_pnpm_and_bun() {
+    for (manager, output, bun_root, expected) in [
+        (PackageManager::Npm, "npm", None, "npm"),
+        (PackageManager::Pnpm, "pnpm", None, "pnpm"),
+        (PackageManager::Bun, "bun/bin", None, "bun/install/global/node_modules"),
+    ] {
+        assert_eq!(
+            manager_global_root(manager, output, bun_root).expect("manager root"),
+            PathBuf::from(expected)
+        );
+    }
+}

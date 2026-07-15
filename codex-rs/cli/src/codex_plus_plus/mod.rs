@@ -1,4 +1,3 @@
-// `codex update` is release-only, but debug builds still compile this module for its tests.
 #![cfg_attr(debug_assertions, allow(dead_code))]
 
 mod upstream_switch;
