@@ -148,7 +148,7 @@ pub fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
-fn parse_version(value: &str) -> Option<((u64, u64, u64), Option<u64>)> {
+pub(super) fn parse_version(value: &str) -> Option<((u64, u64, u64), Option<u64>)> {
     let value = value.trim();
     let (base, fork_revision) = match value.split_once("-fork.") {
         Some((base, revision)) => (base, Some(parse_number(revision)?)),

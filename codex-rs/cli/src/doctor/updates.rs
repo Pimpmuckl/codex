@@ -1,21 +1,21 @@
 //! Diagnoses whether Codex update paths target the running installation.
 //!
-//! Update diagnostics combine cached version metadata, install-channel hints,
-//! and bounded latest-version probes. For npm-managed launches, this module also
+//! Update diagnostics combine cached release status and install-channel hints.
+//! For npm-managed launches, this module also
 //! verifies that npm install -g would update the package root that launched the
 //! current process, which catches PATH and prefix mismatches before the user runs
 //! an update command.
 
 use std::path::Path;
+use std::time::SystemTime;
 
 use codex_core::config::Config;
 use codex_install_context::InstallContext;
-use codex_install_context::codex_plus_plus::LatestVersionSource;
+use codex_install_context::codex_plus_plus::FORK_RELEASE_STATUS_MAX_AGE;
 use codex_install_context::codex_plus_plus::UpdateChannel;
 use codex_install_context::codex_plus_plus::UpdatePlan;
 use codex_install_context::codex_plus_plus::is_newer;
 use codex_tui::UpdateAction;
-use serde::Deserialize;
 
 use super::CheckStatus;
 use super::DoctorCheck;
@@ -23,14 +23,10 @@ use super::NpmRootCheck;
 use super::doctor_install_context;
 use super::doctor_managed_by_npm;
 use super::npm_global_root_check;
-use super::run_command;
-
-const VERSION_FILE_NAME: &str = "version.json";
 /// Builds the update-health row for the current installation.
 ///
-/// Network failures while fetching latest-version metadata degrade the row to a
-/// warning instead of failing doctor outright; update freshness is useful
-/// support context but should not mask more direct install/config failures.
+/// Missing or stale release status degrades the row to a warning instead of
+/// masking more direct install or configuration failures.
 pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     let current_exe = std::env::current_exe().ok();
     let install_context = doctor_install_context(current_exe.as_deref());
@@ -43,12 +39,13 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
         ),
         format!("update action: {}", update_action_label(&install_context)),
     ];
-    let version_file = config.codex_home.join(VERSION_FILE_NAME);
-    push_cached_version_details(&mut details, &version_file);
-
     let mut status = CheckStatus::Ok;
     let mut summary = "update configuration is locally consistent".to_string();
     let mut remediation = None;
+    if push_cached_version_details(&mut details, config.codex_home.as_path()) {
+        status = CheckStatus::Warning;
+        summary = "fork release status cache is stale or unavailable".to_string();
+    }
 
     if doctor_managed_by_npm(current_exe.as_deref())
         && let Some(package) = update_plan.package_manager_package()
@@ -90,21 +87,6 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
         }
     }
 
-    match fetch_latest_version(update_plan) {
-        Ok(latest_version) => {
-            details.push(format!("latest version: {latest_version}"));
-            if is_newer(&latest_version, env!("CARGO_PKG_VERSION")) == Some(true) {
-                details.push("latest version status: newer version is available".to_string());
-            } else {
-                details.push("latest version status: current version is not older".to_string());
-            }
-        }
-        Err(err) => {
-            status = status.max(CheckStatus::Warning);
-            details.push(format!("latest version probe: {err}"));
-        }
-    }
-
     let mut check = DoctorCheck::new("updates.status", "updates", status, summary).details(details);
     if let Some(remediation) = remediation {
         check = check.remediation(remediation);
@@ -112,26 +94,21 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     check
 }
 
-fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
-    details.push(format!("version cache: {}", version_file.display()));
-    match std::fs::read_to_string(version_file) {
-        Ok(contents) => match serde_json::from_str::<VersionInfo>(&contents) {
-            Ok(info) => {
-                details.push(format!("cached latest version: {}", info.latest_version));
-                if let Some(last_checked_at) = info.last_checked_at {
-                    details.push(format!("last checked at: {last_checked_at}"));
-                }
-                if let Some(dismissed_version) = info.dismissed_version {
-                    details.push(format!("dismissed version: {dismissed_version}"));
-                }
-            }
-            Err(err) => details.push(format!("version cache parse: {err}")),
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            details.push("version cache: missing".to_string());
-        }
-        Err(err) => details.push(format!("version cache read: {err}")),
+fn push_cached_version_details(details: &mut Vec<String>, codex_home: &Path) -> bool {
+    let info = UpdateAction::read_cached_fork_release_status(codex_home, env!("CARGO_PKG_VERSION"));
+    if let Some(latest) = info.latest_fork_version.as_deref() {
+        details.push(format!("cached latest version: {latest}"));
+        let availability = if is_newer(latest, env!("CARGO_PKG_VERSION")) == Some(true) {
+            "newer version is available"
+        } else {
+            "current version is not older"
+        };
+        details.push(format!("latest version status: {availability}"));
     }
+    if let Some(dismissed) = info.dismissed_version.as_deref() {
+        details.push(format!("dismissed version: {dismissed}"));
+    }
+    info.is_stale(SystemTime::now(), FORK_RELEASE_STATUS_MAX_AGE)
 }
 
 fn update_action_label(context: &InstallContext) -> String {
@@ -141,60 +118,11 @@ fn update_action_label(context: &InstallContext) -> String {
         .unwrap_or_else(|| format!("manual: {}", plan.channel().install_url()))
 }
 
-fn fetch_latest_version(plan: UpdatePlan) -> Result<String, String> {
-    match plan.latest_version_source() {
-        LatestVersionSource::Homebrew { api_url } => fetch_homebrew_cask_version(api_url),
-        LatestVersionSource::GitHub {
-            api_url,
-            tag_prefix,
-            ..
-        } => fetch_latest_github_release_version(api_url, tag_prefix),
-    }
-}
-
-fn fetch_latest_github_release_version(api_url: &str, tag_prefix: &str) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct ReleaseInfo {
-        tag_name: String,
-    }
-
-    let info = http_get_json::<ReleaseInfo>(api_url)?;
-    info.tag_name
-        .strip_prefix(tag_prefix)
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-fn fetch_homebrew_cask_version(api_url: &str) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
-    }
-
-    http_get_json::<HomebrewCaskInfo>(api_url).map(|info| info.version)
-}
-
-fn http_get_json<T>(url: &str) -> Result<T, String>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let body = run_command("curl", ["-fsSL", "--max-time", "5", url])?;
-    serde_json::from_str::<T>(&body).map_err(|err| err.to_string())
-}
-
-#[derive(Deserialize)]
-struct VersionInfo {
-    latest_version: String,
-    #[serde(default)]
-    last_checked_at: Option<String>,
-    #[serde(default)]
-    dismissed_version: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use codex_install_context::InstallMethod;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn update_action_labels_use_the_planned_distribution() {
@@ -218,6 +146,45 @@ mod tests {
                 package_layout: None,
             }),
             "manual: https://github.com/Pimpmuckl/codex#install-a-release"
+        );
+    }
+
+    #[test]
+    fn update_details_use_the_shared_fork_release_cache() {
+        let codex_home = tempfile::tempdir().expect("temp codex home");
+        let cache_dir = codex_home.path().join("codex-plus-plus");
+        std::fs::create_dir_all(&cache_dir).expect("create cache directory");
+        let checked_at = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs();
+        std::fs::write(
+            cache_dir.join("release-status.json"),
+            serde_json::json!({
+                "installed_fork_version": "0.144.4-fork.1",
+                "latest_fork_version": "0.144.4-fork.2",
+                "latest_stable_upstream_version": "0.147.0",
+                "checked_at": {
+                    "secs_since_epoch": checked_at,
+                    "nanos_since_epoch": 0,
+                },
+                "dismissed_version": null,
+            })
+            .to_string(),
+        )
+        .expect("write release cache");
+        let mut details = Vec::new();
+
+        assert!(!push_cached_version_details(
+            &mut details,
+            codex_home.path()
+        ));
+        assert_eq!(
+            details,
+            vec![
+                "cached latest version: 0.144.4-fork.2".to_string(),
+                "latest version status: current version is not older".to_string(),
+            ]
         );
     }
 }
