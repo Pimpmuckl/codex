@@ -11,7 +11,8 @@
     "node": ">=16"
   },
   "files": [
-    "bin/codex.js"
+    "bin/codex.js",
+    "bin/launcher.js"
   ],
   "repository": {
     "type": "git",
