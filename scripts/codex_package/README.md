@@ -24,6 +24,34 @@ The builder creates a canonical Codex package directory:
 The package directory is the primary artifact. Archive formats such as
 `.tar.gz`, `.tar.zst`, and `.zip` are serializations of that directory.
 
+## Codex++ release bootstrap
+
+The Codex++ tag workflow builds each native archive once, stages the npm
+tarballs as a private Actions artifact, publishes the three platform versions
+serially under platform tags, and publishes the root package under `latest`
+last. Only then does it publish the GitHub release from the same native archive
+bytes.
+
+The first public npm release is an explicit operator gate because trusted
+publishing cannot create a package. After deliberately pushing a
+`codex-plus-plus-v<upstream>-fork.N` tag:
+
+1. Let `stage-npm` finish and `publish-npm` stop at its bootstrap message.
+2. Download that run's `codex-plus-plus-npm-<version>` Actions artifact.
+3. From an authenticated operator shell, publish its Linux tarball with
+   `npm publish codex-plus-plus-npm-linux-x64-<version>.tgz --access public --tag linux-x64`.
+4. In npm package settings, configure a trusted publisher for repository
+   `Pimpmuckl/codex`, workflow `codex-plus-plus-release.yml`, and allowed action
+   `npm publish`.
+5. Rerun only the failed `publish-npm` job. It verifies and skips the manually
+   published bytes, publishes the remaining exact tarballs, and then unblocks
+   the public GitHub release.
+
+The workflow uses a GitHub-hosted runner, Node 24, npm 12.0.0, and
+`id-token: write`; it intentionally has no npm token secret. See npm's
+[trusted publishing requirements](https://docs.npmjs.com/trusted-publishers/)
+before changing the repository, workflow filename, or publisher settings.
+
 If `--target` is omitted, the builder uses the release target for the current
 host platform. On Linux, that default is a musl target to match Codex release
 artifacts; pass a GNU Linux target explicitly for native glibc local builds. If

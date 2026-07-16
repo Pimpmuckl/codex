@@ -297,7 +297,9 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
             "files": ["vendor"],
-            "repository": codex_package_json.get("repository"),
+            "repository": root_package.get(
+                "repository", codex_package_json.get("repository")
+            ),
         }
 
         engines = codex_package_json.get("engines")
@@ -335,6 +337,8 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         root_package = CODEX_ROOT_PACKAGES[package]
         platform_packages = root_package["platform_packages"]
         package_json["name"] = root_package["npm_name"]
+        if repository := root_package.get("repository"):
+            package_json["repository"] = repository
         package_json["bin"] = root_package["bin"]
         package_json["files"] = [
             "bin/codex.js",

@@ -26,21 +26,29 @@ Codex++ otherwise stays close to upstream. It uses the normal `$CODEX_HOME` for 
 
 ## Install a Release
 
-Download the package for your platform and its installer from [Codex++ Releases](https://github.com/Pimpmuckl/codex/releases).
-
-On Windows, extract the package and run:
-
-```powershell
-.\install-codex-plus-plus.ps1 -TargetExe .\bin\codex.exe -Install -AddToUserPath
-```
-
-On macOS or Linux, extract the package and run:
+Replace a global upstream npm installation with Codex++:
 
 ```sh
-sh install-codex-plus-plus.sh --target-exe ./bin/codex --install
+npm uninstall -g @openai/codex
+npm install -g @jjliebig/codex-plus-plus
 ```
 
-Both installers copy the package under `$CODEX_HOME/packages/codex-plus-plus`, then switch the shim to the new immutable release. Existing sessions keep running their previous release while new sessions use the new one. The current and immediately previous releases plus any older release still in use are retained; other stale releases are removed automatically.
+Codex++ npm releases support Windows x64, Linux x64 (musl), and macOS ARM64. Run `codex update` for a normal Codex++ update. To switch a supported installation back to upstream Codex, run:
+
+```sh
+codex update upstream
+```
+
+To return to Codex++ later:
+
+```sh
+npm uninstall -g @openai/codex
+npm install -g @jjliebig/codex-plus-plus
+```
+
+Configuration and sessions continue to use `$CODEX_HOME`. Switching or reinstalling does not remove the Codex++ account store under `$CODEX_HOME/accounts`.
+
+As a standalone alternative, download the matching package and `install-codex-plus-plus-latest` script from [Codex++ Releases](https://github.com/Pimpmuckl/codex/releases). The standalone installers verify release checksums and install an immutable package under `$CODEX_HOME/packages/codex-plus-plus`. Existing sessions keep their current release while new sessions use the update.
 
 ## Manage Accounts
 
