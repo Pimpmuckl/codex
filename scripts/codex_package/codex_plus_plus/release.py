@@ -173,7 +173,8 @@ def npm_view(spec: str, field: str) -> str | None:
 
 def publish(version: str, npm_dir: Path) -> None:
     entries = validate_tarballs(version, npm_dir)
-    if npm_view(f"{PACKAGE_NAME}@{entries[0][1]}", "name") is None:
+    bootstrap_specs = (PACKAGE_NAME, f"{PACKAGE_NAME}@{entries[0][1]}")
+    if all(npm_view(spec, "name") is None for spec in bootstrap_specs):
         raise RuntimeError(
             f"{PACKAGE_NAME} does not exist. Download this run's private npm artifact, "
             "manually publish its linux-x64 tarball under --tag linux-x64, configure "

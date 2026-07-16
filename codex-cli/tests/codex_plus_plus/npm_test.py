@@ -208,7 +208,7 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             npm_dir = Path(temp_dir)
             entries = self._write_publish_tarballs(npm_dir)
             integrities = [release.tarball_integrity(path) for path, _version, _tag in entries]
-            views = [ROOT_PACKAGE, integrities[0]]
+            views = [None, ROOT_PACKAGE, integrities[0]]
             for integrity in integrities[1:]:
                 views.extend([None, integrity])
             with (
@@ -221,6 +221,14 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
                 [call.args[0][-1] for call in run.call_args_list],
                 ["darwin-arm64", "win32-x64", "latest"],
             )
+
+            views = [ROOT_PACKAGE, None, integrities[0], *integrities[1:]]
+            with (
+                patch.object(release, "npm_view", side_effect=views),
+                patch.object(release.subprocess, "run") as run,
+            ):
+                release.publish(VERSION, npm_dir)
+            self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["linux-x64"])
 
             with (
                 patch.object(release, "npm_view", side_effect=[ROOT_PACKAGE, "sha512-wrong"]),
@@ -236,7 +244,10 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "does not exist"),
             ):
                 release.publish(VERSION, npm_dir)
-            view.assert_called_once_with(f"{ROOT_PACKAGE}@{VERSION}-linux-x64", "name")
+            self.assertEqual(
+                [call.args for call in view.call_args_list],
+                [(ROOT_PACKAGE, "name"), (f"{ROOT_PACKAGE}@{VERSION}-linux-x64", "name")],
+            )
             run.assert_not_called()
 
     def test_workflow_keeps_public_release_downstream_of_npm_root(self):
