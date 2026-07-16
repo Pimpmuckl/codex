@@ -490,6 +490,17 @@ impl ThreadHistoryBuilder {
         if text.is_empty() {
             return;
         }
+        if self.current_turn.as_ref().is_some_and(|turn| {
+            turn.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ThreadItem::AgentMessage { id, text: existing, .. }
+                        if id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX) && existing == &text
+                )
+            })
+        }) {
+            return;
+        }
 
         let id = self.next_item_id();
         self.push_item_in_current_turn(ThreadItem::AgentMessage {
@@ -1851,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn materialized_history_keeps_inbox_messages_without_assistant_response_items() {
+    fn materialized_history_keeps_one_inbox_message_without_assistant_response_items() {
         let agent_message = |id: &str, text: &str| {
             CoreTurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
                 id: id.into(),
@@ -1864,22 +1875,19 @@ mod tests {
         };
         let mut builder = ThreadHistoryBuilder::new();
         let turn_id = builder.ensure_turn().id.clone();
+        builder
+            .handle_materialized_item_lifecycle(&turn_id, &agent_message("assistant", "ordinary"));
+        let note = "[Message for you]\nCheck deployment.";
         builder.handle_materialized_item_lifecycle(
             &turn_id,
-            &agent_message("assistant-message", "ordinary assistant text"),
+            &agent_message("user-message:call-1", note),
         );
-        builder.handle_materialized_item_lifecycle(
-            &turn_id,
-            &agent_message(
-                "user-message:call-1",
-                "[Message for you]\nCheck deployment.",
-            ),
-        );
+        builder.handle_agent_message(note.into(), Some(CoreMessagePhase::Commentary), None);
         assert_eq!(
             builder.active_turn_snapshot().expect("active turn").items,
             vec![ThreadItem::AgentMessage {
                 id: "user-message:call-1".into(),
-                text: "[Message for you]\nCheck deployment.".into(),
+                text: note.into(),
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
             }]
