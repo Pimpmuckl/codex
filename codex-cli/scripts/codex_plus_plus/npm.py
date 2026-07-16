@@ -1,5 +1,10 @@
 ROOT_PACKAGE = "codex-plus-plus"
 NPM_NAME = "@jjliebig/codex-plus-plus"
+REPOSITORY = {
+    "type": "git",
+    "url": "git+https://github.com/Pimpmuckl/codex.git",
+    "directory": "codex-cli",
+}
 PLATFORM_PACKAGES = {
     "codex-plus-plus-linux-x64": {
         "npm_name": "@jjliebig/codex-plus-plus-linux-x64",
@@ -26,6 +31,7 @@ PLATFORM_PACKAGES = {
 
 ROOT_CONFIG = {
     "npm_name": NPM_NAME,
+    "repository": REPOSITORY,
     "bin": {"codex": "bin/codex.js", "codex-plus-plus": "bin/codex.js"},
     "platform_packages": PLATFORM_PACKAGES,
     "requires_vendor_src": True,
