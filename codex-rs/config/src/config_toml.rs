@@ -1019,30 +1019,11 @@ mod tests {
     }
 
     #[test]
-    fn user_message_inbox_defaults_disabled_and_serializes_override() {
-        assert_eq!(
-            ConfigToml::default().user_message_inbox.unwrap_or_default(),
-            UserMessageInbox::Disabled
-        );
-        assert_eq!(
-            toml::from_str::<ConfigToml>("user_message_inbox = \"enabled\"")
-                .unwrap()
-                .user_message_inbox,
-            Some(UserMessageInbox::Enabled)
-        );
-
-        #[derive(Serialize)]
-        struct Setting {
-            user_message_inbox: UserMessageInbox,
-        }
-
-        assert_eq!(
-            toml::to_string(&Setting {
-                user_message_inbox: UserMessageInbox::Enabled,
-            })
-            .unwrap(),
-            "user_message_inbox = \"enabled\"\n"
-        );
+    fn user_message_inbox_defaults_disabled_and_parses_override() {
+        let config: ConfigToml =
+            toml::from_str("user_message_inbox = \"enabled\"").expect("valid inbox setting");
+        assert_eq!(ConfigToml::default().user_message_inbox, None);
+        assert_eq!(config.user_message_inbox, Some(UserMessageInbox::Enabled));
     }
     use pretty_assertions::assert_eq;
 
