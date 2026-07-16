@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/codex-plus-plus-splash.png" alt="Codex++ splash" width="100%" />
+  <img src="https://raw.githubusercontent.com/Pimpmuckl/codex/main/.github/codex-plus-plus-splash.png" alt="Codex++ splash" width="100%" />
 </p>
 
 # Codex++
@@ -26,14 +26,15 @@ Codex++ otherwise stays close to upstream. It uses the normal `$CODEX_HOME` for 
 
 ## Install a Release
 
-Replace a global upstream npm installation with Codex++:
+Install Codex++ globally:
 
 ```sh
-npm uninstall -g @openai/codex
-npm install -g @jjliebig/codex-plus-plus
+npm install -g --force @jjliebig/codex-plus-plus
 ```
 
-Codex++ npm releases support Windows x64, Linux x64 (musl), and macOS ARM64. Run `codex update` for a normal Codex++ update. To switch a supported installation back to upstream Codex, run:
+The `--force` flag lets npm replace an existing upstream `codex` launcher without removing your Codex configuration or accounts. Codex++ npm releases support Windows x64, Linux x64 (musl), and macOS ARM64.
+
+Run `codex update` for a normal Codex++ update. To switch a supported installation back to upstream Codex, run:
 
 ```sh
 codex update upstream
@@ -42,8 +43,7 @@ codex update upstream
 To return to Codex++ later:
 
 ```sh
-npm uninstall -g @openai/codex
-npm install -g @jjliebig/codex-plus-plus
+npm install -g --force @jjliebig/codex-plus-plus
 ```
 
 Configuration and sessions continue to use `$CODEX_HOME`. Switching or reinstalling does not remove the Codex++ account store under `$CODEX_HOME/accounts`.
