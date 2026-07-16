@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use codex_config::CONFIG_TOML_FILE;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -243,6 +244,15 @@ fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config:
     let mut config = (*turn.config).clone();
     update(&mut config);
     turn.config = Arc::new(config);
+}
+
+fn enable_user_message_inbox(turn: &mut TurnContext) {
+    update_config(turn, |config| {
+        config.config_layer_stack = config.config_layer_stack.with_user_config(
+            &config.codex_home.join(CONFIG_TOML_FILE),
+            toml::toml! { user_message_inbox = "enabled" }.into(),
+        );
+    });
 }
 
 fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
@@ -1027,6 +1037,32 @@ async fn request_plugin_install_description_refers_to_recommended_plugins_hint()
     assert!(!has_parameter(request_spec, "action_type"));
     plan.assert_visible_lacks(&["list_available_plugins_to_install"]);
     plan.assert_registered_lacks(&["list_available_plugins_to_install"]);
+}
+
+#[tokio::test]
+async fn user_message_inbox_tool_is_default_off_and_has_exact_schema_when_enabled() {
+    let disabled = probe(|_| {}).await;
+    disabled.assert_visible_lacks(&["leave_user_message"]);
+
+    let enabled = probe(enable_user_message_inbox).await;
+    enabled.assert_visible_contains(&["leave_user_message"]);
+    let ToolSpec::Function(tool) = enabled.visible_spec("leave_user_message") else {
+        panic!("expected leave_user_message function spec");
+    };
+    assert_eq!(
+        serde_json::to_value(&tool.parameters).unwrap(),
+        json!({
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message to leave for the user."
+                }
+            },
+            "required": ["message"],
+            "additionalProperties": false
+        })
+    );
 }
 
 #[tokio::test]

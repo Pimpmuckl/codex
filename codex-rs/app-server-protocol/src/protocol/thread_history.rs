@@ -27,6 +27,7 @@ use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
+use codex_protocol::codex_plus_plus::USER_MESSAGE_ITEM_ID_PREFIX;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentReasoningEvent;
@@ -489,6 +490,17 @@ impl ThreadHistoryBuilder {
         if text.is_empty() {
             return;
         }
+        if self.current_turn.as_ref().is_some_and(|turn| {
+            turn.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ThreadItem::AgentMessage { id, text: existing, .. }
+                        if id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX) && existing == &text
+                )
+            })
+        }) {
+            return;
+        }
 
         let id = self.next_item_id();
         self.push_item_in_current_turn(ThreadItem::AgentMessage {
@@ -608,8 +620,10 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::Extension(_)
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
+            codex_protocol::items::TurnItem::AgentMessage(item) => {
+                item.id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX)
+            }
             codex_protocol::items::TurnItem::UserMessage(_)
-            | codex_protocol::items::TurnItem::AgentMessage(_)
             | codex_protocol::items::TurnItem::Reasoning(_)
             | codex_protocol::items::TurnItem::WebSearch(_)
             | codex_protocol::items::TurnItem::ImageView(_)
@@ -1844,6 +1858,39 @@ mod tests {
                     review: REVIEW_FALLBACK_MESSAGE.into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn materialized_history_keeps_one_inbox_message_without_assistant_response_items() {
+        let agent_message = |id: &str, text: &str| {
+            CoreTurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
+                id: id.into(),
+                content: vec![codex_protocol::items::AgentMessageContent::Text {
+                    text: text.into(),
+                }],
+                phase: Some(CoreMessagePhase::Commentary),
+                memory_citation: None,
+            })
+        };
+        let mut builder = ThreadHistoryBuilder::new();
+        let turn_id = builder.ensure_turn().id.clone();
+        builder
+            .handle_materialized_item_lifecycle(&turn_id, &agent_message("assistant", "ordinary"));
+        let note = "[Message for you]\nCheck deployment.";
+        builder.handle_materialized_item_lifecycle(
+            &turn_id,
+            &agent_message("user-message:call-1", note),
+        );
+        builder.handle_agent_message(note.into(), Some(CoreMessagePhase::Commentary), None);
+        assert_eq!(
+            builder.active_turn_snapshot().expect("active turn").items,
+            vec![ThreadItem::AgentMessage {
+                id: "user-message:call-1".into(),
+                text: note.into(),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+            }]
         );
     }
 

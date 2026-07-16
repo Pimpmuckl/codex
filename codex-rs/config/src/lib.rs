@@ -47,6 +47,7 @@ pub use cloud_config_layers::CloudConfigFragmentSource;
 pub use cloud_config_layers::CloudConfigLayerError;
 pub use cloud_config_layers::cloud_config_layers_from_fragments;
 pub use codex_plus_plus::ModelCapacityRetryMode;
+pub use codex_plus_plus::UserMessageInbox;
 pub use codex_plus_plus::WeeklyUsageWindowAutoStart;
 pub use codex_protocol::config_types::ProfileV2Name;
 pub use codex_protocol::config_types::ProfileV2NameParseError;
