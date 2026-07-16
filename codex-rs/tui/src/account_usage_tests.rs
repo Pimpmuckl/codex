@@ -2,6 +2,7 @@ use super::*;
 use crate::legacy_core::config::ConfigBuilder;
 use codex_protocol::auth::RefreshTokenFailedError;
 use codex_protocol::protocol::RateLimitWindow;
+use pretty_assertions::assert_eq;
 use wiremock::MockServer;
 
 const TEST_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
@@ -55,6 +56,38 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
             five_hour_exhausted: false,
             weekly_reset_at: Some(1_750_000_000),
             weekly_unused: Some(false),
+            weekly_remaining_percent: Some(100),
+            weekly_exhausted: false,
+        }
+    );
+}
+
+#[test]
+fn maps_weekly_only_primary_window_to_weekly_picker_usage() {
+    let snapshot = RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 0.0,
+            window_minutes: Some(10_080),
+            resets_at: Some(1_750_000_000),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    };
+
+    assert_eq!(
+        account_usage_from_snapshot(&snapshot),
+        AccountUsage {
+            primary_window_minutes: None,
+            five_hour_reset_at: None,
+            five_hour_remaining_percent: None,
+            five_hour_exhausted: false,
+            weekly_reset_at: Some(1_750_000_000),
+            weekly_unused: Some(true),
             weekly_remaining_percent: Some(100),
             weekly_exhausted: false,
         }
