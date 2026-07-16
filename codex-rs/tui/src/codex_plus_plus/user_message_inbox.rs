@@ -23,9 +23,16 @@ pub(crate) struct UserMessage {
     body: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredUserMessage {
+    id: String,
+    body: String,
+    user_turn_count: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct UserMessageInboxState {
-    messages: VecDeque<UserMessage>,
+    messages: VecDeque<StoredUserMessage>,
     overflowed: bool,
 }
 
@@ -73,7 +80,11 @@ pub(crate) fn recognize(item: &AgentMessageItem) -> Option<UserMessage> {
 }
 
 impl UserMessageInboxState {
-    pub(crate) fn record(&mut self, message: UserMessage) -> Option<UserMessageHistoryCell> {
+    pub(crate) fn record(
+        &mut self,
+        message: UserMessage,
+        user_turn_count: usize,
+    ) -> Option<UserMessageHistoryCell> {
         if self.messages.iter().any(|stored| stored.id == message.id) {
             return None;
         }
@@ -81,7 +92,11 @@ impl UserMessageInboxState {
         let cell = UserMessageHistoryCell {
             body: message.body.clone(),
         };
-        self.messages.push_front(message);
+        self.messages.push_front(StoredUserMessage {
+            id: message.id,
+            body: message.body,
+            user_turn_count,
+        });
         if self.messages.len() > MAX_MESSAGES {
             self.messages.pop_back();
             self.overflowed = true;
@@ -89,10 +104,22 @@ impl UserMessageInboxState {
         Some(cell)
     }
 
+    pub(crate) fn truncate_to_user_turn_count(&mut self, user_turn_count: usize) {
+        self.messages
+            .retain(|message| message.user_turn_count <= user_turn_count);
+    }
+
     pub(crate) fn history_cell(&self, enabled: bool) -> InboxHistoryCell {
         InboxHistoryCell {
             enabled,
-            messages: self.messages.iter().cloned().collect(),
+            messages: self
+                .messages
+                .iter()
+                .map(|message| UserMessage {
+                    id: message.id.clone(),
+                    body: message.body.clone(),
+                })
+                .collect(),
             overflowed: self.overflowed,
         }
     }

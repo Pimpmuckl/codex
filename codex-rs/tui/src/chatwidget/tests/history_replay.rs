@@ -13,13 +13,13 @@ use pretty_assertions::assert_eq;
 #[tokio::test]
 async fn durable_user_message_uses_shared_live_replay_path_and_deduplicates() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.transcript.visible_user_turn_count = 1;
     let item = AppServerThreadItem::AgentMessage {
         id: "user-message:call-1".to_string(),
         text: "[Message for you]\nCheck deployment.".to_string(),
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
     };
-
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
@@ -31,15 +31,13 @@ async fn durable_user_message_uses_shared_live_replay_path_and_deduplicates() {
     );
     chat.replay_thread_item(item, "turn-1".to_string(), ReplayKind::ThreadSnapshot);
 
-    let rendered = drain_insert_history(&mut rx)
-        .into_iter()
-        .flatten()
-        .flat_map(|line| line.spans)
-        .map(|span| span.content.into_owned())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let rendered = lines_to_single_string(&drain_insert_history(&mut rx).concat());
     assert_eq!(rendered.matches("Message for you").count(), 1);
     assert!(rendered.contains("Check deployment."));
+    chat.truncate_agent_copy_history_to_user_turn_count(/*user_turn_count*/ 0);
+    let rolled_back =
+        lines_to_single_string(&chat.user_message_inbox.history_cell(true).display_lines(80));
+    assert!(!rolled_back.contains("Check deployment."));
 }
 
 #[tokio::test]

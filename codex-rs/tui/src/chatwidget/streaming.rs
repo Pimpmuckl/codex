@@ -275,7 +275,10 @@ impl ChatWidget {
             }
         }
         if let Some(message) = crate::codex_plus_plus::recognize_user_message(&item) {
-            if let Some(cell) = self.user_message_inbox.record(message) {
+            if let Some(cell) = self
+                .user_message_inbox
+                .record(message, self.transcript.visible_user_turn_count)
+            {
                 self.add_to_history(cell);
             }
         } else {

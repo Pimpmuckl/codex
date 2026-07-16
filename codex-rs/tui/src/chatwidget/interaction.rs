@@ -261,6 +261,8 @@ impl ChatWidget {
     ) {
         self.transcript
             .truncate_copy_history_to_user_turn_count(user_turn_count);
+        self.user_message_inbox
+            .truncate_to_user_turn_count(user_turn_count);
     }
 
     /// Inner implementation with an injectable clipboard backend for testing.

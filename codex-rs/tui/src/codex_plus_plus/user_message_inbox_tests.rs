@@ -15,7 +15,12 @@ fn item(id: &str, text: &str, phase: Option<MessagePhase>) -> AgentMessageItem {
         memory_citation: None,
     }
 }
-
+fn user_message(id: impl Into<String>, body: impl Into<String>) -> UserMessage {
+    UserMessage {
+        id: id.into(),
+        body: body.into(),
+    }
+}
 fn rendered(cell: &impl HistoryCell, width: u16) -> String {
     cell.display_lines(width)
         .into_iter()
@@ -28,7 +33,6 @@ fn rendered(cell: &impl HistoryCell, width: u16) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
 #[test]
 fn recognizes_only_exact_durable_user_messages() {
     assert!(!enabled(&ConfigLayerStack::default()));
@@ -70,28 +74,27 @@ fn recognizes_only_exact_durable_user_messages() {
         assert_eq!(recognize(&invalid), None);
     }
 }
-
 #[test]
 fn transcript_and_inbox_snapshots_cover_bounded_thread_state() {
     let mut populated = UserMessageInboxState::default();
     let transcript_cell = populated
-        .record(UserMessage {
-            id: "user-message:first".to_string(),
-            body: "First paragraph\n\nSecond paragraph".to_string(),
-        })
+        .record(
+            user_message("user-message:first", "First paragraph\n\nSecond paragraph"),
+            /*user_turn_count*/ 1,
+        )
         .expect("new message");
     populated
-        .record(UserMessage {
-            id: "user-message:second".to_string(),
-            body: "Second note".to_string(),
-        })
+        .record(
+            user_message("user-message:second", "Second note"),
+            /*user_turn_count*/ 2,
+        )
         .expect("new message");
     assert!(
         populated
-            .record(UserMessage {
-                id: "user-message:second".to_string(),
-                body: "duplicate".to_string(),
-            })
+            .record(
+                user_message("user-message:second", "duplicate"),
+                /*user_turn_count*/ 2
+            )
             .is_none()
     );
 
@@ -127,14 +130,13 @@ fn transcript_and_inbox_snapshots_cover_bounded_thread_state() {
     let disabled_with_messages = rendered(&populated.history_cell(false), 80);
     assert!(disabled_with_messages.contains("Second note"));
     assert!(disabled_with_messages.contains("Enable Agent inbox messages"));
-
     let mut overflowed = UserMessageInboxState::default();
     for index in 0..=MAX_MESSAGES {
         overflowed
-            .record(UserMessage {
-                id: format!("user-message:{index}"),
-                body: format!("Message {index}"),
-            })
+            .record(
+                user_message(format!("user-message:{index}"), format!("Message {index}")),
+                /*user_turn_count*/ index,
+            )
             .expect("unique message");
     }
     assert_eq!(overflowed.messages.len(), MAX_MESSAGES);
