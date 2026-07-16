@@ -64,10 +64,13 @@ jobs:
     permissions:
       contents: read
     env:
+      AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       TARGET: ${{ matrix.target }}
       VERSION: ${{ needs.prepare.outputs.version }}
       ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+      LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -80,6 +83,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ matrix.target }}
+
+      - name: Restore Codex++ build cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: codex-rs -> target
+          shared-key: codex-plus-plus-${{ env.TARGET }}-release-fast-${{ env.VERSION }}-${{ github.sha }}
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET VERSION
+          cache-bin: false
+          cache-workspace-crates: false
+          save-if: false
 
       - name: Install Zig
         if: runner.os == 'Linux'
@@ -108,10 +121,6 @@ jobs:
 
       - name: Build package archive
         shell: bash
-        env:
-          AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ runner.os == 'Linux' && '1' || '' }}
-          AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ runner.os == 'Linux' && '1' || '' }}
-          LIBSQLITE3_FLAGS: ${{ runner.os == 'Windows' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
         run: |
           set -euo pipefail
           archive="dist/codex-plus-plus-${VERSION}-${TARGET}.${ARCHIVE_SUFFIX}"
