@@ -2,7 +2,7 @@
 source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/codex_plus_plus_tests.rs
 expression: "[persistence_success_message(),\npersistence_error_message(\"permission denied\".to_string()),\npersistence_overridden_message(),\npersistence_verification_failed_message(\"connection closed\".to_string()),].join(\"\\n\")"
 ---
-Codex++ settings updated. Account selection and capacity retries apply after restart.
+Codex++ settings updated. Changes apply after restart.
 Failed to update Codex++ settings: permission denied
 Some Codex++ settings are controlled elsewhere and were not changed.
 Codex++ settings were saved, but Codex could not verify them for this project: connection closed

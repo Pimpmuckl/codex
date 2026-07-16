@@ -24,7 +24,14 @@ fn settings_view(
     let weekly_supported = automatic == AutomaticAccountSelection::Enabled;
     (
         ListSelectionView::new(
-            codex_plus_plus_settings_params(automatic, weekly, capacity, weekly_supported, &keymap),
+            codex_plus_plus_settings_params(
+                automatic,
+                weekly,
+                capacity,
+                /*current_user_message_inbox*/ false,
+                weekly_supported,
+                &keymap,
+            ),
             AppEventSender::new(tx),
             keymap,
         ),
@@ -39,7 +46,7 @@ fn render_settings(
 ) -> String {
     let (view, _rx) = settings_view(automatic, weekly, capacity);
     let mut terminal =
-        Terminal::new(VT100Backend::new(/*width*/ 84, /*height*/ 10)).expect("terminal");
+        Terminal::new(VT100Backend::new(/*width*/ 84, /*height*/ 14)).expect("terminal");
     terminal
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .expect("render Codex++ settings");
@@ -87,6 +94,7 @@ fn unsupported_settings_save_only_the_visible_settings() {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: None,
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
+            user_message_inbox: UserMessageInbox::Disabled,
         })
     );
 }
@@ -109,6 +117,7 @@ fn weekly_setting_saves_full_selection() {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Disabled),
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
+            user_message_inbox: UserMessageInbox::Disabled,
         })
     );
 }
@@ -124,6 +133,8 @@ fn capacity_setting_saves_indefinite_mode() {
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     assert_matches!(
@@ -132,6 +143,7 @@ fn capacity_setting_saves_indefinite_mode() {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Enabled),
             model_capacity_retry_mode: ModelCapacityRetryMode::Indefinite,
+            user_message_inbox: UserMessageInbox::Enabled,
         })
     );
 }

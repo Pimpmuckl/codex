@@ -6,9 +6,13 @@ expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWi
   Codex++ Settings
   Select the settings to enable.
 
-› 1. [ ] Automatic account selection  Choose and switch accounts when needed.
-  2. [*] Keep retrying at capacity    After 1, 2, 5, and 15 minutes, retry every
-                                      15 minutes.
+› 1. [ ] Automatic account selection          Choose and switch accounts when
+                                              needed.
+  2. [*] Keep retrying at capacity            After 1, 2, 5, and 15 minutes, retry
+                                              every 15 minutes.
+  3. [ ] Agent inbox messages (Experimental)  Let Codex leave durable messages you
+                                              can review with /inbox.
+
 
 
   Press space to toggle; enter to save; esc to cancel

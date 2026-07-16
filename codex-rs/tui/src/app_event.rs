@@ -44,6 +44,7 @@ use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ModelCapacityRetryMode;
+use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::AutomaticAccountSelection;
@@ -864,6 +865,7 @@ pub(crate) enum AppEvent {
         automatic_account_selection: AutomaticAccountSelection,
         weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
         model_capacity_retry_mode: ModelCapacityRetryMode,
+        user_message_inbox: UserMessageInbox,
     },
 
     OpenCodexPlusPlusAccounts,

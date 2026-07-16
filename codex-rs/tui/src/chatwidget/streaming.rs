@@ -274,29 +274,35 @@ impl ChatWidget {
                 AgentMessageContent::Text { text } => message.push_str(text),
             }
         }
-        let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
-        self.finalize_completed_assistant_message(
-            (!parsed.visible_markdown.is_empty()).then_some(parsed.visible_markdown.as_str()),
-        );
-        if matches!(item.phase, Some(MessagePhase::FinalAnswer) | None)
-            && !parsed.visible_markdown.is_empty()
-        {
-            self.record_agent_markdown(&parsed.visible_markdown);
-        }
-        if !from_replay
-            && let Some(cwd) = parsed.last_created_branch_cwd()
-            && let Some(thread_id) = self.thread_id
-            && let Some(runner) = self.workspace_command_runner.clone()
-        {
-            let cwd = PathBuf::from(cwd);
-            let tx = self.app_event_tx.clone();
-            tokio::spawn(async move {
-                if let Some(branch) =
-                    crate::branch_summary::current_branch_name(runner.as_ref(), &cwd).await
-                {
-                    tx.send(AppEvent::SyncThreadGitBranch { thread_id, branch });
-                }
-            });
+        if let Some(message) = crate::codex_plus_plus::recognize_user_message(&item) {
+            if let Some(cell) = self.user_message_inbox.record(message) {
+                self.add_to_history(cell);
+            }
+        } else {
+            let parsed = parse_assistant_markdown(&message, self.config.cwd.as_path());
+            self.finalize_completed_assistant_message(
+                (!parsed.visible_markdown.is_empty()).then_some(parsed.visible_markdown.as_str()),
+            );
+            if matches!(item.phase, Some(MessagePhase::FinalAnswer) | None)
+                && !parsed.visible_markdown.is_empty()
+            {
+                self.record_agent_markdown(&parsed.visible_markdown);
+            }
+            if !from_replay
+                && let Some(cwd) = parsed.last_created_branch_cwd()
+                && let Some(thread_id) = self.thread_id
+                && let Some(runner) = self.workspace_command_runner.clone()
+            {
+                let cwd = PathBuf::from(cwd);
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    if let Some(branch) =
+                        crate::branch_summary::current_branch_name(runner.as_ref(), &cwd).await
+                    {
+                        tx.send(AppEvent::SyncThreadGitBranch { thread_id, branch });
+                    }
+                });
+            }
         }
         self.status_state.pending_status_indicator_restore = match item.phase {
             // Models that don't support preambles only output AgentMessageItems on turn completion.

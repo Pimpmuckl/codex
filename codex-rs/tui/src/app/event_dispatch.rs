@@ -1819,6 +1819,7 @@ impl App {
                 automatic_account_selection,
                 weekly_usage_window_auto_start,
                 model_capacity_retry_mode,
+                user_message_inbox,
             } => {
                 crate::codex_plus_plus::persist_settings(
                     self,
@@ -1826,6 +1827,7 @@ impl App {
                     automatic_account_selection,
                     weekly_usage_window_auto_start,
                     Some(model_capacity_retry_mode),
+                    user_message_inbox,
                 )
                 .await;
             }
