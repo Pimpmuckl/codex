@@ -20,6 +20,7 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+const MINUTES_PER_WEEK: i64 = 7 * 24 * 60;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AccountUsage {
@@ -207,39 +208,28 @@ fn account_usage(response: &RateLimitsWithResetCredits) -> AccountUsage {
 fn account_usage_from_snapshot(snapshot: &RateLimitSnapshot) -> AccountUsage {
     let remaining_percent =
         |used_percent: f64| (100.0 - used_percent).clamp(0.0, 100.0).round() as u8;
+    let primary = snapshot.primary.as_ref();
+    let secondary = snapshot.secondary.as_ref();
+    let primary_is_weekly = secondary.is_none()
+        && primary
+            .and_then(|window| window.window_minutes)
+            .is_some_and(|minutes| {
+                (MINUTES_PER_WEEK * 95 / 100..=MINUTES_PER_WEEK * 105 / 100).contains(&minutes)
+            });
+    let (five_hour, weekly) = if primary_is_weekly {
+        (None, primary)
+    } else {
+        (primary, secondary)
+    };
     AccountUsage {
-        primary_window_minutes: snapshot
-            .primary
-            .as_ref()
-            .and_then(|window| window.window_minutes),
-        five_hour_reset_at: snapshot
-            .primary
-            .as_ref()
-            .and_then(|window| window.resets_at),
-        five_hour_remaining_percent: snapshot
-            .primary
-            .as_ref()
-            .map(|window| remaining_percent(window.used_percent)),
-        five_hour_exhausted: snapshot
-            .primary
-            .as_ref()
-            .is_some_and(|window| window.used_percent >= 100.0),
-        weekly_reset_at: snapshot
-            .secondary
-            .as_ref()
-            .and_then(|window| window.resets_at),
-        weekly_unused: snapshot
-            .secondary
-            .as_ref()
-            .map(|window| window.used_percent == 0.0),
-        weekly_remaining_percent: snapshot
-            .secondary
-            .as_ref()
-            .map(|window| remaining_percent(window.used_percent)),
-        weekly_exhausted: snapshot
-            .secondary
-            .as_ref()
-            .is_some_and(|window| window.used_percent >= 100.0),
+        primary_window_minutes: five_hour.and_then(|window| window.window_minutes),
+        five_hour_reset_at: five_hour.and_then(|window| window.resets_at),
+        five_hour_remaining_percent: five_hour.map(|window| remaining_percent(window.used_percent)),
+        five_hour_exhausted: five_hour.is_some_and(|window| window.used_percent >= 100.0),
+        weekly_reset_at: weekly.and_then(|window| window.resets_at),
+        weekly_unused: weekly.map(|window| window.used_percent == 0.0),
+        weekly_remaining_percent: weekly.map(|window| remaining_percent(window.used_percent)),
+        weekly_exhausted: weekly.is_some_and(|window| window.used_percent >= 100.0),
     }
 }
 
