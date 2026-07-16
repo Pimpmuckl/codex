@@ -164,8 +164,19 @@ def npm_view(spec: str, field: str) -> str | None:
         check=False,
     )
     if result.returncode == 0:
-        value = json.loads(result.stdout)
-        return value if isinstance(value, str) else None
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"npm view returned invalid JSON for {spec} {field}"
+            ) from error
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
+            return value[0]
+        raise RuntimeError(
+            f"npm view returned ambiguous JSON for {spec} {field}; expected one string"
+        )
     if "E404" in result.stderr:
         return None
     raise RuntimeError(result.stderr.strip() or f"npm view failed for {spec}")

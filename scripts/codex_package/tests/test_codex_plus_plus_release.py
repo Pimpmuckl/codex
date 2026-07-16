@@ -51,6 +51,39 @@ def write_npm_tarballs(directory: Path) -> None:
 
 
 class CodexPlusPlusReleaseTest(unittest.TestCase):
+    def test_npm_view_accepts_npm_12_singleton_arrays(self) -> None:
+        cases = (
+            (release.PACKAGE_NAME, "name", release.PACKAGE_NAME),
+            (
+                f"{release.PACKAGE_NAME}@{VERSION}",
+                "dist.integrity",
+                "sha512-example",
+            ),
+        )
+        for spec, field, expected in cases:
+            with self.subTest(field=field):
+                result = release.subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=json.dumps([expected]), stderr=""
+                )
+                with patch.object(release.subprocess, "run", return_value=result):
+                    self.assertEqual(release.npm_view(spec, field), expected)
+
+    def test_npm_view_rejects_ambiguous_or_malformed_json(self) -> None:
+        cases = (
+            (json.dumps(["first", "second"]), "ambiguous JSON"),
+            ("not JSON", "invalid JSON"),
+        )
+        for stdout, message in cases:
+            with self.subTest(message=message):
+                result = release.subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=stdout, stderr=""
+                )
+                with (
+                    patch.object(release.subprocess, "run", return_value=result),
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    release.npm_view(release.PACKAGE_NAME, "name")
+
     def test_verify_accepts_exact_native_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -145,7 +178,7 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
 
             run.assert_not_called()
 
-    def test_publish_uses_oidc_provenance_and_confirms_integrity(self) -> None:
+    def test_publish_proceeds_when_only_older_versions_exist(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             npm_dir = Path(temp)
             write_npm_tarballs(npm_dir)
@@ -161,6 +194,7 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
 
             def npm_view(spec: str, field: str) -> str | None:
                 if field == "name":
+                    self.assertEqual(spec, release.PACKAGE_NAME)
                     return release.PACKAGE_NAME
                 return integrities[spec] if spec in published else None
 
@@ -177,6 +211,45 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
                 release.publish(VERSION, npm_dir)
 
             self.assertEqual(run.call_count, 4)
+
+    def test_publish_continues_after_manual_linux_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            npm_dir = Path(temp)
+            write_npm_tarballs(npm_dir)
+            path, package_version, _tag = release.release_entries(VERSION, npm_dir)[0]
+            linux_spec = f"{release.PACKAGE_NAME}@{package_version}"
+            linux_integrity = release.tarball_integrity(path)
+
+            def npm_view(spec: str, field: str) -> str | None:
+                if field == "name":
+                    return release.PACKAGE_NAME if spec == linux_spec else None
+                return linux_integrity if spec == linux_spec else None
+
+            with (
+                patch.object(release, "npm_view", side_effect=npm_view),
+                patch.object(release.subprocess, "run") as run,
+            ):
+                release.publish(VERSION, npm_dir, dry_run=True)
+
+            run.assert_not_called()
+
+    def test_publish_preserves_manual_bootstrap_guidance_when_package_absent(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            npm_dir = Path(temp)
+            write_npm_tarballs(npm_dir)
+
+            with (
+                patch.object(release, "npm_view", return_value=None),
+                patch.object(release.subprocess, "run") as run,
+                self.assertRaisesRegex(
+                    RuntimeError, "manually publish its linux-x64 tarball"
+                ),
+            ):
+                release.publish(VERSION, npm_dir)
+
+            run.assert_not_called()
 
 
 if __name__ == "__main__":
