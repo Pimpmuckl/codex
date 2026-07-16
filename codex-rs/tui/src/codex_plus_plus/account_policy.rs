@@ -3,6 +3,7 @@
 use crate::app::App;
 use crate::app_server_session::AppServerSession;
 use codex_config::ModelCapacityRetryMode;
+use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
 
@@ -12,6 +13,7 @@ pub(crate) async fn persist_settings(
     automatic_account_selection: AutomaticAccountSelection,
     weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
     model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
+    user_message_inbox: UserMessageInbox,
 ) {
     let automatic = match automatic_account_selection {
         AutomaticAccountSelection::Enabled => "enabled",
@@ -39,6 +41,13 @@ pub(crate) async fn persist_settings(
             }),
         ));
     }
+    writes.push(crate::config_update::replace_config_value(
+        "user_message_inbox",
+        serde_json::json!(match user_message_inbox {
+            UserMessageInbox::Enabled => "enabled",
+            UserMessageInbox::Disabled => "disabled",
+        }),
+    ));
     if let Err(err) =
         crate::config_update::write_config_batch(app_server.request_handle(), writes).await
     {
@@ -91,6 +100,15 @@ pub(crate) async fn persist_settings(
         Some("indefinite") => ModelCapacityRetryMode::Indefinite,
         _ => ModelCapacityRetryMode::Bounded,
     };
+    let effective_user_message_inbox = match response
+        .config
+        .additional
+        .get("user_message_inbox")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("enabled") => UserMessageInbox::Enabled,
+        _ => UserMessageInbox::Disabled,
+    };
     app.config.automatic_account_selection = effective_automatic;
     app.config.weekly_usage_window_auto_start = effective_weekly;
     app.config.model_capacity_retry_mode = effective_capacity;
@@ -100,6 +118,7 @@ pub(crate) async fn persist_settings(
     if effective_automatic == automatic_account_selection
         && weekly_usage_window_auto_start.is_none_or(|weekly| effective_weekly == weekly)
         && model_capacity_retry_mode.is_none_or(|capacity| effective_capacity == capacity)
+        && effective_user_message_inbox == user_message_inbox
     {
         app.chat_widget.codex_plus_plus_settings_persisted(
             effective_automatic,

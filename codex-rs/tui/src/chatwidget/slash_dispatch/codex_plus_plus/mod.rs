@@ -10,9 +10,12 @@ use AutomaticAccountSelection::Disabled as AutomaticOff;
 use AutomaticAccountSelection::Enabled as AutomaticOn;
 use ModelCapacityRetryMode::Bounded as CapacityBounded;
 use ModelCapacityRetryMode::Indefinite as CapacityIndefinite;
+use UserMessageInbox::Disabled as InboxOff;
+use UserMessageInbox::Enabled as InboxOn;
 use WeeklyUsageWindowAutoStart::Disabled as WeeklyOff;
 use WeeklyUsageWindowAutoStart::Enabled as WeeklyOn;
 use codex_config::ModelCapacityRetryMode;
+use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
 use crossterm::event::KeyCode;
@@ -27,12 +30,20 @@ use crate::keymap::ListKeymap;
 use crate::keymap::primary_binding;
 
 impl ChatWidget {
+    pub(super) fn show_user_message_inbox(&mut self) {
+        let enabled =
+            crate::codex_plus_plus::user_message_inbox_enabled(&self.config.config_layer_stack);
+        self.add_to_history(self.user_message_inbox.history_cell(enabled));
+        self.request_redraw();
+    }
+
     pub(super) fn open_codex_plus_plus_popup(&mut self) {
         let list_keymap = settings_list_keymap(self.bottom_pane.list_keymap());
         let params = codex_plus_plus_settings_params(
             self.config.automatic_account_selection,
             self.config.weekly_usage_window_auto_start,
             self.config.model_capacity_retry_mode,
+            crate::codex_plus_plus::user_message_inbox_enabled(&self.config.config_layer_stack),
             self.weekly_start_supported,
             &list_keymap,
         );
@@ -79,6 +90,7 @@ struct SettingsSelection {
     automatic: Arc<AtomicBool>,
     weekly: Arc<AtomicBool>,
     capacity_indefinite: Arc<AtomicBool>,
+    user_message_inbox: Arc<AtomicBool>,
 }
 
 fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
@@ -95,6 +107,7 @@ fn codex_plus_plus_settings_params(
     current_automatic: AutomaticAccountSelection,
     current_weekly: WeeklyUsageWindowAutoStart,
     current_capacity: ModelCapacityRetryMode,
+    current_user_message_inbox: bool,
     weekly_supported: bool,
     list_keymap: &ListKeymap,
 ) -> SelectionViewParams {
@@ -102,6 +115,7 @@ fn codex_plus_plus_settings_params(
         automatic: Arc::new(AtomicBool::new(current_automatic == AutomaticOn)),
         weekly: Arc::new(AtomicBool::new(current_weekly == WeeklyOn)),
         capacity_indefinite: Arc::new(AtomicBool::new(current_capacity == CapacityIndefinite)),
+        user_message_inbox: Arc::new(AtomicBool::new(current_user_message_inbox)),
     };
     let mut items = vec![settings_item(
         "Automatic account selection",
@@ -123,6 +137,13 @@ fn codex_plus_plus_settings_params(
         "Keep retrying at capacity",
         "After 1, 2, 5, and 15 minutes, retry every 15 minutes.",
         Arc::clone(&selection.capacity_indefinite),
+        selection.clone(),
+        weekly_supported,
+    ));
+    items.push(settings_item(
+        "Agent inbox messages (Experimental)",
+        "Let Codex leave durable messages you can review with /inbox.",
+        Arc::clone(&selection.user_message_inbox),
         selection,
         weekly_supported,
     ));
@@ -171,6 +192,11 @@ fn settings_item(
                 } else {
                     CapacityBounded
                 },
+                user_message_inbox: if selection.user_message_inbox.load(Ordering::Relaxed) {
+                    InboxOn
+                } else {
+                    InboxOff
+                },
             });
         })],
         dismiss_on_select: true,
@@ -194,8 +220,7 @@ fn settings_hint_line(list_keymap: &ListKeymap) -> Line<'static> {
 }
 
 fn persistence_success_message() -> String {
-    "Codex++ settings updated. Account selection and capacity retries apply after restart."
-        .to_string()
+    "Codex++ settings updated. Changes apply after restart.".to_string()
 }
 
 fn persistence_error_message(err: String) -> String {

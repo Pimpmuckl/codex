@@ -458,6 +458,9 @@ impl ChatWidget {
                 self.open_codex_plus_plus_popup();
                 self.defer_input_until_settings_applied();
             }
+            SlashCommand::Inbox => {
+                self.show_user_message_inbox();
+            }
             SlashCommand::Ide => {
                 self.handle_ide_command();
             }
@@ -1058,6 +1061,7 @@ impl ChatWidget {
             | SlashCommand::Usage
             | SlashCommand::Accounts
             | SlashCommand::CodexPlusPlus
+            | SlashCommand::Inbox
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop

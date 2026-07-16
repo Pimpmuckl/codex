@@ -106,6 +106,7 @@ impl ChatWidget {
                 skills: None,
             }),
             transcript: TranscriptState::new(active_cell),
+            user_message_inbox: crate::codex_plus_plus::UserMessageInboxState::default(),
             raw_output_mode: config.tui_raw_output_mode,
             config,
             weekly_start_supported: false,
