@@ -24,7 +24,7 @@ Codex++ is a lean fork of upstream [OpenAI Codex](https://github.com/openai/code
 
 Codex++ otherwise stays close to upstream. It uses the normal `$CODEX_HOME` for configuration, sessions, plugins, and state, while imported account credentials live under `$CODEX_HOME/accounts`.
 
-## Install and Update
+## Install a Release
 
 Replace a global upstream npm installation with Codex++:
 
