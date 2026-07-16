@@ -139,6 +139,7 @@ jobs:
           set -euo pipefail
           [[ "${{ steps.restore-cache.outputs.cache-hit }}" == "true" ]]
           cargo clean -p v8 --target "$TARGET" --profile release --manifest-path codex-rs/Cargo.toml
+          rm -rf "codex-rs/target/${TARGET}/release/gn_out"
           native_library="codex-rs/target/${TARGET}/release/gn_out/obj/librusty_v8.a"
           if [[ "$TARGET" == *-pc-windows-msvc ]]; then
             native_library="codex-rs/target/${TARGET}/release/gn_out/obj/rusty_v8.lib"
@@ -147,6 +148,7 @@ jobs:
             echo "cargo clean left the rusty_v8 native library in place: $native_library" >&2
             exit 1
           }
+          echo "V8_NATIVE_LIBRARY=$native_library" >> "$GITHUB_ENV"
 
       - name: Run corrected warm release sample
         shell: bash
@@ -168,6 +170,10 @@ jobs:
             --executable "$EXECUTABLE" \
             --started-at-ns "$WARM_STARTED_NS" \
             --output "benchmark-results/${TARGET}-warm.json"
+          [[ -e "$V8_NATIVE_LIBRARY" ]] || {
+            echo "warm build did not recreate the rusty_v8 native library: $V8_NATIVE_LIBRARY" >&2
+            exit 1
+          }
 
       - name: Upload timing records
         if: always()
