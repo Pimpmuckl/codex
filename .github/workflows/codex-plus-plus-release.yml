@@ -2,17 +2,28 @@ name: Codex++ release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "codex-plus-plus-v*"
+    paths:
+      - ".github/workflows/codex-plus-plus-release.yml"
+      - "codex-rs/**/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - "codex-rs/rust-toolchain.toml"
+      - "scripts/build_codex_package.py"
+      - "scripts/build_codex_plus_plus.py"
+      - "scripts/codex_package/**"
 
 permissions: {}
 
 concurrency:
   group: codex-plus-plus-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   prepare:
+    if: startsWith(github.ref, 'refs/tags/codex-plus-plus-v')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -41,6 +52,101 @@ jobs:
             exit 1
           }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release helpers
+        run: |
+          python scripts/codex_package/test_build_codex_plus_plus.py
+          python scripts/codex_package/tests/test_codex_plus_plus_release.py
+          python -m py_compile \
+            scripts/build_codex_plus_plus.py \
+            scripts/codex_package/codex_plus_plus/release.py
+
+  warm-cache:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Restore and save Codex++ dependency cache
+        continue-on-error: true
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: codex-rs -> target
+          shared-key: codex-plus-plus-${{ env.TARGET }}-release
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET
+          cache-bin: false
+          cache-workspace-crates: false
+
+      - name: Regenerate v8 after cache restore
+        working-directory: codex-rs
+        shell: bash
+        run: cargo clean -p v8 --target "$TARGET" --profile release
+
+      - name: Install Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash .github/scripts/install-musl-build-tools.sh
+
+      - name: Build bundled bwrap
+        if: runner.os == 'Linux'
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --profile release --bin bwrap
+          bwrap="target/${TARGET}/release/bwrap"
+          digest="$(sha256sum "$bwrap" | awk '{print $1}')"
+          echo "BWRAP=${GITHUB_WORKSPACE}/codex-rs/${bwrap}" >> "$GITHUB_ENV"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+
+      - name: Warm full-release dependencies
+        shell: bash
+        run: |
+          package_args=(
+            --cargo-profile release
+            --target "$TARGET"
+            --package-dir "dist/cache-package-${TARGET}"
+            --force
+          )
+          if [[ -n "${BWRAP:-}" ]]; then
+            package_args+=(--bwrap-bin "$BWRAP")
+          fi
+          python scripts/build_codex_plus_plus.py --suffix cache -- "${package_args[@]}"
 
   build:
     needs: prepare
@@ -84,15 +190,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Restore Codex++ build cache
+      - name: Restore Codex++ dependency cache
+        continue-on-error: true
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: codex-rs -> target
-          shared-key: codex-plus-plus-${{ env.TARGET }}-release-fast-${{ env.VERSION }}-${{ github.sha }}
-          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET VERSION
+          shared-key: codex-plus-plus-${{ env.TARGET }}-release
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET
           cache-bin: false
           cache-workspace-crates: false
           save-if: false
+
+      - name: Regenerate v8 after cache restore
+        working-directory: codex-rs
+        shell: bash
+        run: cargo clean -p v8 --target "$TARGET" --profile release
 
       - name: Install Zig
         if: runner.os == 'Linux'
@@ -112,9 +224,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --target "$TARGET" --profile release-fast --bin bwrap
-          bwrap="target/${TARGET}/release-fast/bwrap"
-          strip --strip-debug --strip-unneeded "$bwrap"
+          cargo build --target "$TARGET" --profile release --bin bwrap
+          bwrap="target/${TARGET}/release/bwrap"
           digest="$(sha256sum "$bwrap" | awk '{print $1}')"
           echo "BWRAP=${GITHUB_WORKSPACE}/codex-rs/${bwrap}" >> "$GITHUB_ENV"
           echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
@@ -136,6 +247,7 @@ jobs:
           python scripts/build_codex_plus_plus.py \
             --fork-version "$VERSION" \
             -- \
+            --cargo-profile release \
             "${package_args[@]}"
 
       - name: Smoke package
@@ -154,7 +266,7 @@ jobs:
           path: dist/codex-plus-plus-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_suffix }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 1
 
   stage-npm:
     needs:
@@ -205,7 +317,7 @@ jobs:
           path: dist/npm/*
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 1
 
   publish-npm:
     needs:
@@ -240,6 +352,8 @@ jobs:
         run: |
           (cd dist/npm && sha256sum --check *.sha256)
           python scripts/codex_package/codex_plus_plus/release.py publish \
+            --version "$VERSION" --npm-dir dist/npm --dry-run
+          python scripts/codex_package/codex_plus_plus/release.py publish \
             --version "$VERSION" --npm-dir dist/npm
 
   publish-github:
@@ -250,6 +364,7 @@ jobs:
       - publish-npm
     runs-on: ubuntu-24.04
     permissions:
+      actions: write
       contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -306,3 +421,16 @@ jobs:
               --notes-file "$notes"
           fi
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+      - name: Delete intermediate artifacts
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name | startswith("codex-plus-plus-native-") or startswith("codex-plus-plus-npm-")) | .id' |
+          while read -r artifact_id; do
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+          done
