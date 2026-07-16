@@ -1,28 +1,76 @@
+# Codex++ Fork Rules
+
+These rules apply to all Codex++ work in this repository. Within this repository's
+`AGENTS.md` guidance, they override conflicting instructions below. Nested instruction files may
+add local requirements but must not weaken these rules.
+
+## Minimize upstream divergence
+
+- Keep the maintained difference from upstream as small and isolated as possible.
+- Put fork-owned behavior in focused, capability-named files. Rust fork code belongs under a
+  `codex_plus_plus/` directory beneath the nearest owning crate or module; do not add `_fork_`
+  filename prefixes.
+- Treat upstream-owned files as integration seams. Keep only the minimum declarations, fields,
+  schema or config entries, enum or match arms, and delegation calls needed to invoke fork
+  behavior.
+- Move fork-owned branching, loops, persistence, retry policies, and state transitions out of
+  upstream integration seams and into fork-owned files.
+- Preserve the owning module hierarchy. Do not widen visibility, add a crate, or introduce an
+  abstraction solely to isolate a small amount of fork code.
+- Keep fork-owned unit tests beside their implementation. Use canonical integration and snapshot
+  suites only where public, cross-crate, or user-visible behavior requires them.
+- Keep unavoidable changes to generated schemas, manifests, workflows, migrations, public enums,
+  and other integration points minimal and upstream-shaped. Do not perform rename-only migrations
+  of already isolated fork code.
+
+## Enforce fork scope
+
+- Fork scope is defined by the requested Codex++ outcome, its explicit acceptance criteria, and
+  the files strictly necessary to deliver it. Review findings do not expand that scope.
+- Before acting on a review finding, determine its origin. A finding is fork-scoped only when it
+  concerns fork-owned behavior, a regression introduced by the current change, an incorrect
+  integration or conflict resolution, or an explicit acceptance criterion.
+- A change in upstream-owned code is fork-scoped when it is strictly required for a Codex++
+  capability to work correctly or satisfy its acceptance criteria. Treat that change as
+  fork-owned: isolate it where possible, keep unavoidable seam edits minimal, validate it through
+  the fork capability, and record it in the fork ledger.
+- All other pre-existing or upstream-origin bugs, feature gaps, hardening opportunities,
+  refactors, cleanup, test expansion, and documentation improvements remain upstream-scoped even
+  when discovered in a file touched by fork work.
+- Fix only fork-scoped findings. Dismiss upstream-scoped findings as `upstream / out of scope` and
+  do not alter code, tests, or documentation for them. Report them separately when useful.
+- If a required upstream-owned fix would materially expand the maintained fork surface, stop and
+  ask the user before proceeding. Do not silently absorb a general upstream subsystem.
+
+## Integrate upstream verbatim
+
+- Preserve upstream commits and behavior verbatim except where an unavoidable conflict requires a
+  fork-compatible resolution.
+- Resolve conflicts with the smallest change that preserves existing fork behavior. Do not include
+  opportunistic upstream fixes in an integration.
+- Reviews of upstream integrations may fix only fork regressions and incorrect conflict
+  resolutions. Upstream defects are report-only.
+
+## Maintain the fork ledger
+
+- Keep `CODEX_PLUS_PLUS_LEDGER.md` as the authoritative map of maintained fork capabilities.
+- Every fork feature or fix must update its relevant capability row before the change is complete.
+- Update existing rows as capabilities evolve; do not append one row per commit. The ledger is a
+  maintenance map, not a changelog.
+- Use merged PR numbers as durable history anchors. Include a short commit SHA only for a
+  direct-to-main change that has no PR.
+- Record upstream-owned changes only when they are required seams for a fork capability.
+
+## Keep validation bounded
+
+- Serialize heavyweight Rust validation. Keep Cargo targets inside their worktree, default Cargo
+  builds and Rust test harnesses to four threads, and select `--lib` or one exact `--test` target
+  for focused tests.
+- Ask before validation that could materially load the workstation. Prefer narrow local evidence
+  and the existing upstream CI workflows; do not add fork-specific test workflows, shared target
+  caches, or target plumbing.
+
 # Rust/codex-rs
-
-## Codex++ fork isolation
-
-- Put fork-specific behavior in focused, capability-named files under a
-  `codex_plus_plus/` directory beneath the nearest owning crate or module. The directory
-  identifies fork provenance; do not add `_fork_` filename prefixes.
-- Existing upstream files are integration seams. Keep only the minimum module declarations,
-  fields, config or schema entries, enum or match arms, and delegation calls required to invoke
-  fork behavior.
-- If fork code in an upstream file begins owning branching, loops, persistence, retry policy, or
-  state transitions, extract it into the nearest `codex_plus_plus/` module.
-- Preserve the owning module hierarchy when fork behavior needs private state. Do not widen
-  visibility or create a new crate solely to make code appear isolated.
-- Keep fork-owned unit tests beside their implementation. Cross-crate behavior, public API
-  behavior, and user-visible TUI output remain covered in the repository's canonical integration
-  and snapshot suites.
-- Do not force generated schemas, Cargo or Bazel manifests, config fields, migration registration,
-  public enum or match integration points, or generic upstreamable bug fixes into fork modules.
-  Keep those changes upstream-shaped and minimal.
-- Do not perform rename-only migrations of already-standalone fork files. Move existing code only
-  when doing so removes substantive fork logic from an upstream-owned file or avoids a
-  demonstrated rebase hotspot.
-- Land generic fixes suitable for upstream as isolated commits rather than mixing them with
-  Codex++ product behavior.
 
 In the codex-rs folder where the rust code lives:
 
@@ -84,19 +132,6 @@ In the codex-rs folder where the rust code lives:
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
-
-Coordinate heavyweight Rust validation before running it. Crate-wide or workspace-wide tests,
-Clippy and Bazel may compile or execute thousands of targets even when the command looks scoped.
-Never run more than one heavyweight Rust job at a time, including across agents. Local Rust
-validation must keep Cargo's default target directory inside its current worktree; do not share
-`CARGO_TARGET_DIR` with another worktree or redirect it to a hashed temporary directory. Default
-Cargo builds and Rust test harnesses to four threads, while preserving explicit overrides. For
-focused tests, always select `--lib` or one exact `--test` target in addition to any nextest filter,
-because filters limit execution but not Cargo compilation. Require explicit user approval before
-starting a validation run that could materially load the workstation. Prefer the narrowest relevant
-tests and record broader validation as skipped for resource safety when focused evidence is
-sufficient. Use the existing upstream CI workflows for explicitly requested broad PR or release
-validation; do not add fork-specific test workflows, shared build caches, or target plumbing.
 
 Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
