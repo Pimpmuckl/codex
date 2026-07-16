@@ -164,14 +164,25 @@ def npm_view(spec: str, field: str) -> str | None:
         check=False,
     )
     if result.returncode == 0:
-        value = json.loads(result.stdout)
-        return value if isinstance(value, str) else None
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"npm view returned invalid JSON for {spec} {field}"
+            ) from error
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
+            return value[0]
+        raise RuntimeError(
+            f"npm view returned ambiguous JSON for {spec} {field}; expected one string"
+        )
     if "E404" in result.stderr:
         return None
     raise RuntimeError(result.stderr.strip() or f"npm view failed for {spec}")
 
 
-def publish(version: str, npm_dir: Path) -> None:
+def publish(version: str, npm_dir: Path, *, dry_run: bool = False) -> None:
     entries = validate_tarballs(version, npm_dir)
     bootstrap_specs = (PACKAGE_NAME, f"{PACKAGE_NAME}@{entries[0][1]}")
     if all(npm_view(spec, "name") is None for spec in bootstrap_specs):
@@ -182,6 +193,7 @@ def publish(version: str, npm_dir: Path) -> None:
             "then rerun only this failed job."
         )
 
+    pending = []
     for path, package_version, tag in entries:
         expected = tarball_integrity(path)
         spec = f"{PACKAGE_NAME}@{package_version}"
@@ -193,8 +205,23 @@ def publish(version: str, npm_dir: Path) -> None:
             raise RuntimeError(
                 f"Refusing to skip {spec}: registry integrity {current} != {expected}"
             )
+        pending.append((path, spec, tag, expected))
+
+    for path, spec, tag, expected in pending:
+        if dry_run:
+            print(f"Would publish {spec} with tag {tag}", flush=True)
+            continue
         subprocess.run(
-            ["npm", "publish", str(path), "--access", "public", "--tag", tag],
+            [
+                "npm",
+                "publish",
+                str(path),
+                "--access",
+                "public",
+                "--tag",
+                tag,
+                "--provenance",
+            ],
             check=True,
         )
         for attempt in range(12):
@@ -226,6 +253,7 @@ def parse_args() -> argparse.Namespace:
     publish_parser = subparsers.add_parser("publish")
     publish_parser.add_argument("--version", required=True)
     publish_parser.add_argument("--npm-dir", type=Path, required=True)
+    publish_parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
@@ -236,7 +264,7 @@ def main() -> int:
     elif args.command == "verify":
         verify(args.version, args.archives_dir, args.npm_dir)
     else:
-        publish(args.version, args.npm_dir)
+        publish(args.version, args.npm_dir, dry_run=args.dry_run)
     return 0
 
 

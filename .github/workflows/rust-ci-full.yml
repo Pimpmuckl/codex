@@ -1,102 +1,14 @@
 name: rust-ci-full
 on:
   workflow_call:
-    inputs:
-      codex_plus_plus_cache_version:
-        type: string
-        required: false
-        default: ""
   push:
     branches:
       # Main pushes enter through postmerge-ci. Keep this opt-in branch trigger
       # for developers who want the full suite before merging.
       - "**full-ci**"
   workflow_dispatch:
-    inputs:
-      codex_plus_plus_cache_version:
-        description: Exact Codex++ version to cache on all release platforms before tagging
-        type: string
-        required: false
 
 jobs:
-  codex_plus_plus_release_cache:
-    name: Seed Codex++ release cache (${{ matrix.target }})
-    if: ${{ github.ref == 'refs/heads/main' && inputs.codex_plus_plus_cache_version != '' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-          - runner: macos-15
-            target: aarch64-apple-darwin
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    env:
-      AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
-      AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
-      TARGET: ${{ matrix.target }}
-      VERSION: ${{ inputs.codex_plus_plus_cache_version }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          targets: ${{ env.TARGET }}
-
-      - name: Install Zig
-        if: runner.os == 'Linux'
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.14.0
-          use-cache: false
-
-      - name: Install musl build tools
-        if: runner.os == 'Linux'
-        shell: bash
-        run: bash .github/scripts/install-musl-build-tools.sh
-
-      - name: Validate cache seed version
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]
-          base_version="${VERSION%%-fork.*}"
-          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
-          [[ "$base_version" == "$workspace_version" ]]
-
-      - name: Restore and save Codex++ build cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          workspaces: codex-rs -> target
-          shared-key: codex-plus-plus-${{ env.TARGET }}-release-fast-${{ env.VERSION }}-${{ github.sha }}
-          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET VERSION
-          cache-bin: false
-          cache-workspace-crates: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Build Codex++ package cache
-        shell: bash
-        run: |
-          python scripts/build_codex_plus_plus.py \
-            --fork-version "$VERSION" \
-            -- \
-            --target "$TARGET" \
-            --package-dir "dist/cache-package-${TARGET}" \
-            --force
-
   # --- CI that doesn't need specific targets ---------------------------------
   general:
     name: Format / etc

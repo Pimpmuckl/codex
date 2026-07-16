@@ -72,6 +72,24 @@ python scripts/build_codex_plus_plus.py --install
 
 Without `--install`, the helper builds the reusable package directory at `dist/codex-plus-plus`. Explicit package arguments after `--` still override that default.
 
+Local builds default to Cargo's `release-fast` profile for iteration. Public GitHub and npm binaries always use the full Cargo `release` profile.
+
+## Publish a Release
+
+Publishing is triggered only by manually pushing a tag named `codex-plus-plus-v<upstream>-fork.N` at the exact commit to release:
+
+```sh
+tag=codex-plus-plus-v0.144.5-fork.1 # use the current upstream version and next fork number
+git tag "$tag"
+git push origin "$tag"
+```
+
+The tag workflow validates the release helpers, builds Windows x64, macOS ARM64, and Linux musl x64 on standard hosted runners, verifies the exact npm payloads, publishes npm through OIDC trusted publishing with provenance, and publishes the GitHub Release only after npm succeeds. Configure the npm trusted publisher for `Pimpmuckl/codex`, workflow filename `codex-plus-plus-release.yml`, and the `npm publish` action; no npm token is used.
+
+Release dependency caches are optional accelerators warmed on relevant `main` changes and restored by later tags. A missing, stale, corrupt, or unavailable cache produces the same cold build, and restored caches force target/profile-scoped v8 regeneration before the full `release` build. Intermediate artifacts expire after one day and are deleted after a successful release when GitHub permits it.
+
+Reruns are safe after partial publication: exact npm versions are verified and skipped, conflicting registry content fails before any new version is published, and draft GitHub assets are replaced. Ordinary pull requests and `main` changes never publish.
+
 ## Remove the Shim
 
 ```powershell
