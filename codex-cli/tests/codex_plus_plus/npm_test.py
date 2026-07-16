@@ -231,11 +231,12 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             run.assert_not_called()
 
             with (
-                patch.object(release, "npm_view", return_value=None),
+                patch.object(release, "npm_view", return_value=None) as view,
                 patch.object(release.subprocess, "run") as run,
                 self.assertRaisesRegex(RuntimeError, "does not exist"),
             ):
                 release.publish(VERSION, npm_dir)
+            view.assert_called_once_with(f"{ROOT_PACKAGE}@{VERSION}-linux-x64", "name")
             run.assert_not_called()
 
     def test_workflow_keeps_public_release_downstream_of_npm_root(self):

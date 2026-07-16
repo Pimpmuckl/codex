@@ -173,7 +173,7 @@ def npm_view(spec: str, field: str) -> str | None:
 
 def publish(version: str, npm_dir: Path) -> None:
     entries = validate_tarballs(version, npm_dir)
-    if npm_view(PACKAGE_NAME, "name") is None:
+    if npm_view(f"{PACKAGE_NAME}@{entries[0][1]}", "name") is None:
         raise RuntimeError(
             f"{PACKAGE_NAME} does not exist. Download this run's private npm artifact, "
             "manually publish its linux-x64 tarball under --tag linux-x64, configure "
