@@ -20,7 +20,7 @@ use serde_json::Value;
 use serde_json::json;
 
 const CALL_ID: &str = "call-message-1";
-const ENVELOPE: &str = "[Message for you]\n\nCheck the deployment.";
+const ENVELOPE: &str = "[Message for you]\nCheck the deployment.";
 
 fn enable_inbox(config: &mut codex_core::config::Config) {
     config.config_layer_stack = config.config_layer_stack.with_user_config(

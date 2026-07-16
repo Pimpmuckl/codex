@@ -1,5 +1,5 @@
 pub const USER_MESSAGE_ITEM_ID_PREFIX: &str = "user-message:";
-pub const USER_MESSAGE_ENVELOPE_PREFIX: &str = "[Message for you]\n\n";
+pub const USER_MESSAGE_ENVELOPE_PREFIX: &str = "[Message for you]\n";
 
 pub fn user_message_item_id(tool_call_id: &str) -> String {
     format!("{USER_MESSAGE_ITEM_ID_PREFIX}{tool_call_id}")
