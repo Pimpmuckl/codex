@@ -2,11 +2,18 @@ name: Codex++ release cache benchmark
 
 on:
   workflow_dispatch:
+    inputs:
+      v8_reuse:
+        description: Test production-cache V8 reuse without cleanup
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
 jobs:
   benchmark:
+    if: inputs.v8_reuse != true
     name: ${{ matrix.platform }} release cache proof
     strategy:
       fail-fast: false
@@ -192,7 +199,146 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: gh cache delete "$CACHE_KEY"
 
+  v8-reuse:
+    name: ${{ matrix.target }} production-cache V8 reuse
+    if: inputs.v8_reuse == true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable: bin/codex.exe
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            executable: bin/codex
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            executable: bin/codex
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    env:
+      AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Restore production dependency cache
+        id: restore-cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: codex-rs -> target
+          shared-key: codex-plus-plus-${{ env.TARGET }}-release
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET
+          cache-bin: false
+          cache-workspace-crates: false
+          save-if: false
+      - name: Install Zig
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install musl build tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - name: Inspect restored V8 state
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ steps.restore-cache.outputs.cache-hit }}" == "true" ]]
+          native_library="target/${TARGET}/release/gn_out/obj/librusty_v8.a"
+          if [[ "$TARGET" == *-pc-windows-msvc ]]; then
+            native_library="target/${TARGET}/release/gn_out/obj/rusty_v8.lib"
+          fi
+          shopt -s nullglob
+          fingerprints=("target/${TARGET}/release/.fingerprint/v8-"*)
+          build_outputs=("target/${TARGET}/release/build/v8-"*)
+          native_before=false
+          [[ -e "$native_library" ]] && native_before=true
+          echo "V8_NATIVE_LIBRARY=$native_library" >> "$GITHUB_ENV"
+          echo "V8_NATIVE_BEFORE=$native_before" >> "$GITHUB_ENV"
+          echo "V8_FINGERPRINTS=${#fingerprints[@]}" >> "$GITHUB_ENV"
+          echo "V8_BUILD_OUTPUTS=${#build_outputs[@]}" >> "$GITHUB_ENV"
+      - name: Probe no-clean V8 reuse
+        id: no-clean
+        continue-on-error: true
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          cargo build --bin codex-code-mode-host --target "$TARGET" --profile release -v 2>&1 |
+            tee "$RUNNER_TEMP/v8-no-clean.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          fresh=false
+          grep -q 'Fresh v8 v149.2.0' "$RUNNER_TEMP/v8-no-clean.log" && fresh=true
+          echo "NO_CLEAN_STATUS=$status" >> "$GITHUB_ENV"
+          echo "V8_FRESH=$fresh" >> "$GITHUB_ENV"
+          exit "$status"
+      - name: Recover with Cargo-only V8 clean
+        if: steps.no-clean.outcome == 'failure'
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clean -p v8 --target "$TARGET" --profile release
+          cargo build --bin codex-code-mode-host --target "$TARGET" --profile release
+          [[ -e "$V8_NATIVE_LIBRARY" ]]
+      - name: Build bundled bwrap
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --profile release --bin bwrap
+          bwrap="target/${TARGET}/release/bwrap"
+          echo "BWRAP=${GITHUB_WORKSPACE}/codex-rs/${bwrap}" >> "$GITHUB_ENV"
+      - name: Package no-clean experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_args=(
+            --cargo-profile release
+            --target "$TARGET"
+            --package-dir "dist/v8-reuse-${TARGET}"
+            --force
+          )
+          if [[ -n "${BWRAP:-}" ]]; then
+            package_args+=(--bwrap-bin "$BWRAP")
+          fi
+          python scripts/build_codex_plus_plus.py --suffix v8-cache-reuse -- "${package_args[@]}"
+      - name: Smoke packaged CLI and summarize
+        shell: bash
+        env:
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          executable="dist/v8-reuse-${TARGET}/${EXECUTABLE}"
+          [[ "$("$executable" --version)" == "codex-cli ${workspace_version}-v8-cache-reuse" ]]
+          printf '| %s | %s | %s | %s | %s | %s |\n' \
+            "$TARGET" "$V8_NATIVE_BEFORE" "$V8_FINGERPRINTS" \
+            "$V8_BUILD_OUTPUTS" "$V8_FRESH" "$NO_CLEAN_STATUS" >> "$GITHUB_STEP_SUMMARY"
+
   report:
+    if: inputs.v8_reuse != true
     name: Aggregate release cache evidence
     needs: benchmark
     runs-on: ubuntu-24.04
