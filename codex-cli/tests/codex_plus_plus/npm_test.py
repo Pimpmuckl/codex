@@ -82,6 +82,36 @@ PLATFORMS = {
 
 
 class CodexPlusPlusNpmTest(unittest.TestCase):
+    def test_run_npm_pack_accepts_npm_11_and_12_json_shapes(self):
+        tarball_name = "jjliebig-codex-plus-plus-0.144.4-fork.2.tgz"
+        pack_entry = {"filename": tarball_name}
+        outputs = ([pack_entry], {ROOT_PACKAGE: pack_entry})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            staging_dir = temp / "stage"
+            staging_dir.mkdir()
+
+            for index, pack_output in enumerate(outputs):
+                with self.subTest(pack_output=pack_output):
+                    output_path = temp / f"output-{index}.tgz"
+
+                    def npm_pack(command, **_kwargs):
+                        pack_dir = Path(
+                            command[command.index("--pack-destination") + 1]
+                        )
+                        (pack_dir / tarball_name).write_bytes(b"tarball")
+                        return json.dumps(pack_output)
+
+                    with patch.object(
+                        build.subprocess, "check_output", side_effect=npm_pack
+                    ):
+                        self.assertEqual(
+                            build.run_npm_pack(staging_dir, output_path),
+                            output_path.resolve(),
+                        )
+                    self.assertEqual(output_path.read_bytes(), b"tarball")
+
     def test_expands_only_supported_payloads_and_requires_fork_artifacts(self):
         packages = stage.expand_packages(["codex-plus-plus"])
         self.assertEqual(packages, ["codex-plus-plus", *PLATFORMS])
