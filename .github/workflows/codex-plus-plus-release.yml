@@ -1,6 +1,16 @@
 name: Codex++ release
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Failed Codex++ release workflow run to recover
+        required: true
+        type: string
+      release_tag:
+        description: Existing Codex++ release tag owned by the source run
+        required: true
+        type: string
   push:
     branches:
       - main
@@ -18,16 +28,20 @@ on:
 permissions: {}
 
 concurrency:
-  group: codex-plus-plus-release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  group: codex-plus-plus-release-${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
 jobs:
   prepare:
-    if: startsWith(github.ref, 'refs/tags/codex-plus-plus-v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/codex-plus-plus-v')
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
     outputs:
+      recovery: ${{ steps.version.outputs.recovery }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      source_run_id: ${{ steps.version.outputs.source_run_id }}
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -37,20 +51,61 @@ jobs:
       - name: Validate release tag
         id: version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#codex-plus-plus-v}"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            release_tag="$INPUT_RELEASE_TAG"
+            source_run_id="$INPUT_SOURCE_RUN_ID"
+            recovery=true
+          else
+            release_tag="$GITHUB_REF_NAME"
+            source_run_id="$GITHUB_RUN_ID"
+            recovery=false
+          fi
+
+          [[ "$source_run_id" =~ ^[0-9]+$ ]] || {
+            echo "Invalid source workflow run: ${source_run_id}"
+            exit 1
+          }
+          version="${release_tag#codex-plus-plus-v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]] || {
-            echo "Invalid Codex++ release tag: ${GITHUB_REF_NAME}"
+            echo "Invalid Codex++ release tag: ${release_tag}"
             exit 1
           }
 
+          if [[ "$recovery" == "true" ]]; then
+            workflow_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/codex-plus-plus-release.yml" --jq .id)"
+            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}")"
+            run_workflow_id="$(jq -r .workflow_id <<<"$run")"
+            run_status="$(jq -r .status <<<"$run")"
+            run_conclusion="$(jq -r .conclusion <<<"$run")"
+            run_event="$(jq -r .event <<<"$run")"
+            run_tag="$(jq -r .head_branch <<<"$run")"
+            run_sha="$(jq -r .head_sha <<<"$run")"
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${release_tag}" --jq .sha)"
+            [[ "$run_workflow_id" == "$workflow_id" && "$run_status" == "completed" && "$run_conclusion" == "failure" && "$run_event" == "push" && "$run_tag" == "$release_tag" && "$run_sha" == "$tag_sha" ]] || {
+              echo "Run ${source_run_id} is not a failed Codex++ release for ${release_tag} at ${tag_sha}"
+              exit 1
+            }
+            workspace_manifest="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/contents/codex-rs/Cargo.toml" -f "ref=${release_tag}" --jq .content | base64 --decode)"
+          else
+            workspace_manifest="$(cat codex-rs/Cargo.toml)"
+          fi
+
           base_version="${version%%-fork.*}"
-          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' <<<"$workspace_manifest" | head -1)"
           [[ "$base_version" == "$workspace_version" ]] || {
             echo "Tag base ${base_version} does not match workspace ${workspace_version}"
             exit 1
           }
+
+          echo "recovery=$recovery" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$source_run_id" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Validate release helpers
@@ -62,7 +117,7 @@ jobs:
             scripts/codex_package/codex_plus_plus/release.py
 
   warm-cache:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -152,6 +207,7 @@ jobs:
 
   build:
     needs: prepare
+    if: needs.prepare.outputs.recovery == 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -294,7 +350,7 @@ jobs:
           package-manager-cache: false
 
       - name: Pin npm
-        run: npm install --global npm@12.0.0
+        run: npm install --global npm@11.18.0
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -327,14 +383,20 @@ jobs:
     needs:
       - prepare
       - stage-npm
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.prepare.outputs.recovery == 'true' || needs.stage-npm.result == 'success')
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          ref: ${{ needs.prepare.outputs.release_tag }}
 
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
@@ -343,12 +405,14 @@ jobs:
           package-manager-cache: false
 
       - name: Pin npm
-        run: npm install --global npm@12.0.0
+        run: npm install --global npm@11.18.0
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          github-token: ${{ github.token }}
           name: codex-plus-plus-npm-${{ needs.prepare.outputs.version }}
           path: dist/npm
+          run-id: ${{ needs.prepare.outputs.source_run_id }}
 
       - name: Publish npm packages serially
         env:
@@ -366,6 +430,12 @@ jobs:
       - build
       - stage-npm
       - publish-npm
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.publish-npm.result == 'success' &&
+      (needs.prepare.outputs.recovery == 'true' ||
+      (needs.build.result == 'success' && needs.stage-npm.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -374,21 +444,27 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          ref: ${{ needs.prepare.outputs.release_tag }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          github-token: ${{ github.token }}
           pattern: codex-plus-plus-native-*
           path: dist/archives
           merge-multiple: true
+          run-id: ${{ needs.prepare.outputs.source_run_id }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          github-token: ${{ github.token }}
           name: codex-plus-plus-npm-${{ needs.prepare.outputs.version }}
           path: dist/npm
+          run-id: ${{ needs.prepare.outputs.source_run_id }}
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
@@ -409,30 +485,31 @@ jobs:
           EOF
           assets=(dist/release/*)
 
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            [[ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == "true" ]] || {
-              echo "Release ${GITHUB_REF_NAME} is already published"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == "true" ]] || {
+              echo "Release ${RELEASE_TAG} is already published"
               exit 1
             }
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+            gh release upload "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --draft \
               --title "Codex++ ${VERSION}" \
               --notes-file "$notes"
           fi
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
       - name: Delete intermediate artifacts
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.prepare.outputs.source_run_id }}
         run: |
           gh api --paginate \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" \
             --jq '.artifacts[] | select(.name | startswith("codex-plus-plus-native-") or startswith("codex-plus-plus-npm-")) | .id' |
           while read -r artifact_id; do
             gh api --method DELETE \
