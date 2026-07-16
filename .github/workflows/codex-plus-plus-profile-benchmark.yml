@@ -2,11 +2,31 @@ name: Codex++ release cache benchmark
 
 on:
   workflow_dispatch:
+    inputs:
+      compiler_cache:
+        description: Run the temporary compiler-cache investigation
+        required: true
+        default: false
+        type: boolean
+      compiler_cache_mode:
+        description: Prime a cold compiler cache or restore it for a warm build
+        required: true
+        default: prime
+        type: choice
+        options:
+          - prime
+          - warm
+      compiler_cache_generation:
+        description: Cache generation shared by the prime and warm runs
+        required: true
+        default: 20260716-v1
+        type: string
 
 permissions: {}
 
 jobs:
   benchmark:
+    if: inputs.compiler_cache != true
     name: ${{ matrix.platform }} release cache proof
     strategy:
       fail-fast: false
@@ -192,9 +212,176 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: gh cache delete "$CACHE_KEY"
 
+  compiler_cache:
+    if: inputs.compiler_cache == true
+    name: ${{ matrix.target }} ${{ inputs.compiler_cache_mode }} sccache
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive_suffix: tar.gz
+            executable: bin/codex
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive_suffix: tar.gz
+            executable: bin/codex
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_suffix: zip
+            executable: bin/codex.exe
+    env:
+      AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BASEDIRS: ${{ github.workspace }}
+      SCCACHE_CACHE_SIZE: 1G
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache-${{ matrix.target }}
+      SCCACHE_GHA_ENABLED: "false"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+          version: 0.16.0
+
+      - name: Restore warm compiler cache
+        if: inputs.compiler_cache_mode == 'warm'
+        id: restore-compiler-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: >-
+            compiler-cache-investigation-${{ inputs.compiler_cache_generation }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-release-sccache-0.16.0-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.toml') }}
+
+      - name: Require exact warm compiler cache
+        if: inputs.compiler_cache_mode == 'warm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ '${{ steps.restore-compiler-cache.outputs.cache-hit }}' == 'true' ]]
+
+      - name: Restore production dependency cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: codex-rs -> target
+          shared-key: codex-plus-plus-${{ env.TARGET }}-release
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET
+          cache-bin: false
+          cache-workspace-crates: false
+          save-if: false
+
+      - name: Preserve production V8 regeneration
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clean -p v8 --target "$TARGET" --profile release
+          rm -rf "target/${TARGET}/release/gn_out"
+
+      - name: Install Zig
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: bash .github/scripts/install-musl-build-tools.sh
+
+      - name: Reset compiler cache statistics
+        shell: bash
+        run: sccache --zero-stats
+
+      - name: Build bundled bwrap
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --profile release --bin bwrap
+          bwrap="target/${TARGET}/release/bwrap"
+          digest="$(sha256sum "$bwrap" | awk '{print $1}')"
+          echo "BWRAP=${GITHUB_WORKSPACE}/codex-rs/${bwrap}" >> "$GITHUB_ENV"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+
+      - name: Build full release package
+        shell: bash
+        env:
+          ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+        run: |
+          set -euo pipefail
+          package_args=(
+            --target "$TARGET"
+            --package-dir "dist/${{ inputs.compiler_cache_mode }}-${TARGET}"
+            --archive-output "dist/compiler-cache-${{ inputs.compiler_cache_mode }}-${TARGET}.${ARCHIVE_SUFFIX}"
+            --force
+          )
+          if [[ -n "${BWRAP:-}" ]]; then
+            package_args+=(--bwrap-bin "$BWRAP")
+          fi
+          python scripts/build_codex_plus_plus.py --suffix compiler-cache -- \
+            --cargo-profile release "${package_args[@]}"
+
+      - name: Smoke package and report compiler cache
+        shell: bash
+        env:
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          executable="dist/${{ inputs.compiler_cache_mode }}-${TARGET}/${EXECUTABLE}"
+          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          [[ "$("$executable" --version)" == "codex-cli ${workspace_version}-compiler-cache" ]]
+          sccache --show-stats
+          sccache --show-stats --stats-format json
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            du -sh "$(cygpath -u "$SCCACHE_DIR")"
+          else
+            du -sh "$SCCACHE_DIR"
+          fi
+
+      - name: Stop compiler cache server
+        if: always()
+        shell: bash
+        run: sccache --stop-server || true
+
+      - name: Save primed compiler cache
+        if: inputs.compiler_cache_mode == 'prime' && success()
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: >-
+            compiler-cache-investigation-${{ inputs.compiler_cache_generation }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-release-sccache-0.16.0-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.toml') }}
+
   report:
     name: Aggregate release cache evidence
     needs: benchmark
+    if: inputs.compiler_cache != true
     runs-on: ubuntu-24.04
     permissions:
       contents: read
