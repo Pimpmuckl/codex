@@ -108,7 +108,9 @@ jobs:
       - name: Regenerate v8 after cache restore
         working-directory: codex-rs
         shell: bash
-        run: cargo clean -p v8 --target "$TARGET" --profile release
+        run: |
+          cargo clean -p v8 --target "$TARGET" --profile release
+          rm -rf "target/${TARGET}/release/gn_out"
 
       - name: Install Zig
         if: runner.os == 'Linux'
@@ -204,7 +206,9 @@ jobs:
       - name: Regenerate v8 after cache restore
         working-directory: codex-rs
         shell: bash
-        run: cargo clean -p v8 --target "$TARGET" --profile release
+        run: |
+          cargo clean -p v8 --target "$TARGET" --profile release
+          rm -rf "target/${TARGET}/release/gn_out"
 
       - name: Install Zig
         if: runner.os == 'Linux'
