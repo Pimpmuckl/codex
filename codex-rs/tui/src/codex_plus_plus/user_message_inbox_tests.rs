@@ -32,7 +32,6 @@ fn rendered(cell: &impl HistoryCell, width: u16) -> String {
 #[test]
 fn recognizes_only_exact_durable_user_messages() {
     assert!(!enabled(&ConfigLayerStack::default()));
-
     let message = recognize(&item(
         "user-message:call-1",
         "[Message for you]\n  Check deployment.  ",
@@ -78,7 +77,7 @@ fn transcript_and_inbox_snapshots_cover_bounded_thread_state() {
     let transcript_cell = populated
         .record(UserMessage {
             id: "user-message:first".to_string(),
-            body: "First note".to_string(),
+            body: "First paragraph\n\nSecond paragraph".to_string(),
         })
         .expect("new message");
     populated

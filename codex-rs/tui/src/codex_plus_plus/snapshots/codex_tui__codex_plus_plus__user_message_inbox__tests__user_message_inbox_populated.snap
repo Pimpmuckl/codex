@@ -4,4 +4,6 @@ expression: "rendered(&populated.history_cell(true), 80)"
 ---
 Messages for you
 1. Second note
-2. First note
+2. First paragraph
+
+   Second paragraph

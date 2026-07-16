@@ -111,6 +111,10 @@ fn push_wrapped(
         } else {
             subsequent_indent
         };
+        if source_line.is_empty() {
+            lines.push(Line::default());
+            continue;
+        }
         lines.extend(
             textwrap::wrap(
                 source_line,
