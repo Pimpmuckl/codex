@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::HooksToml;
 use crate::ModelCapacityRetryMode;
+use crate::UserMessageInbox;
 use crate::WeeklyUsageWindowAutoStart;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
@@ -268,6 +269,8 @@ pub struct ConfigToml {
     pub weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
     /// Whether Codex++ keeps retrying indefinitely while a model is at capacity.
     pub model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
+    /// Whether agents can leave durable, non-blocking messages for the user.
+    pub user_message_inbox: Option<UserMessageInbox>,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.
@@ -1012,6 +1015,33 @@ mod tests {
                 ModelCapacityRetryMode::Bounded,
                 ModelCapacityRetryMode::Indefinite,
             ]
+        );
+    }
+
+    #[test]
+    fn user_message_inbox_defaults_disabled_and_serializes_override() {
+        assert_eq!(
+            ConfigToml::default().user_message_inbox.unwrap_or_default(),
+            UserMessageInbox::Disabled
+        );
+        assert_eq!(
+            toml::from_str::<ConfigToml>("user_message_inbox = \"enabled\"")
+                .unwrap()
+                .user_message_inbox,
+            Some(UserMessageInbox::Enabled)
+        );
+
+        #[derive(Serialize)]
+        struct Setting {
+            user_message_inbox: UserMessageInbox,
+        }
+
+        assert_eq!(
+            toml::to_string(&Setting {
+                user_message_inbox: UserMessageInbox::Enabled,
+            })
+            .unwrap(),
+            "user_message_inbox = \"enabled\"\n"
         );
     }
     use pretty_assertions::assert_eq;
