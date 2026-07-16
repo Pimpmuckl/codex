@@ -33,7 +33,7 @@ impl HistoryCell for AgentStatusHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = vec![
             "/agent".magenta().into(),
-            "Sub-agents running".bold().into(),
+            "Sub-agents".bold().into(),
             "".into(),
         ];
 
@@ -66,20 +66,26 @@ impl HistoryCell for AgentStatusHistoryCell {
 pub(super) struct AgentStatusThreadPreview {
     agent_path: String,
     activity: Vec<String>,
+    has_unread: bool,
 }
 
 impl AgentStatusThreadPreview {
-    pub(super) fn from_store(agent_path: String, store: &ThreadEventStore) -> Self {
-        Self::from_events(agent_path, store.buffer.iter().rev())
+    pub(super) fn from_store(
+        agent_path: String,
+        store: &ThreadEventStore,
+        has_unread: bool,
+    ) -> Self {
+        Self::from_events(agent_path, store.buffer.iter().rev(), has_unread)
     }
 
-    pub(super) fn empty(agent_path: String) -> Self {
-        Self::from_events(agent_path, std::iter::empty())
+    pub(super) fn empty(agent_path: String, has_unread: bool) -> Self {
+        Self::from_events(agent_path, std::iter::empty(), has_unread)
     }
 
     fn from_events<'a>(
         agent_path: String,
         events: impl Iterator<Item = &'a ThreadBufferedEvent>,
+        has_unread: bool,
     ) -> Self {
         let mut seen_item_ids = HashSet::new();
         let mut activity = Vec::new();
@@ -110,11 +116,16 @@ impl AgentStatusThreadPreview {
         Self {
             agent_path,
             activity,
+            has_unread,
         }
     }
 
     fn title_line(&self) -> Line<'static> {
-        vec!["  • ".dim(), format!("`{}`", self.agent_path).cyan()].into()
+        let mut spans = vec!["  • ".dim(), format!("`{}`", self.agent_path).cyan()];
+        if self.has_unread {
+            spans.extend(["  ".into(), "New message".into()]);
+        }
+        spans.into()
     }
 
     fn preview_lines(&self, width: u16) -> Vec<Line<'static>> {

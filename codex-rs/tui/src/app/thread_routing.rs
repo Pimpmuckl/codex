@@ -66,6 +66,7 @@ impl App {
         };
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = receiver;
+        self.mark_user_messages_read(thread_id);
         self.refresh_pending_thread_approvals().await;
     }
 
@@ -94,6 +95,8 @@ impl App {
         let mut store = channel.store.lock().await;
         store.active = true;
         let snapshot = store.snapshot();
+        drop(store);
+        self.mark_user_messages_read(thread_id);
         Some((receiver, snapshot))
     }
 

@@ -1217,6 +1217,68 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 }
 
 #[tokio::test]
+async fn user_message_unread_state_tracks_only_new_inactive_live_notes() {
+    let mut app = make_test_app().await;
+    let active_thread_id = ThreadId::new();
+    let inactive_thread_id = ThreadId::new();
+    app.active_thread_id = Some(active_thread_id);
+
+    let first_note = user_message_notification(inactive_thread_id, "user-message:first");
+    app.record_live_user_message(inactive_thread_id, &first_note);
+    assert!(app.has_unread_user_message(inactive_thread_id));
+
+    app.mark_user_messages_read(inactive_thread_id);
+    app.record_live_user_message(inactive_thread_id, &first_note);
+    assert!(!app.has_unread_user_message(inactive_thread_id));
+
+    let active_note = user_message_notification(active_thread_id, "user-message:active");
+    app.record_live_user_message(active_thread_id, &active_note);
+    assert!(!app.has_unread_user_message(active_thread_id));
+
+    app.handle_thread_event_replay(ThreadBufferedEvent::Notification(
+        user_message_notification(inactive_thread_id, "user-message:replayed"),
+    ));
+    assert!(!app.has_unread_user_message(inactive_thread_id));
+
+    let second_note = user_message_notification(inactive_thread_id, "user-message:second");
+    app.record_live_user_message(inactive_thread_id, &second_note);
+    app.ensure_thread_channel(inactive_thread_id);
+    app.activate_thread_for_replay(inactive_thread_id)
+        .await
+        .expect("inactive thread should activate");
+    assert!(!app.has_unread_user_message(inactive_thread_id));
+}
+
+#[tokio::test]
+async fn agent_picker_marks_unread_user_messages_snapshot() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000123")?;
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+    let note = user_message_notification(thread_id, "user-message:picker");
+    app.record_live_user_message(thread_id, &note);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_app_snapshot!(
+        "agent_picker_unread_user_message",
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -4095,6 +4157,7 @@ async fn make_test_app() -> App {
         thread_event_channels: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
+        user_message_unread: UserMessageUnreadState::default(),
         side_threads: HashMap::new(),
         active_thread_id: None,
         active_thread_rx: None,
@@ -4161,6 +4224,7 @@ async fn make_test_app_with_channels() -> (
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            user_message_unread: UserMessageUnreadState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,
             active_thread_rx: None,
@@ -4627,6 +4691,23 @@ fn turn_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotifi
             started_at: Some(0),
             ..test_turn(turn_id, TurnStatus::InProgress, Vec::new())
         },
+    })
+}
+
+fn user_message_notification(thread_id: ThreadId, item_id: &str) -> ServerNotification {
+    ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+        item: ThreadItem::AgentMessage {
+            id: item_id.to_string(),
+            text: format!(
+                "{}Please check the result.",
+                codex_protocol::codex_plus_plus::USER_MESSAGE_ENVELOPE_PREFIX
+            ),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+        },
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-user-message".to_string(),
+        completed_at_ms: 1,
     })
 }
 
