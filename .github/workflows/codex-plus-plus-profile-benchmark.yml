@@ -246,6 +246,10 @@ jobs:
           cache-bin: false
           cache-workspace-crates: false
           save-if: false
+      - name: Configure packaged V8 artifacts
+        if: matrix.target != 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: python -c 'import os; from scripts.codex_package.targets import TARGET_SPECS; from scripts.codex_package.v8 import resolve_codex_v8_cargo_env; env = resolve_codex_v8_cargo_env(TARGET_SPECS[os.environ["TARGET"]]); open(os.environ["GITHUB_ENV"], "a", encoding="utf-8").writelines(f"{key}={value}\n" for key, value in env.items())'
       - name: Install Zig
         if: matrix.target == 'x86_64-unknown-linux-musl'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
