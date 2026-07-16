@@ -1,0 +1,225 @@
+name: Codex++ release cache benchmark
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  benchmark:
+    name: ${{ matrix.platform }} release cache proof
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_suffix: zip
+            executable: bin/codex.exe
+          - platform: macos
+            runner: macos-15
+            target: aarch64-apple-darwin
+            archive_suffix: tar.gz
+            executable: bin/codex
+          - platform: linux
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive_suffix: tar.gz
+            executable: bin/codex
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    permissions:
+      actions: write
+      contents: read
+    env:
+      AWS_LC_SYS_NO_JITTER_ENTROPY: ${{ matrix.platform == 'linux' && '1' || '' }}
+      AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.platform == 'linux' && '1' || '' }}
+      CACHE_KEY: codex-plus-plus-release-cache-benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: ${{ matrix.platform == 'windows' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        if: matrix.platform == 'linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: bash .github/scripts/install-musl-build-tools.sh
+
+      - name: Configure benchmark version
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' codex-rs/Cargo.toml | head -1)"
+          echo "VERSION=${workspace_version}-benchmark.${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+
+      - name: Run cold release sample
+        shell: bash
+        env:
+          ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+          EXECUTABLE: ${{ matrix.executable }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          rm -rf "codex-rs/target/release" "codex-rs/target/${TARGET}/release"
+          python scripts/codex_package/codex_plus_plus/profile_benchmark.py sample \
+            --platform "$PLATFORM" \
+            --target "$TARGET" \
+            --mode cold \
+            --cache-hit false \
+            --version "$VERSION" \
+            --package-dir "dist/cold-${TARGET}" \
+            --archive "dist/cold-${TARGET}.${ARCHIVE_SUFFIX}" \
+            --executable "$EXECUTABLE" \
+            --output "benchmark-results/${TARGET}-cold.json"
+
+      - name: Save cold dependency cache
+        id: save-cache
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          key: ${{ env.CACHE_KEY }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            codex-rs/target/release
+            codex-rs/target/${{ matrix.target }}/release
+            codex-rs/target/.rustc_info.json
+
+      - name: Reset dependency state
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf \
+            "$HOME/.cargo/registry/index" \
+            "$HOME/.cargo/registry/cache" \
+            "$HOME/.cargo/registry/src" \
+            "$HOME/.cargo/git/db" \
+            "$HOME/.cargo/git/checkouts" \
+            "$RUNNER_TEMP/codex-package" \
+            "codex-rs/target/release" \
+            "codex-rs/target/${TARGET}/release"
+          python -c "import time; print(f'WARM_STARTED_NS={time.time_ns()}')" >> "$GITHUB_ENV"
+
+      - name: Restore exact cold dependency cache
+        id: restore-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          key: ${{ env.CACHE_KEY }}
+          fail-on-cache-miss: true
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            codex-rs/target/release
+            codex-rs/target/${{ matrix.target }}/release
+            codex-rs/target/.rustc_info.json
+
+      - name: Apply corrected warm v8 clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ steps.restore-cache.outputs.cache-hit }}" == "true" ]]
+          cargo clean -p v8 --target "$TARGET" --profile release --manifest-path codex-rs/Cargo.toml
+          native_library="codex-rs/target/${TARGET}/release/gn_out/obj/librusty_v8.a"
+          if [[ "$TARGET" == *-pc-windows-msvc ]]; then
+            native_library="codex-rs/target/${TARGET}/release/gn_out/obj/rusty_v8.lib"
+          fi
+          [[ ! -e "$native_library" ]] || {
+            echo "cargo clean left the rusty_v8 native library in place: $native_library" >&2
+            exit 1
+          }
+
+      - name: Run corrected warm release sample
+        shell: bash
+        env:
+          ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+          CACHE_HIT: ${{ steps.restore-cache.outputs.cache-hit }}
+          EXECUTABLE: ${{ matrix.executable }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python scripts/codex_package/codex_plus_plus/profile_benchmark.py sample \
+            --platform "$PLATFORM" \
+            --target "$TARGET" \
+            --mode warm \
+            --cache-hit "$CACHE_HIT" \
+            --version "$VERSION" \
+            --package-dir "dist/warm-${TARGET}" \
+            --archive "dist/warm-${TARGET}.${ARCHIVE_SUFFIX}" \
+            --executable "$EXECUTABLE" \
+            --started-at-ns "$WARM_STARTED_NS" \
+            --output "benchmark-results/${TARGET}-warm.json"
+
+      - name: Upload timing records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-cache-benchmark-${{ matrix.target }}
+          path: benchmark-results/*.json
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Delete temporary dependency cache
+        if: always() && steps.save-cache.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh cache delete "$CACHE_KEY"
+
+  report:
+    name: Aggregate release cache evidence
+    needs: benchmark
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-cache-benchmark-*
+          path: benchmark-results
+          merge-multiple: true
+
+      - name: Write compact aggregate
+        run: |
+          python scripts/codex_package/codex_plus_plus/profile_benchmark.py aggregate \
+            --results benchmark-results \
+            --output benchmark-report.md
+          cat benchmark-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload aggregate report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-plus-plus-release-cache-benchmark-report
+          path: |
+            benchmark-report.md
+            benchmark-results/*.json
+          if-no-files-found: error
+          retention-days: 1
