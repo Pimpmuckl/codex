@@ -1,6 +1,8 @@
 //! Codex++ TUI capabilities kept separate from upstream-owned orchestration.
 
 mod account_policy;
+#[allow(dead_code)]
+pub(crate) mod destructive_command_guard;
 #[cfg(any(not(debug_assertions), test))]
 mod lag_warning;
 mod model_capacity_retry;
