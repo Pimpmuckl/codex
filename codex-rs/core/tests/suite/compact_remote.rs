@@ -16,6 +16,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -136,6 +137,24 @@ const PRETURN_CONTEXT_DIFF_CWD: &str = "/tmp/PRETURN_CONTEXT_DIFF_CWD";
 const DUMMY_FUNCTION_NAME: &str = "test_tool";
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 const REMOTE_COMPACT_TURN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
+const CAPACITY_RETRY_STEPS: [(Duration, &str); 4] = [
+    (
+        Duration::from_secs(60),
+        "The selected model is at capacity. Retrying in 1 minute (1/4).",
+    ),
+    (
+        Duration::from_secs(2 * 60),
+        "The selected model is at capacity. Retrying in 2 minutes (2/4).",
+    ),
+    (
+        Duration::from_secs(5 * 60),
+        "The selected model is at capacity. Retrying in 5 minutes (3/4).",
+    ),
+    (
+        Duration::from_secs(15 * 60),
+        "The selected model is at capacity. Retrying in 15 minutes (4/4).",
+    ),
+];
 const TEST_AGENT_IDENTITY_PRIVATE_KEY: &str =
     "MC4CAQAwBQYDK2VwBCIEIJ7kFBaOujmoz1gvBNEC+BeM2IX87FFB0xmISOZ/XO0c";
 
@@ -1126,6 +1145,173 @@ async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result
         !follow_up_body.contains("FAILED_COMPACT_SUMMARY"),
         "expected failed compaction attempt output to be discarded"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_mid_turn_compact_v2_retries_capacity_and_resumes_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.model_auto_compact_token_limit = Some(200);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let responses_mock = responses::mount_response_sequence(
+        harness.server(),
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_function_call("call-before-compact", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("r1", /*total_tokens*/ 500),
+            ])),
+            responses::sse_response(responses::sse_failed(
+                "r-compact-overloaded",
+                "server_is_overloaded",
+                "at capacity",
+            )),
+            responses::sse_response(responses::sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "V2_RETRIED_COMPACT_SUMMARY",
+                    }
+                }),
+                responses::ev_completed("r-compact"),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_function_call("call-after-compact", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("r2", /*total_tokens*/ 80),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_assistant_message("m1", "FINAL_REPLY"),
+                responses::ev_completed_with_tokens("r3", /*total_tokens*/ 80),
+            ])),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "RUN_WITH_CAPACITY_RETRY".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let warning = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Warning(warning) => Some(warning.message.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(warning, CAPACITY_RETRY_STEPS[0].1);
+    assert_eq!(responses_mock.requests().len(), 2);
+
+    tokio::time::pause();
+    tokio::task::yield_now().await;
+    tokio::time::advance(CAPACITY_RETRY_STEPS[0].0).await;
+    tokio::time::resume();
+    wait_for_turn_complete(&codex).await;
+
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[1].body_json(), requests[2].body_json());
+    assert!(
+        requests[3]
+            .body_json()
+            .to_string()
+            .contains("V2_RETRIED_COMPACT_SUMMARY")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_mid_turn_compact_v2_surfaces_capacity_after_bounded_exhaustion() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.model_auto_compact_token_limit = Some(200);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let mut response_sequence = vec![responses::sse_response(responses::sse(vec![
+        responses::ev_function_call("call-before-compact", DUMMY_FUNCTION_NAME, "{}"),
+        responses::ev_completed_with_tokens("r1", /*total_tokens*/ 500),
+    ]))];
+    response_sequence.extend((1..=5).map(|attempt| {
+        responses::sse_response(responses::sse_failed(
+            &format!("r-compact-overloaded-{attempt}"),
+            "server_is_overloaded",
+            "at capacity",
+        ))
+    }));
+    let responses_mock =
+        responses::mount_response_sequence(harness.server(), response_sequence).await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "RUN_WITH_EXHAUSTED_CAPACITY_RETRY".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    for (index, (delay, expected_warning)) in CAPACITY_RETRY_STEPS.iter().enumerate() {
+        wait_for_event(&codex, |event| {
+            matches!(event, EventMsg::Warning(warning) if warning.message == *expected_warning)
+        })
+        .await;
+        assert_eq!(responses_mock.requests().len(), index + 2);
+        tokio::time::pause();
+        tokio::task::yield_now().await;
+        tokio::time::advance(*delay).await;
+        tokio::time::resume();
+    }
+
+    let error = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(error) => Some(error.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_turn_complete(&codex).await;
+    assert_eq!(
+        error.message,
+        format!(
+            "Error running remote compact task: {}",
+            codex_protocol::error::CodexErr::ServerOverloaded
+        )
+    );
+    assert_eq!(
+        error.codex_error_info,
+        Some(CodexErrorInfo::ServerOverloaded)
+    );
+    assert_eq!(responses_mock.requests().len(), 6);
 
     Ok(())
 }
