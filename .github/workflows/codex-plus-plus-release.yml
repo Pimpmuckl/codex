@@ -485,11 +485,8 @@ jobs:
           EOF
           assets=(dist/release/*)
 
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == "true" ]] || {
-              echo "Release ${RELEASE_TAG} is already published"
-              exit 1
-            }
+          if release_is_draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq .isDraft 2>/dev/null)"; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
@@ -498,9 +495,13 @@ jobs:
               --verify-tag \
               --draft \
               --title "Codex++ ${VERSION}" \
-              --notes-file "$notes"
+              --generate-notes \
+              --notes "$(cat "$notes")"
+            release_is_draft=true
           fi
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          if [[ "$release_is_draft" == "true" ]]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
 
       - name: Delete intermediate artifacts
         continue-on-error: true
