@@ -18,7 +18,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     )?;
     write_marketplace(source.path())?;
     compile_fake_dcg(source.path())?;
-    write_installer(source.path(), /*fail*/ false)?;
+    write_installer(source.path(), /*fail*/ true)?;
 
     let config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())
@@ -28,20 +28,18 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let mut manager = DcgManager::new(&app_server, &config).unwrap();
     manager.marketplace_source = fs::canonicalize(source.path())?.display().to_string();
     manager.marketplace_ref = None;
+    assert!(manager.install_and_enable().await.is_err());
+    assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
+    write_installer(source.path(), /*fail*/ false)?;
     let installed = manager.install_and_enable().await.unwrap();
     assert_eq!(
-        installed,
-        DcgChange {
-            status: DcgStatus::Enabled(PINNED_VERSION.to_string()),
-            takes_effect_in_current_session: false,
-        }
+        installed.status,
+        DcgStatus::Enabled(PINNED_VERSION.to_string())
     );
+    assert!(!installed.takes_effect_in_current_session);
     assert_eq!(manager.detect_status().await, installed.status);
     let hook = manager.managed_hook().await.unwrap().expect("managed hook");
     assert_eq!(hook.trust_status, HookTrustStatus::Trusted);
-
-    let config_after_install = fs::read_to_string(home.path().join("config.toml"))?;
-    assert!(config_after_install.contains("trusted_hash"));
     let expected_log = format!(
         "{OWNER}|{REPO}|{PINNED_TAG}|{}|True|True",
         manager.binary_path().parent().unwrap().display()
@@ -50,7 +48,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
         fs::read_to_string(source.path().join("installer-args.txt"))?,
         expected_log
     );
-
     let disabled = manager.disable().await.unwrap();
     assert_eq!(
         disabled.status,

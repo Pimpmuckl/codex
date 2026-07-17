@@ -192,16 +192,13 @@ impl DcgManager {
     pub(crate) async fn repair(&self, reason: RepairReason) -> Result<DcgChange> {
         self.ensure_supported()?;
         match reason {
-            RepairReason::HookUntrusted | RepairReason::HookModified => {
-                self.verify_binary().await?;
-                self.trust_managed_hook().await?;
-                Ok(self.enabled_change())
-            }
             RepairReason::MarketplaceUnavailable
             | RepairReason::PluginMissing
             | RepairReason::BinaryMissing
             | RepairReason::BinaryVersionUnreadable
-            | RepairReason::HookMissing => self.install_managed().await,
+            | RepairReason::HookMissing
+            | RepairReason::HookUntrusted
+            | RepairReason::HookModified => self.install_managed().await,
             RepairReason::MarketplaceConfigMalformed
             | RepairReason::MarketplacePinMismatch
             | RepairReason::HookDisabled
@@ -233,6 +230,10 @@ impl DcgManager {
         }
         self.verify_marketplace_checkout(marketplace.installed_root.as_path())
             .await?;
+        let plugin_was_enabled = self
+            .read_plugin(marketplace.installed_root.as_path())
+            .await
+            .is_ok_and(|response| response.plugin.summary.enabled);
         let manifest = marketplace
             .installed_root
             .join(".agents/plugins/marketplace.json");
@@ -276,12 +277,19 @@ impl DcgManager {
                     Err(remove_err) => Err(remove_err),
                 },
             };
+            let enablement_rollback = self.set_enabled(plugin_was_enabled).await;
             if let Err(rollback_err) = rollback {
                 bail!("{err:#}; binary rollback also failed: {rollback_err}");
             }
+            if let Err(rollback_err) = enablement_rollback {
+                bail!("{err:#}; plugin enablement rollback also failed: {rollback_err:#}");
+            }
             return Err(err);
         }
-        Ok(self.enabled_change())
+        Ok(DcgChange {
+            status: DcgStatus::Enabled(PINNED_VERSION.to_string()),
+            takes_effect_in_current_session: false,
+        })
     }
 
     async fn run_installer(&self, root: &Path, data_root: &Path) -> Result<()> {
@@ -321,13 +329,17 @@ impl DcgManager {
             return Ok(());
         }
         let output = Command::new("git")
-            .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
+            .args(["-C", &root.to_string_lossy(), "status"])
+            .args(["--porcelain=v2", "--branch", "--untracked-files=all"])
             .output()
             .await?;
+        let status = String::from_utf8_lossy(&output.stdout);
+        let expected_oid = format!("# branch.oid {PINNED_COMMIT}");
         if !output.status.success()
-            || String::from_utf8_lossy(&output.stdout).trim() != PINNED_COMMIT
+            || !status.lines().any(|line| line == expected_oid)
+            || status.lines().any(|line| !line.starts_with("# "))
         {
-            bail!("pinned DCG marketplace checkout did not resolve to {PINNED_COMMIT}");
+            bail!("pinned DCG marketplace checkout is not the clean {PINNED_COMMIT} tree");
         }
         Ok(())
     }
@@ -479,13 +491,6 @@ impl DcgManager {
             bail!("DCG management is unsupported for {reason:?}");
         }
         Ok(())
-    }
-
-    fn enabled_change(&self) -> DcgChange {
-        DcgChange {
-            status: DcgStatus::Enabled(PINNED_VERSION.to_string()),
-            takes_effect_in_current_session: false,
-        }
     }
 }
 
