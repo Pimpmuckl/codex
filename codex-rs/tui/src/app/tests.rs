@@ -1251,6 +1251,13 @@ async fn user_message_unread_state_tracks_only_new_inactive_live_notes() {
     app.discard_thread_local_state(inactive_thread_id).await;
     app.record_live_user_message(inactive_thread_id, &second_note);
     assert!(app.has_unread_user_message(inactive_thread_id));
+
+    for index in 0..super::user_messages::MAX_TRACKED_THREADS {
+        let thread_id = ThreadId::new();
+        let note = user_message_notification(thread_id, &format!("user-message:bounded-{index}"));
+        app.record_live_user_message(thread_id, &note);
+    }
+    assert!(!app.has_unread_user_message(inactive_thread_id));
 }
 
 #[tokio::test]

@@ -12,6 +12,7 @@ use codex_protocol::items::AgentMessageItem;
 use super::App;
 
 const MAX_TRACKED_MESSAGES_PER_THREAD: usize = 50;
+pub(super) const MAX_TRACKED_THREADS: usize = 256;
 
 struct TrackedUserMessage {
     id: String,
@@ -21,14 +22,27 @@ struct TrackedUserMessage {
 #[derive(Default)]
 pub(super) struct UserMessageUnreadState {
     messages: HashMap<ThreadId, VecDeque<TrackedUserMessage>>,
+    thread_order: VecDeque<ThreadId>,
 }
 
 impl UserMessageUnreadState {
     fn record(&mut self, thread_id: ThreadId, item_id: &str, is_current: bool) {
-        let messages = self.messages.entry(thread_id).or_default();
-        if messages.iter().any(|message| message.id == item_id) {
+        if self
+            .messages
+            .get(&thread_id)
+            .is_some_and(|messages| messages.iter().any(|message| message.id == item_id))
+        {
             return;
         }
+        self.thread_order
+            .retain(|candidate| *candidate != thread_id);
+        self.thread_order.push_back(thread_id);
+        if self.thread_order.len() > MAX_TRACKED_THREADS
+            && let Some(evicted_thread_id) = self.thread_order.pop_front()
+        {
+            self.messages.remove(&evicted_thread_id);
+        }
+        let messages = self.messages.entry(thread_id).or_default();
         messages.push_front(TrackedUserMessage {
             id: item_id.to_string(),
             unread: !is_current,
@@ -52,10 +66,13 @@ impl UserMessageUnreadState {
 
     fn remove(&mut self, thread_id: ThreadId) {
         self.messages.remove(&thread_id);
+        self.thread_order
+            .retain(|candidate| *candidate != thread_id);
     }
 
     fn clear(&mut self) {
         self.messages.clear();
+        self.thread_order.clear();
     }
 }
 
