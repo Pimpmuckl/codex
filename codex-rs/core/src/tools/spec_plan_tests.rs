@@ -16,6 +16,7 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_tools::DiscoverablePluginInfo;
@@ -1062,6 +1063,13 @@ async fn user_message_inbox_tool_is_default_off_root_only_and_has_exact_schema_w
         .await;
         subagent.assert_visible_lacks(&["leave_user_message"]);
     }
+
+    let internal = probe(|turn| {
+        enable_user_message_inbox(turn);
+        turn.session_source = SessionSource::Internal(InternalSessionSource::MemoryConsolidation);
+    })
+    .await;
+    internal.assert_visible_lacks(&["leave_user_message"]);
 
     let ToolSpec::Function(tool) = enabled.visible_spec("leave_user_message") else {
         panic!("expected leave_user_message function spec");

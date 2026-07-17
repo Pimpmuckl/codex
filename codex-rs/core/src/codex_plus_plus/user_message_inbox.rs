@@ -40,7 +40,7 @@ pub(crate) fn available(
     config_layer_stack: &ConfigLayerStack,
     session_source: &SessionSource,
 ) -> bool {
-    if matches!(session_source, SessionSource::SubAgent(_)) {
+    if session_source.is_non_root_agent() {
         return false;
     }
     let setting = config_layer_stack
