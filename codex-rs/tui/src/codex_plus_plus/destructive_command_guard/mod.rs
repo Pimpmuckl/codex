@@ -234,6 +234,17 @@ impl DcgManager {
             .read_plugin(marketplace.installed_root.as_path())
             .await
             .is_ok_and(|response| response.plugin.summary.enabled);
+        let binary = self.binary_path();
+        let data_root = binary.parent().context("DCG binary path has no parent")?;
+        tokio::fs::create_dir_all(data_root).await?;
+        let backup = if binary.is_file() {
+            let dir = tempfile::tempdir_in(data_root)?;
+            let path = dir.path().join(BINARY_NAME);
+            tokio::fs::copy(&binary, &path).await?;
+            Some((dir, path))
+        } else {
+            None
+        };
         let manifest = marketplace
             .installed_root
             .join(".agents/plugins/marketplace.json");
@@ -249,18 +260,6 @@ impl DcgManager {
             })
             .await
             .context("failed to install the pinned DCG plugin")?;
-
-        let binary = self.binary_path();
-        let data_root = binary.parent().context("DCG binary path has no parent")?;
-        tokio::fs::create_dir_all(data_root).await?;
-        let backup = if binary.is_file() {
-            let dir = tempfile::tempdir_in(data_root)?;
-            let path = dir.path().join(BINARY_NAME);
-            tokio::fs::copy(&binary, &path).await?;
-            Some((dir, path))
-        } else {
-            None
-        };
         let result = async {
             self.run_installer(marketplace.installed_root.as_path(), data_root)
                 .await?;
@@ -356,6 +355,7 @@ impl DcgManager {
     }
 
     async fn trust_managed_hook(&self) -> Result<()> {
+        tokio::task::yield_now().await;
         let hook = self
             .managed_hook()
             .await?
