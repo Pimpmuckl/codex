@@ -1040,12 +1040,29 @@ async fn request_plugin_install_description_refers_to_recommended_plugins_hint()
 }
 
 #[tokio::test]
-async fn user_message_inbox_tool_is_default_off_and_has_exact_schema_when_enabled() {
+async fn user_message_inbox_tool_is_default_off_root_only_and_has_exact_schema_when_enabled() {
     let disabled = probe(|_| {}).await;
     disabled.assert_visible_lacks(&["leave_user_message"]);
 
     let enabled = probe(enable_user_message_inbox).await;
     enabled.assert_visible_contains(&["leave_user_message"]);
+
+    for multi_agent_v2 in [false, true] {
+        let subagent = probe(move |turn| {
+            enable_user_message_inbox(turn);
+            if multi_agent_v2 {
+                set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+            } else {
+                set_feature(turn, Feature::Collab, /*enabled*/ true);
+                set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+            }
+            turn.session_source =
+                SessionSource::SubAgent(SubAgentSource::Other("worker".to_string()));
+        })
+        .await;
+        subagent.assert_visible_lacks(&["leave_user_message"]);
+    }
+
     let ToolSpec::Function(tool) = enabled.visible_spec("leave_user_message") else {
         panic!("expected leave_user_message function spec");
     };
