@@ -42,6 +42,7 @@ use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 #[path = "compact_remote_v2_attempt.rs"]
 mod attempt;
@@ -340,6 +341,10 @@ async fn run_remote_compaction_request_v2(
         .stream_max_retries()
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retries = 0;
+    let mut capacity_retries = 0;
+    // Remote compaction waits are interrupted by aborting the parent task, matching the existing
+    // stream-retry behavior.
+    let capacity_retry_cancellation = CancellationToken::new();
     loop {
         let result = match client_session
             .stream(
@@ -360,6 +365,22 @@ async fn run_remote_compaction_request_v2(
 
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
+            Err(err)
+                if crate::codex_plus_plus::model_capacity_retry::applies_to_sampling(
+                    &err,
+                    &turn_context.session_source,
+                ) =>
+            {
+                crate::codex_plus_plus::model_capacity_retry::handle(
+                    &mut capacity_retries,
+                    err,
+                    client_session,
+                    sess,
+                    turn_context,
+                    &capacity_retry_cancellation,
+                )
+                .await?;
+            }
             Err(err) if !err.is_retryable() => return Err(err),
             Err(err) => {
                 handle_retryable_response_stream_error(
