@@ -17,13 +17,9 @@ on:
     tags:
       - "codex-plus-plus-v*"
     paths:
-      - ".github/workflows/codex-plus-plus-release.yml"
       - "codex-rs/**/Cargo.toml"
       - "codex-rs/Cargo.lock"
       - "codex-rs/rust-toolchain.toml"
-      - "scripts/build_codex_package.py"
-      - "scripts/build_codex_plus_plus.py"
-      - "scripts/codex_package/**"
 
 permissions: {}
 
@@ -116,7 +112,7 @@ jobs:
             scripts/build_codex_plus_plus.py \
             scripts/codex_package/codex_plus_plus/release.py
 
-  warm-cache:
+  warm-dependencies:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
