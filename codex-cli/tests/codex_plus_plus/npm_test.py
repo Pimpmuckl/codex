@@ -271,6 +271,7 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         self.assertEqual(workflow.count("package-manager-cache: false"), 2)
         self.assertIn("--generate-notes", github_job)
         self.assertIn('gh release upload "$RELEASE_TAG"', github_job)
+        self.assertIn('if [[ "$release_is_draft" == "true" ]]', github_job)
         self.assertNotIn("is already published", github_job)
         self.assertNotIn("NODE_AUTH_TOKEN", workflow)
 
