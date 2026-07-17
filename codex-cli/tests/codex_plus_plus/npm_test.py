@@ -254,7 +254,29 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "codex-plus-plus-release.yml"
         ).read_text(encoding="utf-8")
+        push_trigger = workflow[workflow.index("  push:") : workflow.index("\n\npermissions:")]
+        warm_dependencies = workflow[
+            workflow.index("  warm-dependencies:") : workflow.index("\n  build:")
+        ]
         github_job = workflow[workflow.index("  publish-github:") :]
+        self.assertEqual(
+            push_trigger,
+            '''  push:
+    branches:
+      - main
+    tags:
+      - "codex-plus-plus-v*"
+    paths:
+      - "codex-rs/**/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - "codex-rs/rust-toolchain.toml"''',
+        )
+        self.assertIn(
+            "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
+            warm_dependencies,
+        )
+        self.assertIn("- name: Warm full-release dependencies", warm_dependencies)
+        self.assertNotIn("  warm-cache:", workflow)
         self.assertIn("      - publish-npm", github_job)
         self.assertIn("      id-token: write", workflow)
         self.assertEqual(workflow.count("npm@11.18.0"), 2)
@@ -265,7 +287,6 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         self.assertIn("SOURCE_RUN_ID: ${{ needs.prepare.outputs.source_run_id }}", workflow)
         self.assertIn('run_workflow_id" == "$workflow_id', workflow)
         self.assertIn('run_sha" == "$tag_sha', workflow)
-        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'", workflow)
         self.assertIn("format('refs/tags/{0}', inputs.release_tag) || github.ref", workflow)
         self.assertIn('node-version: "24"', workflow)
         self.assertEqual(workflow.count("package-manager-cache: false"), 2)
