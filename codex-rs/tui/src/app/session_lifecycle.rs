@@ -65,6 +65,8 @@ impl App {
             self.chat_widget
                 .add_to_history(super::agent_status_feed::AgentStatusHistoryCell::new(
                     entries,
+                    self.primary_thread_id
+                        .is_some_and(|thread_id| self.has_unread_user_message(thread_id)),
                 ));
             return;
         }
@@ -239,6 +241,7 @@ impl App {
             Err(err) => {
                 if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
                     self.agent_navigation.remove(thread_id);
+                    self.remove_user_message_thread_state(thread_id);
                     return false;
                 }
                 let is_closed = Self::closed_state_for_thread_read_error(

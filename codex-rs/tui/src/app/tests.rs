@@ -1247,6 +1247,10 @@ async fn user_message_unread_state_tracks_only_new_inactive_live_notes() {
         .await
         .expect("inactive thread should activate");
     assert!(!app.has_unread_user_message(inactive_thread_id));
+
+    app.discard_thread_local_state(inactive_thread_id).await;
+    app.record_live_user_message(inactive_thread_id, &second_note);
+    assert!(app.has_unread_user_message(inactive_thread_id));
 }
 
 #[tokio::test]

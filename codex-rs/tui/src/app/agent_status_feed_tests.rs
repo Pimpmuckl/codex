@@ -47,7 +47,7 @@ fn agent_status_uses_bounded_buffered_activity() {
         &store,
         /*has_unread*/ false,
     );
-    let cell = AgentStatusHistoryCell::new(vec![preview]);
+    let cell = AgentStatusHistoryCell::new(vec![preview], /*primary_unread*/ false);
     let rendered = cell
         .display_lines(/*width*/ 80)
         .iter()
@@ -99,7 +99,7 @@ fn agent_status_uses_reasoning_summaries_only() {
         &store,
         /*has_unread*/ false,
     );
-    let cell = AgentStatusHistoryCell::new(vec![preview]);
+    let cell = AgentStatusHistoryCell::new(vec![preview], /*primary_unread*/ false);
     let rendered = cell
         .display_lines(/*width*/ 80)
         .iter()
@@ -122,7 +122,7 @@ fn agent_status_uses_reasoning_summaries_only() {
 fn agent_status_marks_unread_user_messages() {
     let preview =
         AgentStatusThreadPreview::empty("/root/reviewer".to_string(), /*has_unread*/ true);
-    let cell = AgentStatusHistoryCell::new(vec![preview]);
+    let cell = AgentStatusHistoryCell::new(vec![preview], /*primary_unread*/ true);
     let rendered = cell
         .display_lines(/*width*/ 80)
         .iter()
@@ -132,6 +132,7 @@ fn agent_status_marks_unread_user_messages() {
 
     insta::assert_snapshot!(rendered, @r###"
     /agent
+      • Main [default]  New message
     Sub-agents
 
       • `/root/reviewer`  New message
