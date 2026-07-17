@@ -267,14 +267,30 @@ jobs:
         with:
           tool: sccache@0.16.0
 
+      - name: Normalize Windows manifest newlines for the cache key
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("codex-rs/Cargo.toml")
+          manifest.write_text(manifest.read_text(encoding="utf-8"), encoding="utf-8", newline="")
+          PY
+
+      - name: Capture compiler cache key before the build mutates manifests
+        id: compiler-cache-key
+        shell: bash
+        run: |
+          echo 'key=compiler-cache-investigation-${{ inputs.compiler_cache_generation }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-release-sccache-0.16.0-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.toml') }}' >> "$GITHUB_OUTPUT"
+
       - name: Restore warm compiler cache
         if: inputs.compiler_cache_mode == 'warm'
         id: restore-compiler-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ env.SCCACHE_DIR }}
-          key: >-
-            compiler-cache-investigation-${{ inputs.compiler_cache_generation }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-release-sccache-0.16.0-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.toml') }}
+          key: ${{ steps.compiler-cache-key.outputs.key }}
 
       - name: Require exact warm compiler cache
         if: inputs.compiler_cache_mode == 'warm'
@@ -374,8 +390,7 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ env.SCCACHE_DIR }}
-          key: >-
-            compiler-cache-investigation-${{ inputs.compiler_cache_generation }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-release-sccache-0.16.0-${{ hashFiles('codex-rs/rust-toolchain.toml', 'codex-rs/Cargo.toml') }}
+          key: ${{ steps.compiler-cache-key.outputs.key }}
 
   report:
     name: Aggregate release cache evidence
