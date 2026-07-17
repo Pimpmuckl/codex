@@ -8,6 +8,7 @@ use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
@@ -35,7 +36,13 @@ struct LeaveUserMessageArgs {
     message: String,
 }
 
-pub(crate) fn enabled(config_layer_stack: &ConfigLayerStack) -> bool {
+pub(crate) fn available(
+    config_layer_stack: &ConfigLayerStack,
+    session_source: &SessionSource,
+) -> bool {
+    if session_source.is_non_root_agent() {
+        return false;
+    }
     let setting = config_layer_stack
         .effective_config()
         .get("user_message_inbox")

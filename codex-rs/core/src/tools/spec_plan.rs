@@ -684,7 +684,10 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     planned_tools.add(PlanHandler);
 
-    if user_message_inbox::enabled(&turn_context.config.config_layer_stack) {
+    if user_message_inbox::available(
+        &turn_context.config.config_layer_stack,
+        &turn_context.session_source,
+    ) {
         planned_tools.add(LeaveUserMessageHandler);
     }
 
