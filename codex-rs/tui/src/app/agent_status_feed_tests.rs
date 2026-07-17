@@ -42,8 +42,12 @@ fn agent_status_uses_bounded_buffered_activity() {
         },
     ));
 
-    let preview = AgentStatusThreadPreview::from_store("/root/reviewer".to_string(), &store);
-    let cell = AgentStatusHistoryCell::new(vec![preview]);
+    let preview = AgentStatusThreadPreview::from_store(
+        "/root/reviewer".to_string(),
+        &store,
+        /*has_unread*/ false,
+    );
+    let cell = AgentStatusHistoryCell::new(vec![preview], /*primary_unread*/ false);
     let rendered = cell
         .display_lines(/*width*/ 80)
         .iter()
@@ -53,7 +57,7 @@ fn agent_status_uses_bounded_buffered_activity() {
 
     insta::assert_snapshot!(rendered, @r###"
     /agent
-    Sub-agents running
+    Sub-agents
 
       • `/root/reviewer`
         $ cargo test -p codex-tui
@@ -90,8 +94,12 @@ fn agent_status_uses_reasoning_summaries_only() {
         },
     ));
 
-    let preview = AgentStatusThreadPreview::from_store("/root/reviewer".to_string(), &store);
-    let cell = AgentStatusHistoryCell::new(vec![preview]);
+    let preview = AgentStatusThreadPreview::from_store(
+        "/root/reviewer".to_string(),
+        &store,
+        /*has_unread*/ false,
+    );
+    let cell = AgentStatusHistoryCell::new(vec![preview], /*primary_unread*/ false);
     let rendered = cell
         .display_lines(/*width*/ 80)
         .iter()
@@ -101,11 +109,33 @@ fn agent_status_uses_reasoning_summaries_only() {
 
     insta::assert_snapshot!(rendered, @r###"
     /agent
-    Sub-agents running
+    Sub-agents
 
       • `/root/reviewer`
         safe summary
     "###);
     assert!(!rendered.contains("hidden raw reasoning"));
     assert!(!rendered.contains("raw-only reasoning"));
+}
+
+#[test]
+fn agent_status_marks_unread_user_messages() {
+    let preview =
+        AgentStatusThreadPreview::empty("/root/reviewer".to_string(), /*has_unread*/ true);
+    let cell = AgentStatusHistoryCell::new(vec![preview], /*primary_unread*/ true);
+    let rendered = cell
+        .display_lines(/*width*/ 80)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(rendered, @r###"
+    /agent
+      • Main [default]  New message
+    Sub-agents
+
+      • `/root/reviewer`  New message
+        No recent activity yet.
+    "###);
 }
