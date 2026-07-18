@@ -9,7 +9,7 @@ use anyhow::Result;
 use anyhow::bail;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::ConfigValueWriteParams;
+use codex_app_server_protocol::ConfigEdit;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::HookMetadata;
 use codex_app_server_protocol::HookTrustStatus;
@@ -356,11 +356,15 @@ impl DcgManager {
     }
 
     async fn trust_managed_hook(&self) -> Result<()> {
-        tokio::task::yield_now().await;
-        let hook = self
-            .managed_hook()
-            .await?
-            .context("installed DCG plugin hook was not discovered")?;
+        let mut hook = None;
+        for _ in 0..100 {
+            hook = self.managed_hook().await?;
+            if hook.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let hook = hook.context("installed DCG plugin hook was not discovered")?;
         if !hook.enabled {
             bail!("installed DCG plugin hook is disabled");
         }
@@ -370,20 +374,11 @@ impl DcgManager {
             .ok()
             .and_then(|contents| toml::from_str::<toml::Value>(&contents).ok())
             .and_then(|config| config.get("hooks")?.get("state")?.get(&key).cloned());
-        let response: ConfigWriteResponse = self
-            .request_handle
-            .request_typed(ClientRequest::ConfigBatchWrite {
-                request_id: request_id("dcg-hook-trust"),
-                params: codex_app_server_protocol::ConfigBatchWriteParams {
-                    edits: vec![replace_config_value(
-                        key_path.clone(),
-                        serde_json::json!({ "trusted_hash": hook.current_hash }),
-                    )],
-                    file_path: None,
-                    expected_version: None,
-                    reload_user_config: false,
-                },
-            })
+        let response = self
+            .write_config_without_reload(replace_config_value(
+                key_path.clone(),
+                serde_json::json!({ "trusted_hash": hook.current_hash }),
+            ))
             .await?;
         if response.status != codex_app_server_protocol::WriteStatus::Ok {
             let prior_state =
@@ -407,10 +402,14 @@ impl DcgManager {
         if !entry.errors.is_empty() {
             bail!("hook discovery reported errors");
         }
-        Ok(entry
-            .hooks
-            .into_iter()
-            .find(|hook| hook.plugin_id.as_deref() == Some(PLUGIN_ID)))
+        Ok(entry.hooks.into_iter().find(|hook| {
+            hook.plugin_id.as_deref() == Some(PLUGIN_ID)
+                && hook
+                    .source_path
+                    .as_path()
+                    .components()
+                    .any(|part| part.as_os_str() == PINNED_VERSION)
+        }))
     }
 
     async fn read_plugin(&self, root: &Path) -> Result<PluginReadResponse> {
@@ -431,23 +430,31 @@ impl DcgManager {
 
     async fn set_enabled(&self, enabled: bool) -> Result<DcgChange> {
         self.ensure_supported()?;
-        let _: ConfigWriteResponse = self
-            .request_handle
-            .request_typed(ClientRequest::ConfigValueWrite {
-                request_id: request_id("dcg-plugin-enable"),
-                params: ConfigValueWriteParams {
-                    key_path: format!("plugins.{PLUGIN_ID}"),
-                    value: serde_json::json!({ "enabled": enabled }),
-                    merge_strategy: MergeStrategy::Upsert,
-                    file_path: None,
-                    expected_version: None,
-                },
-            })
-            .await?;
+        self.write_config_without_reload(ConfigEdit {
+            key_path: format!("plugins.{PLUGIN_ID}"),
+            value: serde_json::json!({ "enabled": enabled }),
+            merge_strategy: MergeStrategy::Upsert,
+        })
+        .await?;
         Ok(DcgChange {
             status: self.detect_status().await,
             takes_effect_in_current_session: false,
         })
+    }
+
+    async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
+        Ok(self
+            .request_handle
+            .request_typed(ClientRequest::ConfigBatchWrite {
+                request_id: request_id("dcg-config-write"),
+                params: codex_app_server_protocol::ConfigBatchWriteParams {
+                    edits: vec![edit],
+                    file_path: None,
+                    expected_version: None,
+                    reload_user_config: false,
+                },
+            })
+            .await?)
     }
 
     fn marketplace_root(&self) -> std::result::Result<Option<PathBuf>, RepairReason> {

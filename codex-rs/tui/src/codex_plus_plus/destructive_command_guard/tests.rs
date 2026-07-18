@@ -31,14 +31,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_installer(source.path(), /*fail*/ false)?;
     let installed = manager.install_and_enable().await.unwrap();
     assert!(!installed.takes_effect_in_current_session);
-    let expected_log = format!(
-        "Pimpmuckl|destructive_command_guard|{PINNED_TAG}|{}|True|True",
-        manager.binary_path().parent().unwrap().display()
-    );
-    assert_eq!(
-        fs::read_to_string(source.path().join("installer-args.txt"))?,
-        expected_log
-    );
     manager.enable().await.unwrap();
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
@@ -94,7 +86,7 @@ fn write_installer(root: &Path, fail: bool) -> Result<()> {
     let body = if fail {
         r#"Param([string]$Owner,[string]$Repo,[string]$Version,[string]$Dest,[switch]$NoConfigure,[switch]$Verify); [IO.File]::WriteAllText((Join-Path $Dest 'dcg.exe'), 'broken'); exit 7"#
     } else {
-        r#"Param([string]$Owner,[string]$Repo,[string]$Version,[string]$Dest,[switch]$NoConfigure,[switch]$Verify); Copy-Item (Join-Path $PSScriptRoot 'fake-dcg.exe') (Join-Path $Dest 'dcg.exe') -Force; [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'installer-args.txt'), "$Owner|$Repo|$Version|$Dest|$NoConfigure|$Verify")"#
+        r#"Param([string]$Owner,[string]$Repo,[string]$Version,[string]$Dest,[switch]$NoConfigure,[switch]$Verify); if($Owner -ne 'Pimpmuckl' -or $Repo -ne 'destructive_command_guard' -or $Version -ne 'v0.6.8-codexpp.1' -or -not $NoConfigure -or -not $Verify){exit 8}; Copy-Item (Join-Path $PSScriptRoot 'fake-dcg.exe') (Join-Path $Dest 'dcg.exe') -Force"#
     };
     fs::write(root.join("install.ps1"), body)?;
     Ok(())
@@ -107,7 +99,7 @@ fn write_installer(root: &Path, fail: bool) -> Result<()> {
 set -eu; while (($#)); do if [[ $1 == --dest ]]; then dest=$2; shift; fi; shift; done; printf broken > "$dest/dcg"; exit 7"#
     } else {
         r#"#!/usr/bin/env bash
-set -eu; while (($#)); do case $1 in --version) version=$2; shift;; --dest) dest=$2; shift;; esac; shift; done; cp "$(dirname "$0")/fake-dcg" "$dest/dcg"; chmod +x "$dest/dcg"; printf '%s|%s|%s|%s|True|True' "$OWNER" "$REPO" "$version" "$dest" > "$(dirname "$0")/installer-args.txt""#
+set -eu; no_configure=0; verify=0; while (($#)); do case $1 in --version) version=$2; shift;; --dest) dest=$2; shift;; --no-configure) no_configure=1;; --verify) verify=1;; esac; shift; done; [[ $OWNER == Pimpmuckl && $REPO == destructive_command_guard && $version == v0.6.8-codexpp.1 && $no_configure == 1 && $verify == 1 ]]; cp "$(dirname "$0")/fake-dcg" "$dest/dcg"; chmod +x "$dest/dcg""#
     };
     fs::write(root.join("install.sh"), body)?;
     Ok(())
