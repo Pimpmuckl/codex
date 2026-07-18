@@ -1282,8 +1282,20 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         "access-c",
         Some("account-c"),
     );
-    let third = store.import_current(
+    store.import_current(
         Some("third".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    super::client::write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-d",
+        Some("account-d"),
+    );
+    let fourth = store.import_current(
+        Some("fourth".to_string()),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     )?;
@@ -1292,6 +1304,11 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     )?;
+    let in_use_manager = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        home.path().to_path_buf(),
+    );
+    in_use_manager.activate_imported_account(&fourth.id).await?;
     let auth_manager = Arc::new(
         AuthManager::new_with_automatic_account_selection(
             home.path().to_path_buf(),
@@ -1346,6 +1363,11 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
                 }),
                 responses::ev_completed("r-compact"),
             ])),
+            responses::sse_response(responses::sse_failed(
+                "r2-usage-limit",
+                "usage_limit_reached",
+                "usage limit reached",
+            )),
             responses::sse_response(responses::sse(vec![
                 responses::ev_function_call("call-after-compact", DUMMY_FUNCTION_NAME, "{}"),
                 responses::ev_completed_with_tokens("r2", /*total_tokens*/ 80),
@@ -1372,7 +1394,7 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         .await?;
 
     let mut status_messages = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..6 {
         status_messages.push(
             wait_for_event_match(&codex, |event| match event {
                 EventMsg::StreamError(event) => Some(event.message.clone()),
@@ -1390,11 +1412,13 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
             "Retrying with second...".to_string(),
             "Selecting a replacement account...".to_string(),
             "Retrying with third...".to_string(),
+            "Selecting a replacement account...".to_string(),
+            "Retrying with fourth...".to_string(),
         ]
     );
-    assert_eq!(auth_manager.active_account_id(), Some(third.id));
+    assert_eq!(auth_manager.active_account_id(), Some(fourth.id));
     let requests = responses_mock.requests();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 7);
     assert_eq!(
         requests[1].header("authorization").as_deref(),
         Some("Bearer access-a")
@@ -1409,6 +1433,15 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
     );
     assert_eq!(requests[1].body_json(), requests[2].body_json());
     assert_eq!(requests[1].body_json(), requests[3].body_json());
+    assert_eq!(
+        requests[4].header("authorization").as_deref(),
+        Some("Bearer access-c")
+    );
+    assert_eq!(
+        requests[5].header("authorization").as_deref(),
+        Some("Bearer access-d")
+    );
+    assert_eq!(requests[4].body_json(), requests[5].body_json());
     assert!(
         requests[4]
             .body_json()

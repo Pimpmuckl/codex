@@ -57,11 +57,13 @@ const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
+    usage_limit_account_attempts: &mut HashSet<String>,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -77,6 +79,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         &step_context,
         fallback_step_context.as_ref(),
         Some(client_session),
+        usage_limit_account_attempts,
         initial_context_injection,
         compaction_metadata,
     )
@@ -87,6 +90,7 @@ pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
 ) -> CodexResult<()> {
+    let mut usage_limit_account_attempts = HashSet::new();
     // Standalone compaction is its own request boundary, so it captures a fresh step.
     let step_context = sess.capture_step_context(Arc::clone(&turn_context)).await;
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
@@ -109,6 +113,7 @@ pub(crate) async fn run_remote_compact_task(
         &step_context,
         /*fallback_step_context*/ None,
         /*client_session*/ None,
+        &mut usage_limit_account_attempts,
         InitialContextInjection::DoNotInject,
         compaction_metadata,
     )
@@ -120,6 +125,7 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     client_session: Option<&mut ModelClientSession>,
+    usage_limit_account_attempts: &mut HashSet<String>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<()> {
@@ -162,6 +168,7 @@ async fn run_remote_compact_task_inner(
         step_context,
         fallback_step_context,
         client_session,
+        usage_limit_account_attempts,
         initial_context_injection,
         compaction_metadata,
         &mut analytics_details,
@@ -195,11 +202,13 @@ async fn run_remote_compact_task_inner(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     mut client_session: Option<&mut ModelClientSession>,
+    usage_limit_account_attempts: &mut HashSet<String>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
@@ -221,6 +230,7 @@ async fn run_remote_compact_task_inner_impl(
         sess,
         step_context,
         client_session.as_deref_mut(),
+        usage_limit_account_attempts,
         &compaction_trace,
         compaction_metadata,
         analytics_details,
@@ -247,6 +257,7 @@ async fn run_remote_compact_task_inner_impl(
                 sess,
                 fallback_step_context,
                 client_session,
+                usage_limit_account_attempts,
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
@@ -335,6 +346,7 @@ async fn run_remote_compaction_request_v2(
     client_session: &mut ModelClientSession,
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
+    usage_limit_account_attempts: &mut HashSet<String>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let max_retries = turn_context
         .provider
@@ -343,12 +355,11 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retries = 0;
     let mut capacity_retries = 0;
-    let mut usage_limit_account_attempts = HashSet::new();
     // Remote compaction waits are interrupted by aborting the parent task, matching the existing
     // stream-retry behavior.
     let capacity_retry_cancellation = CancellationToken::new();
     loop {
-        client_session.begin_usage_limit_failover_tracking(&usage_limit_account_attempts);
+        client_session.begin_usage_limit_failover_tracking(usage_limit_account_attempts);
         let stream = client_session
             .stream(
                 prompt,
@@ -363,7 +374,7 @@ async fn run_remote_compaction_request_v2(
             .await;
         crate::codex_plus_plus::account_failover::report_tracked_client_failovers(
             client_session,
-            &mut usage_limit_account_attempts,
+            usage_limit_account_attempts,
             sess,
             turn_context,
         )
@@ -379,7 +390,7 @@ async fn run_remote_compaction_request_v2(
                 if !matches!(
                     crate::codex_plus_plus::account_failover::switch_and_report(
                         client_session,
-                        &mut usage_limit_account_attempts,
+                        usage_limit_account_attempts,
                         sess,
                         turn_context,
                         &usage_limit,

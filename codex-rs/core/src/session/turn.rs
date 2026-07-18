@@ -149,11 +149,19 @@ pub(crate) async fn run_turn(
 ) -> CodexResult<Option<String>> {
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    let mut usage_limit_account_attempts = HashSet::new();
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
+    if let Err(err) = run_pre_sampling_compact(
+        &sess,
+        &turn_context,
+        &mut client_session,
+        &mut usage_limit_account_attempts,
+    )
+    .await
+    {
         if matches!(err, CodexErr::TurnAborted) {
             return Err(err);
         }
@@ -288,6 +296,7 @@ pub(crate) async fn run_turn(
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 &responses_metadata,
+                &mut usage_limit_account_attempts,
                 sampling_request_input,
                 cancellation_token.child_token(),
             )
@@ -351,6 +360,7 @@ pub(crate) async fn run_turn(
                         Arc::clone(&step_context),
                         /*fallback_step_context*/ None,
                         &mut client_session,
+                        &mut usage_limit_account_attempts,
                         InitialContextInjection::BeforeLastUserMessage(Arc::clone(&world_state)),
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
@@ -799,8 +809,15 @@ async fn run_pre_sampling_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
+    usage_limit_account_attempts: &mut HashSet<String>,
 ) -> CodexResult<()> {
-    maybe_run_previous_model_inline_compact(sess, turn_context, client_session).await?;
+    maybe_run_previous_model_inline_compact(
+        sess,
+        turn_context,
+        client_session,
+        usage_limit_account_attempts,
+    )
+    .await?;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
@@ -813,6 +830,7 @@ async fn run_pre_sampling_compact(
             step_context,
             /*fallback_step_context*/ None,
             client_session,
+            usage_limit_account_attempts,
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
@@ -860,6 +878,7 @@ async fn maybe_run_previous_model_inline_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
+    usage_limit_account_attempts: &mut HashSet<String>,
 ) -> CodexResult<()> {
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(());
@@ -890,6 +909,7 @@ async fn maybe_run_previous_model_inline_compact(
             step_context,
             fallback_step_context,
             client_session,
+            usage_limit_account_attempts,
             InitialContextInjection::DoNotInject,
             CompactionReason::CompHashChanged,
             CompactionPhase::PreTurn,
@@ -937,6 +957,7 @@ async fn maybe_run_previous_model_inline_compact(
             step_context,
             fallback_step_context,
             client_session,
+            usage_limit_account_attempts,
             InitialContextInjection::DoNotInject,
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
@@ -946,6 +967,7 @@ async fn maybe_run_previous_model_inline_compact(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(
     level = "trace",
     skip_all,
@@ -956,6 +978,7 @@ async fn run_auto_compact(
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
+    usage_limit_account_attempts: &mut HashSet<String>,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -989,6 +1012,7 @@ async fn run_auto_compact(
                 step_context,
                 fallback_step_context,
                 client_session,
+                usage_limit_account_attempts,
                 initial_context_injection,
                 reason,
                 phase,
@@ -1116,6 +1140,7 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
+    usage_limit_account_attempts: &mut HashSet<String>,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
@@ -1139,7 +1164,6 @@ async fn run_sampling_request(
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
     let mut capacity_retries = 0;
-    let mut usage_limit_account_attempts = HashSet::new();
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
@@ -1163,7 +1187,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_store),
             client_session,
             responses_metadata,
-            &mut usage_limit_account_attempts,
+            usage_limit_account_attempts,
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
@@ -1180,7 +1204,7 @@ async fn run_sampling_request(
             Err(CodexErr::UsageLimitReached(mut e)) => {
                 match crate::codex_plus_plus::account_failover::switch_and_report(
                     client_session,
-                    &mut usage_limit_account_attempts,
+                    usage_limit_account_attempts,
                     &sess,
                     &turn_context,
                     &e,
