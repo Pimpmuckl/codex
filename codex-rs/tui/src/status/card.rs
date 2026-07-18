@@ -114,6 +114,7 @@ struct StatusHistoryCell {
     remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,
     account: Option<StatusAccountDisplay>,
+    account_identity_may_be_stale: bool,
     thread_name: Option<String>,
     session_id: Option<String>,
     forked_from: Option<String>,
@@ -180,6 +181,7 @@ pub(crate) fn new_status_output_with_rate_limits(
         /*runtime_model_provider_base_url*/ None,
         /*remote_connection*/ None,
         account_display,
+        /*account_identity_may_be_stale*/ false,
         token_info,
         total_usage,
         session_id,
@@ -203,6 +205,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     runtime_model_provider_base_url: Option<&str>,
     remote_connection: Option<&RemoteConnectionStatus>,
     account_display: Option<&StatusAccountDisplay>,
+    account_identity_may_be_stale: bool,
     token_info: Option<&TokenUsageInfo>,
     total_usage: &TokenUsage,
     session_id: &Option<ThreadId>,
@@ -223,6 +226,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
         runtime_model_provider_base_url,
         remote_connection,
         account_display,
+        account_identity_may_be_stale,
         token_info,
         total_usage,
         session_id,
@@ -251,6 +255,7 @@ impl StatusHistoryCell {
         runtime_model_provider_base_url: Option<&str>,
         remote_connection: Option<&RemoteConnectionStatus>,
         account_display: Option<&StatusAccountDisplay>,
+        account_identity_may_be_stale: bool,
         token_info: Option<&TokenUsageInfo>,
         total_usage: &TokenUsage,
         session_id: &Option<ThreadId>,
@@ -362,6 +367,7 @@ impl StatusHistoryCell {
                 remote_connection: remote_connection.cloned(),
                 show_chatgpt_usage_link,
                 account,
+                account_identity_may_be_stale,
                 thread_name,
                 session_id,
                 forked_from,
@@ -834,6 +840,20 @@ impl HistoryCell for StatusHistoryCell {
 
         if let Some(account_value) = account_value {
             lines.push(formatter.line("Account", vec![Span::from(account_value)]));
+            if self.account_identity_may_be_stale
+                && matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. }))
+            {
+                lines.extend(
+                    word_wrap_lines(
+                        [Line::from(
+                            crate::codex_plus_plus::ACCOUNT_IDENTITY_MAY_BE_STALE_NOTE.cyan(),
+                        )],
+                        RtOptions::new(value_width.max(1)),
+                    )
+                    .into_iter()
+                    .map(|line| formatter.continuation(line.spans)),
+                );
+            }
         }
 
         if let Some(thread_name) = thread_name {

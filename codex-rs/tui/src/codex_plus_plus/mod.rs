@@ -1,5 +1,6 @@
 //! Codex++ TUI capabilities kept separate from upstream-owned orchestration.
 
+mod account_identity_freshness;
 mod account_policy;
 pub(crate) mod destructive_command_guard;
 #[cfg(any(not(debug_assertions), test))]
@@ -11,6 +12,8 @@ mod user_message_inbox;
 mod weekly_window_scheduler;
 mod welcome;
 
+pub(crate) use account_identity_freshness::AccountIdentityFreshness;
+pub(crate) use account_identity_freshness::MAY_BE_STALE_NOTE as ACCOUNT_IDENTITY_MAY_BE_STALE_NOTE;
 pub(crate) use account_policy::persist_settings;
 use anyhow::Result;
 use destructive_command_guard::DcgChange;

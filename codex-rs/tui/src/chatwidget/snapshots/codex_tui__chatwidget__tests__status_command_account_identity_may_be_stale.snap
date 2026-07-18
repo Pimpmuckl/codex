@@ -1,0 +1,8 @@
+---
+source: tui/src/chatwidget/tests/status_command_tests.rs
+expression: account_section
+---
+│  Account:              user@example.com (Plus)                       │
+│                        Account identity may be stale after automatic │
+│                        failover.                                     │
+│  Limits:               refresh requested; run /status again shortly. │
