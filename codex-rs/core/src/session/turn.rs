@@ -2022,6 +2022,7 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
+    client_session.begin_usage_limit_failover_tracking(usage_limit_account_attempts);
     let stream = client_session
         .stream(
             prompt,

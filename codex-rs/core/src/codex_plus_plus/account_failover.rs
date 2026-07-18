@@ -15,24 +15,14 @@ use codex_protocol::protocol::StreamErrorEvent;
 
 #[derive(Default)]
 pub(crate) struct UsageLimitFailoverTracking {
-    attempted_account_ids: HashSet<String>,
-    selected_account_ids: Vec<AccountId>,
+    pub(crate) attempted_account_ids: HashSet<String>,
+    pub(crate) selected_account_ids: Vec<AccountId>,
 }
 
 pub(crate) enum UsageLimitFailoverOutcome {
     Retried,
     Unavailable,
     RequestAccountChanged,
-}
-
-impl UsageLimitFailoverTracking {
-    pub(crate) fn record_attempt(&mut self, account_id: &AccountId) {
-        self.attempted_account_ids.insert(account_id.to_string());
-    }
-
-    pub(crate) fn record_switch(&mut self, account_id: AccountId) {
-        self.selected_account_ids.push(account_id);
-    }
 }
 
 pub(crate) async fn report_tracked_client_failovers(

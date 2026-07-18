@@ -348,6 +348,7 @@ async fn run_remote_compaction_request_v2(
     // stream-retry behavior.
     let capacity_retry_cancellation = CancellationToken::new();
     loop {
+        client_session.begin_usage_limit_failover_tracking(&usage_limit_account_attempts);
         let stream = client_session
             .stream(
                 prompt,

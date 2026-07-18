@@ -1137,6 +1137,17 @@ impl ModelClientSession {
         std::mem::take(&mut self.usage_limit_failover_tracking)
     }
 
+    pub(crate) fn begin_usage_limit_failover_tracking(
+        &mut self,
+        attempted_account_ids: &HashSet<String>,
+    ) {
+        self.usage_limit_failover_tracking =
+            crate::codex_plus_plus::account_failover::UsageLimitFailoverTracking {
+                attempted_account_ids: attempted_account_ids.clone(),
+                selected_account_ids: Vec::new(),
+            };
+    }
+
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
     }
@@ -1433,7 +1444,10 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
-        let mut attempted_account_ids = HashSet::new();
+        let mut attempted_account_ids = self
+            .usage_limit_failover_tracking
+            .attempted_account_ids
+            .clone();
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let request_account_id = auth_manager
@@ -1546,7 +1560,8 @@ impl ModelClientSession {
                                     }
                                     attempted_account_ids.insert(account_id.to_string());
                                     self.usage_limit_failover_tracking
-                                        .record_attempt(account_id);
+                                        .attempted_account_ids
+                                        .insert(account_id.to_string());
                                 }
                                 match manager
                                     .switch_to_next_imported_account(&attempted_account_ids)
@@ -1555,7 +1570,8 @@ impl ModelClientSession {
                                     ImportedAccountSwitchOutcome::ReadyToRetry => {
                                         if let Some(account_id) = manager.active_account_id() {
                                             self.usage_limit_failover_tracking
-                                                .record_switch(account_id);
+                                                .selected_account_ids
+                                                .push(account_id);
                                         }
                                         auth_recovery = Some(manager.unauthorized_recovery());
                                         pending_retry = PendingUnauthorizedRetry::default();

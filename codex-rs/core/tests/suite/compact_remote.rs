@@ -1270,8 +1270,20 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         "access-b",
         Some("account-b"),
     );
-    let second = store.import_current(
+    store.import_current(
         Some("second".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    super::client::write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-c",
+        Some("account-c"),
+    );
+    let third = store.import_current(
+        Some("third".to_string()),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     )?;
@@ -1319,6 +1331,11 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
                 "usage_limit_reached",
                 "usage limit reached",
             )),
+            ResponseTemplate::new(429).set_body_json(json!({
+                "error": {
+                    "type": "usage_limit_reached"
+                }
+            })),
             responses::sse_response(responses::sse(vec![
                 json!({
                     "type": "response.output_item.done",
@@ -1355,7 +1372,7 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         .await?;
 
     let mut status_messages = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..4 {
         status_messages.push(
             wait_for_event_match(&codex, |event| match event {
                 EventMsg::StreamError(event) => Some(event.message.clone()),
@@ -1371,11 +1388,13 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         vec![
             "Selecting a replacement account...".to_string(),
             "Retrying with second...".to_string(),
+            "Selecting a replacement account...".to_string(),
+            "Retrying with third...".to_string(),
         ]
     );
-    assert_eq!(auth_manager.active_account_id(), Some(second.id));
+    assert_eq!(auth_manager.active_account_id(), Some(third.id));
     let requests = responses_mock.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     assert_eq!(
         requests[1].header("authorization").as_deref(),
         Some("Bearer access-a")
@@ -1384,9 +1403,14 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
         requests[2].header("authorization").as_deref(),
         Some("Bearer access-b")
     );
+    assert_eq!(
+        requests[3].header("authorization").as_deref(),
+        Some("Bearer access-c")
+    );
     assert_eq!(requests[1].body_json(), requests[2].body_json());
+    assert_eq!(requests[1].body_json(), requests[3].body_json());
     assert!(
-        requests[3]
+        requests[4]
             .body_json()
             .to_string()
             .contains("V2_FAILOVER_COMPACT_SUMMARY")
