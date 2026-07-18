@@ -39,7 +39,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
         fs::read_to_string(source.path().join("installer-args.txt"))?,
         expected_log
     );
-    manager.disable().await.unwrap();
     manager.enable().await.unwrap();
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());

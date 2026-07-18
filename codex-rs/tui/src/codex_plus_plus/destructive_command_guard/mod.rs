@@ -1,10 +1,8 @@
 use crate::app_server_session::AppServerSession;
 use crate::config_update::replace_config_value;
 use crate::config_update::write_config_batch;
-use crate::hooks_rpc::HookTrustUpdate;
 use crate::hooks_rpc::fetch_hooks_list;
 use crate::hooks_rpc::hooks_list_entry_for_cwd;
-use crate::hooks_rpc::write_hook_trusts;
 use crate::legacy_core::config::Config;
 use anyhow::Context;
 use anyhow::Result;
@@ -367,28 +365,32 @@ impl DcgManager {
             bail!("installed DCG plugin hook is disabled");
         }
         let key = hook.key;
+        let key_path = format!("hooks.state.{}", serde_json::to_string(&key)?);
         let prior_state = std::fs::read_to_string(self.local_codex_home.join("config.toml"))
             .ok()
             .and_then(|contents| toml::from_str::<toml::Value>(&contents).ok())
             .and_then(|config| config.get("hooks")?.get("state")?.get(&key).cloned());
-        let response = write_hook_trusts(
-            self.request_handle.clone(),
-            vec![HookTrustUpdate {
-                key: key.clone(),
-                current_hash: hook.current_hash,
-            }],
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("{err:#}"))?;
+        let response: ConfigWriteResponse = self
+            .request_handle
+            .request_typed(ClientRequest::ConfigBatchWrite {
+                request_id: request_id("dcg-hook-trust"),
+                params: codex_app_server_protocol::ConfigBatchWriteParams {
+                    edits: vec![replace_config_value(
+                        key_path.clone(),
+                        serde_json::json!({ "trusted_hash": hook.current_hash }),
+                    )],
+                    file_path: None,
+                    expected_version: None,
+                    reload_user_config: false,
+                },
+            })
+            .await?;
         if response.status != codex_app_server_protocol::WriteStatus::Ok {
             let prior_state =
                 prior_state.map_or(Ok(serde_json::Value::Null), serde_json::to_value)?;
             write_config_batch(
                 self.request_handle.clone(),
-                vec![replace_config_value(
-                    format!("hooks.state.{}", serde_json::to_string(&key)?),
-                    prior_state,
-                )],
+                vec![replace_config_value(key_path, prior_state)],
             )
             .await
             .map_err(|err| anyhow::anyhow!("{err:#}"))?;
