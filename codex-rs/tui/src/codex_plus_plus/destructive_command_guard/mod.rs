@@ -101,7 +101,7 @@ impl DcgManager {
         Ok(Self {
             request_handle: app_server.request_handle(),
             local_codex_home: config.codex_home.to_path_buf(),
-            remote_hook_host: !app_server.uses_embedded_app_server(),
+            remote_hook_host: app_server.uses_remote_workspace(),
             cwd: config.cwd.to_path_buf(),
             marketplace_source: PINNED_SOURCE.to_string(),
             marketplace_ref: Some(PINNED_TAG.to_string()),
