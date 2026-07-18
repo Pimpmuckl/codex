@@ -793,6 +793,9 @@ impl App {
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
             }
+            AppEvent::RefreshStatusAccountSnapshot { request_id } => {
+                self.refresh_status_account_snapshot(app_server, request_id);
+            }
             AppEvent::RefreshTokenActivity { request_id } => {
                 self.refresh_token_activity(app_server, request_id);
             }
@@ -863,10 +866,6 @@ impl App {
                             );
                             tui.frame_requester().schedule_frame();
                         }
-                        RateLimitRefreshOrigin::StatusCommand { request_id } => {
-                            self.chat_widget
-                                .finish_status_rate_limit_refresh(request_id, snapshots);
-                        }
                         RateLimitRefreshOrigin::UsageMenu { request_id } => {
                             self.chat_widget.finish_usage_menu_rate_limit_refresh(
                                 request_id,
@@ -908,10 +907,6 @@ impl App {
                                 Err(err),
                             );
                         }
-                        RateLimitRefreshOrigin::StatusCommand { request_id } => {
-                            self.chat_widget
-                                .finish_status_rate_limit_refresh(request_id, Vec::new());
-                        }
                         RateLimitRefreshOrigin::UsageMenu { request_id } => {
                             self.chat_widget.finish_usage_menu_rate_limit_refresh(
                                 request_id,
@@ -927,6 +922,16 @@ impl App {
                             );
                         }
                     }
+                }
+            },
+            AppEvent::StatusAccountSnapshotLoaded { request_id, result } => match result {
+                Ok(snapshot) => self
+                    .chat_widget
+                    .finish_status_account_snapshot_refresh(request_id, Some(snapshot)),
+                Err(err) => {
+                    tracing::warn!("live account refresh failed during /status: {err}");
+                    self.chat_widget
+                        .finish_status_account_snapshot_refresh(request_id, None);
                 }
             },
             AppEvent::OpenTokenActivity => {

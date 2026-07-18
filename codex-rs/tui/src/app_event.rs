@@ -41,6 +41,7 @@ use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
+use crate::codex_plus_plus::LiveStatusAccountSnapshot;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ModelCapacityRetryMode;
@@ -120,19 +121,14 @@ pub(crate) struct PluginRemoteSectionError {
 ///
 /// A `StartupPrefetch` fires once, concurrently with the rest of TUI init, and
 /// updates the cached snapshots and any available reset-credit notice (no
-/// status card to finalize). A `StatusCommand` is tied to a specific `/status`
-/// invocation and must call `finish_status_rate_limit_refresh` when done so the
-/// card stops showing a "refreshing" state. A `UsageMenu` refreshes a cached
-/// zero reset count so the disabled menu entry can become available without a
-/// restart. A `ResetPicker` refreshes the rate limits and detailed reset-credit
-/// rows before showing redemption choices.
+/// status card to finalize). A `UsageMenu` refreshes a cached zero reset count
+/// so the disabled menu entry can become available without a restart. A
+/// `ResetPicker` refreshes the rate limits and detailed reset-credit rows before
+/// showing redemption choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RateLimitRefreshOrigin {
     /// Eagerly fetched after bootstrap for `/status` data and reset availability.
     StartupPrefetch { reset_hint_request_id: u64 },
-    /// User-initiated via `/status`; the `request_id` correlates with the
-    /// status card that should be updated when the fetch completes.
-    StatusCommand { request_id: u64 },
     /// User reopened `/usage` while the cached reset-credit count was zero.
     UsageMenu { request_id: u64 },
     /// User opened the reset-credit picker.
@@ -290,6 +286,11 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
     },
 
+    /// Refresh one internally consistent account identity and rate-limit snapshot for `/status`.
+    RefreshStatusAccountSnapshot {
+        request_id: u64,
+    },
+
     /// Open the current thread goal summary/action menu.
     OpenThreadGoalMenu {
         thread_id: ThreadId,
@@ -322,6 +323,12 @@ pub(crate) enum AppEvent {
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
         result: Result<GetAccountRateLimitsResponse, String>,
+    },
+
+    /// Result of refreshing the live account snapshot for one `/status` card.
+    StatusAccountSnapshotLoaded {
+        request_id: u64,
+        result: Result<LiveStatusAccountSnapshot, String>,
     },
 
     /// Open the default token-activity view selected from the `/usage` menu.

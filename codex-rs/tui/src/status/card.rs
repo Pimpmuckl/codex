@@ -71,19 +71,38 @@ pub(crate) struct StatusTokenUsageData {
 }
 
 #[derive(Debug)]
-struct StatusRateLimitState {
+struct StatusRefreshState {
+    account: Option<StatusAccountDisplay>,
     rate_limits: StatusRateLimitData,
     refreshing_rate_limits: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct StatusHistoryHandle {
-    rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
+    refresh_state: Arc<RwLock<StatusRefreshState>>,
 }
 
 impl StatusHistoryHandle {
     pub(crate) fn finish_rate_limit_refresh(
         &self,
+        rate_limits: &[RateLimitSnapshotDisplay],
+        now: DateTime<Local>,
+    ) {
+        self.finish_refresh(/*account*/ None, rate_limits, now);
+    }
+
+    pub(crate) fn finish_account_snapshot_refresh(
+        &self,
+        account: &StatusAccountDisplay,
+        rate_limits: &[RateLimitSnapshotDisplay],
+        now: DateTime<Local>,
+    ) {
+        self.finish_refresh(Some(account), rate_limits, now);
+    }
+
+    fn finish_refresh(
+        &self,
+        account: Option<&StatusAccountDisplay>,
         rate_limits: &[RateLimitSnapshotDisplay],
         now: DateTime<Local>,
     ) {
@@ -94,9 +113,12 @@ impl StatusHistoryHandle {
         };
         #[expect(clippy::expect_used)]
         let mut state = self
-            .rate_limit_state
+            .refresh_state
             .write()
-            .expect("status history rate-limit state poisoned");
+            .expect("status history refresh state poisoned");
+        if let Some(account) = account {
+            state.account = Some(account.clone());
+        }
         state.rate_limits = rate_limits;
         state.refreshing_rate_limits = false;
     }
@@ -113,12 +135,11 @@ struct StatusHistoryCell {
     model_provider: Option<String>,
     remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,
-    account: Option<StatusAccountDisplay>,
     thread_name: Option<String>,
     session_id: Option<String>,
     forked_from: Option<String>,
     token_usage: StatusTokenUsageData,
-    rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
+    refresh_state: Arc<RwLock<StatusRefreshState>>,
 }
 
 #[cfg(test)]
@@ -345,7 +366,8 @@ impl StatusHistoryCell {
         } else {
             compose_rate_limit_data_many(rate_limits, now)
         };
-        let rate_limit_state = Arc::new(RwLock::new(StatusRateLimitState {
+        let refresh_state = Arc::new(RwLock::new(StatusRefreshState {
+            account,
             rate_limits,
             refreshing_rate_limits,
         }));
@@ -361,15 +383,14 @@ impl StatusHistoryCell {
                 model_provider,
                 remote_connection: remote_connection.cloned(),
                 show_chatgpt_usage_link,
-                account,
                 thread_name,
                 session_id,
                 forked_from,
                 token_usage,
                 agents_summary,
-                rate_limit_state: rate_limit_state.clone(),
+                refresh_state: refresh_state.clone(),
             },
-            StatusHistoryHandle { rate_limit_state },
+            StatusHistoryHandle { refresh_state },
         )
     }
 
@@ -409,7 +430,7 @@ impl StatusHistoryCell {
 
     fn rate_limit_lines(
         &self,
-        state: &StatusRateLimitState,
+        state: &StatusRefreshState,
         available_inner_width: usize,
         formatter: &FieldFormatter,
     ) -> Vec<Line<'static>> {
@@ -550,7 +571,7 @@ impl StatusHistoryCell {
 
     fn collect_rate_limit_labels(
         &self,
-        state: &StatusRateLimitState,
+        state: &StatusRefreshState,
         seen: &mut BTreeSet<String>,
         labels: &mut Vec<String>,
     ) {
@@ -720,7 +741,12 @@ impl HistoryCell for StatusHistoryCell {
             return Vec::new();
         }
 
-        let account_value = self.account.as_ref().map(|account| match account {
+        #[expect(clippy::expect_used)]
+        let refresh_state = self
+            .refresh_state
+            .read()
+            .expect("status history refresh state poisoned");
+        let account_value = refresh_state.account.as_ref().map(|account| match account {
             StatusAccountDisplay::ChatGpt { email, plan } => match (email, plan) {
                 (Some(email), Some(plan)) => format!("{email} ({plan})"),
                 (Some(email), None) => email.clone(),
@@ -738,11 +764,6 @@ impl HistoryCell for StatusHistoryCell {
             .collect();
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
         let thread_name = self.thread_name.as_deref().filter(|name| !name.is_empty());
-        #[expect(clippy::expect_used)]
-        let rate_limit_state = self
-            .rate_limit_state
-            .read()
-            .expect("status history rate-limit state poisoned");
         #[expect(clippy::expect_used)]
         let agents_summary = self
             .agents_summary
@@ -773,7 +794,7 @@ impl HistoryCell for StatusHistoryCell {
             push_label(&mut labels, &mut seen, "Context window");
         }
 
-        self.collect_rate_limit_labels(&rate_limit_state, &mut seen, &mut labels);
+        self.collect_rate_limit_labels(&refresh_state, &mut seen, &mut labels);
 
         let formatter = FieldFormatter::from_labels(labels.iter().map(String::as_str));
         let value_width = formatter.value_width(available_inner_width);
@@ -853,7 +874,10 @@ impl HistoryCell for StatusHistoryCell {
 
         lines.push(Line::from(Vec::<Span<'static>>::new()));
         // Hide token usage only for ChatGPT subscribers
-        if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
+        if !matches!(
+            refresh_state.account.as_ref(),
+            Some(StatusAccountDisplay::ChatGpt { .. })
+        ) {
             lines.push(formatter.line("Token usage", self.token_usage_spans()));
         }
 
@@ -861,7 +885,7 @@ impl HistoryCell for StatusHistoryCell {
             lines.push(formatter.line("Context window", spans));
         }
 
-        lines.extend(self.rate_limit_lines(&rate_limit_state, available_inner_width, &formatter));
+        lines.extend(self.rate_limit_lines(&refresh_state, available_inner_width, &formatter));
 
         let content_width = lines.iter().map(line_display_width).max().unwrap_or(0);
         let inner_width = content_width.min(available_inner_width);

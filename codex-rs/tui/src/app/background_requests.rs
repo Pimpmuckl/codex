@@ -70,9 +70,7 @@ impl App {
     /// result as a `RateLimitsLoaded` event.
     ///
     /// The `origin` is forwarded to the completion handler so it can distinguish
-    /// a startup prefetch (which updates cached snapshots and may surface a
-    /// reset-credit notice) from a `/status`-triggered refresh (which must
-    /// finalize the corresponding status card).
+    /// startup prefetches, usage-menu refreshes, and reset-credit flows.
     pub(super) fn refresh_rate_limits(
         &mut self,
         app_server: &AppServerSession,
@@ -91,12 +89,26 @@ impl App {
                         .and_then(|result| result.map_err(|err| err.to_string()))
                 }
                 RateLimitRefreshOrigin::StartupPrefetch { .. }
-                | RateLimitRefreshOrigin::StatusCommand { .. }
                 | RateLimitRefreshOrigin::UsageMenu { .. } => {
                     request.await.map_err(|err| err.to_string())
                 }
             };
             app_event_tx.send(AppEvent::RateLimitsLoaded { origin, result });
+        });
+    }
+
+    pub(super) fn refresh_status_account_snapshot(
+        &mut self,
+        app_server: &AppServerSession,
+        request_id: u64,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = crate::codex_plus_plus::fetch_live_status_account_snapshot(request_handle)
+                .await
+                .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::StatusAccountSnapshotLoaded { request_id, result });
         });
     }
 

@@ -247,10 +247,10 @@ impl ChatWidget {
         self.add_to_history(cell);
     }
 
-    pub(crate) fn finish_status_rate_limit_refresh(
+    pub(crate) fn finish_status_account_snapshot_refresh(
         &mut self,
         request_id: u64,
-        snapshots: Vec<RateLimitSnapshot>,
+        snapshot: Option<crate::codex_plus_plus::LiveStatusAccountSnapshot>,
     ) {
         if !self
             .refreshing_status_outputs
@@ -260,22 +260,42 @@ impl ChatWidget {
             return;
         }
 
-        for snapshot in snapshots {
-            self.on_rate_limit_snapshot(Some(snapshot));
+        let account_display = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.account_display.clone());
+        if let Some(snapshot) = snapshot {
+            self.rate_limit_snapshots_by_limit_id.clear();
+            self.codex_rate_limit_reached_type = None;
+            for rate_limit in snapshot.rate_limits {
+                self.on_rate_limit_snapshot(Some(rate_limit));
+            }
+            self.status_account_display = Some(snapshot.account_display);
+            self.plan_type = Some(snapshot.plan_type);
         }
 
-        let rate_limit_snapshots: Vec<RateLimitSnapshotDisplay> = self
-            .rate_limit_snapshots_by_limit_id
-            .values()
-            .cloned()
-            .collect();
+        let rate_limit_snapshots: Vec<RateLimitSnapshotDisplay> = if account_display.is_some() {
+            self.rate_limit_snapshots_by_limit_id
+                .values()
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let now = Local::now();
         let mut remaining = Vec::with_capacity(self.refreshing_status_outputs.len());
         let mut updated_any = false;
         for (pending_request_id, handle) in self.refreshing_status_outputs.drain(..) {
             if pending_request_id == request_id {
                 updated_any = true;
-                handle.finish_rate_limit_refresh(rate_limit_snapshots.as_slice(), now);
+                if let Some(account_display) = account_display.as_ref() {
+                    handle.finish_account_snapshot_refresh(
+                        account_display,
+                        rate_limit_snapshots.as_slice(),
+                        now,
+                    );
+                } else {
+                    handle.finish_rate_limit_refresh(rate_limit_snapshots.as_slice(), now);
+                }
             } else {
                 remaining.push((pending_request_id, handle));
             }

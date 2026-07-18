@@ -436,9 +436,8 @@ impl ChatWidget {
                     self.next_status_refresh_request_id =
                         self.next_status_refresh_request_id.wrapping_add(1);
                     self.add_status_output(/*refreshing_rate_limits*/ true, Some(request_id));
-                    self.app_event_tx.send(AppEvent::RefreshRateLimits {
-                        origin: RateLimitRefreshOrigin::StatusCommand { request_id },
-                    });
+                    self.app_event_tx
+                        .send(AppEvent::RefreshStatusAccountSnapshot { request_id });
                 } else {
                     self.add_status_output(
                         /*refreshing_rate_limits*/ false, /*request_id*/ None,
