@@ -2,6 +2,103 @@ use super::*;
 use assert_matches::assert_matches;
 use codex_utils_path_uri::PathUri;
 
+fn app_server_error(
+    codex_error_info: Option<CodexErrorInfo>,
+    will_retry: bool,
+) -> ServerNotification {
+    ServerNotification::Error(ErrorNotification {
+        error: AppServerTurnError {
+            message: "retry status".to_string(),
+            codex_error_info,
+            additional_details: None,
+        },
+        will_retry,
+        thread_id: "thread-1".to_string(),
+        turn_id: "turn-1".to_string(),
+    })
+}
+
+#[tokio::test]
+async fn account_identity_freshness_tracks_only_live_retryable_usage_limit_errors() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    assert!(!chat.account_identity_freshness.may_be_stale());
+
+    handle_warning(
+        &mut chat,
+        "The selected model is at capacity. Retrying in 1 minute (1/4).",
+    );
+    for (codex_error_info, will_retry, replay_kind) in [
+        (
+            Some(CodexErrorInfo::UsageLimitExceeded),
+            true,
+            Some(ReplayKind::ThreadSnapshot),
+        ),
+        (Some(CodexErrorInfo::UsageLimitExceeded), false, None),
+        (Some(CodexErrorInfo::Other), true, None),
+    ] {
+        chat.handle_server_notification(
+            app_server_error(codex_error_info, will_retry),
+            replay_kind,
+        );
+    }
+    assert!(!chat.account_identity_freshness.may_be_stale());
+
+    chat.handle_server_notification(
+        app_server_error(
+            Some(CodexErrorInfo::UsageLimitExceeded),
+            /*will_retry*/ true,
+        ),
+        /*replay_kind*/ None,
+    );
+    assert!(chat.account_identity_freshness.may_be_stale());
+
+    chat.handle_server_notification(
+        app_server_error(Some(CodexErrorInfo::Other), /*will_retry*/ true),
+        /*replay_kind*/ None,
+    );
+    assert!(chat.account_identity_freshness.may_be_stale());
+}
+
+#[tokio::test]
+async fn status_command_warns_when_account_identity_may_be_stale_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.status_account_display = Some(StatusAccountDisplay::ChatGpt {
+        email: Some("user@example.com".to_string()),
+        plan: Some("Plus".to_string()),
+    });
+    chat.handle_server_notification(
+        app_server_error(
+            Some(CodexErrorInfo::UsageLimitExceeded),
+            /*will_retry*/ true,
+        ),
+        /*replay_kind*/ None,
+    );
+    let _ = drain_insert_history(&mut rx);
+
+    chat.dispatch_command(SlashCommand::Status);
+
+    let rendered = match rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => {
+            lines_to_single_string(&cell.display_lines(/*width*/ 80))
+        }
+        other => panic!("expected status output, got {other:?}"),
+    };
+    let account_section = rendered
+        .lines()
+        .filter(|line| {
+            ["Account:", "Account identity", "failover.", "Limits:"]
+                .iter()
+                .any(|needle| line.contains(needle))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_chatwidget_snapshot!(
+        "status_command_account_identity_may_be_stale",
+        account_section,
+    );
+}
+
 #[tokio::test]
 async fn status_command_renders_immediately_and_refreshes_rate_limits_for_chatgpt_auth() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

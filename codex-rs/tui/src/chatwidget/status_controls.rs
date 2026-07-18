@@ -227,6 +227,7 @@ impl ChatWidget {
             self.runtime_model_provider_base_url.as_deref(),
             self.remote_connection.as_ref(),
             self.status_account_display.as_ref(),
+            self.account_identity_freshness.may_be_stale(),
             token_info,
             total_usage,
             &self.thread_id,

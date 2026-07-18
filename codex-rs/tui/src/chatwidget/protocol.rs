@@ -122,6 +122,10 @@ impl ChatWidget {
                 self.on_hook_completed(notification.run);
             }
             ServerNotification::Error(notification) => {
+                if !from_replay {
+                    self.account_identity_freshness
+                        .observe_live_error(&notification);
+                }
                 if notification.will_retry {
                     if !from_replay {
                         self.on_stream_error(

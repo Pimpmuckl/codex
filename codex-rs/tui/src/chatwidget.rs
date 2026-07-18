@@ -532,6 +532,7 @@ pub(crate) struct ChatWidget {
     bottom_pane: BottomPane,
     transcript: TranscriptState,
     user_message_inbox: crate::codex_plus_plus::UserMessageInboxState,
+    account_identity_freshness: crate::codex_plus_plus::AccountIdentityFreshness,
     config: Config,
     pub(crate) weekly_start_supported: bool,
     raw_output_mode: bool,
