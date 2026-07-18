@@ -234,20 +234,28 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
         .map_or_else(String::new, |reset| {
             format!("    Unavailable until {reset}")
         });
+    let mut usage = Vec::with_capacity(2);
+    if let Some(percent) = candidate.five_hour_usage_left_percent {
+        usage.push(format!(
+            "{} {}",
+            candidate.primary_window_label,
+            usage_window(percent, candidate.five_hour_reset.as_deref()),
+        ));
+    }
+    if let Some(percent) = candidate.weekly_usage_left_percent {
+        usage.push(format!(
+            "Weekly {}",
+            usage_window(percent, candidate.weekly_reset.as_deref()),
+        ));
+    }
+    let usage = if usage.is_empty() {
+        "Usage unknown".to_string()
+    } else {
+        usage.join("    ")
+    };
     SelectionItem {
         name: candidate.email.clone(),
-        description: Some(format!(
-            "{} {}    Weekly {}{blocked_until}{in_use}",
-            candidate.primary_window_label,
-            usage_window(
-                candidate.five_hour_usage_left_percent,
-                candidate.five_hour_reset.as_deref(),
-            ),
-            usage_window(
-                candidate.weekly_usage_left_percent,
-                candidate.weekly_reset.as_deref(),
-            ),
-        )),
+        description: Some(format!("{usage}{blocked_until}{in_use}")),
         description_style: Some(Style::default()),
         is_default: candidate.is_default,
         dismiss_on_select: true,
@@ -256,12 +264,10 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
     }
 }
 
-fn usage_window(percent: Option<u8>, reset: Option<&str>) -> String {
-    match (percent, reset) {
-        (Some(percent), Some(reset)) => format!("{percent:>3}% ({reset})"),
-        (Some(percent), None) => format!("{percent:>3}%"),
-        (None, Some(reset)) => format!("unknown ({reset})"),
-        (None, None) => "unknown".to_string(),
+fn usage_window(percent: u8, reset: Option<&str>) -> String {
+    match reset {
+        Some(reset) => format!("{percent:>3}% ({reset})"),
+        None => format!("{percent:>3}%"),
     }
 }
 
