@@ -1,7 +1,6 @@
 //! Codex++ TUI capabilities kept separate from upstream-owned orchestration.
 
 mod account_policy;
-#[allow(dead_code)]
 pub(crate) mod destructive_command_guard;
 #[cfg(any(not(debug_assertions), test))]
 mod lag_warning;
@@ -13,6 +12,10 @@ mod weekly_window_scheduler;
 mod welcome;
 
 pub(crate) use account_policy::persist_settings;
+use anyhow::Result;
+use destructive_command_guard::DcgChange;
+use destructive_command_guard::DcgManager;
+use destructive_command_guard::RepairReason;
 #[cfg(not(debug_assertions))]
 pub(crate) use lag_warning::lag_warning;
 pub(crate) use model_capacity_retry::status_details as model_capacity_retry_status_details;
@@ -32,5 +35,28 @@ pub(crate) use user_message_inbox::recognize as recognize_user_message;
 pub(crate) use weekly_window_scheduler::WeeklyWindowScheduler;
 pub(crate) use weekly_window_scheduler::WeeklyWindowStatus;
 pub(crate) use welcome::WELCOME_TIP;
+#[cfg(not(test))]
+pub(crate) use welcome::mark_dcg_nux_pending;
 pub(crate) use welcome::replace_upstream_app_promo;
+pub(crate) use welcome::take_dcg_nux_help_lines;
+pub(crate) use welcome::take_dcg_nux_render_pending;
 pub(crate) use welcome::welcome_help_lines;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DcgAction {
+    InstallAndEnable,
+    Enable,
+    Disable,
+    Update,
+    Repair(RepairReason),
+}
+
+pub(crate) async fn apply_dcg_action(manager: DcgManager, action: DcgAction) -> Result<DcgChange> {
+    match action {
+        DcgAction::InstallAndEnable => manager.install_and_enable().await,
+        DcgAction::Enable => manager.enable().await,
+        DcgAction::Disable => manager.disable().await,
+        DcgAction::Update => manager.update().await,
+        DcgAction::Repair(reason) => manager.repair(reason).await,
+    }
+}

@@ -1,6 +1,7 @@
 //! Codex++ settings exposed through fork slash commands.
 
 mod accounts;
+mod dcg;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -25,6 +26,7 @@ use ratatui::text::Line;
 use super::super::*;
 use crate::bottom_pane::ListSelectionView;
 use crate::bottom_pane::SelectionToggle;
+use crate::codex_plus_plus::destructive_command_guard::DcgStatus;
 use crate::key_hint;
 use crate::keymap::ListKeymap;
 use crate::keymap::primary_binding;
@@ -37,7 +39,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(super) fn open_codex_plus_plus_popup(&mut self) {
+    pub(crate) fn open_codex_plus_plus_popup(&mut self, dcg_status: DcgStatus) {
         let list_keymap = settings_list_keymap(self.bottom_pane.list_keymap());
         let params = codex_plus_plus_settings_params(
             self.config.automatic_account_selection,
@@ -45,6 +47,7 @@ impl ChatWidget {
             self.config.model_capacity_retry_mode,
             crate::codex_plus_plus::user_message_inbox_enabled(&self.config.config_layer_stack),
             self.weekly_start_supported,
+            Some(dcg_status),
             &list_keymap,
         );
         let view = ListSelectionView::new(params, self.app_event_tx.clone(), list_keymap);
@@ -85,7 +88,7 @@ impl ChatWidget {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct SettingsSelection {
     automatic: Arc<AtomicBool>,
     weekly: Arc<AtomicBool>,
@@ -109,6 +112,7 @@ fn codex_plus_plus_settings_params(
     current_capacity: ModelCapacityRetryMode,
     current_user_message_inbox: bool,
     weekly_supported: bool,
+    dcg_status: Option<DcgStatus>,
     list_keymap: &ListKeymap,
 ) -> SelectionViewParams {
     let selection = SettingsSelection {
@@ -124,6 +128,12 @@ fn codex_plus_plus_settings_params(
         selection.clone(),
         weekly_supported,
     )];
+    if let Some(status) = dcg_status {
+        items.insert(
+            0,
+            dcg::settings_item(status, selection.clone(), weekly_supported),
+        );
+    }
     if weekly_supported {
         items.push(settings_item(
             "Start unused weekly windows",
@@ -211,7 +221,7 @@ fn settings_hint_line(list_keymap: &ListKeymap) -> Line<'static> {
         " to toggle".into(),
     ];
     if let Some(accept) = primary_binding(&list_keymap.accept) {
-        spans.extend(["; ".into(), accept.into(), " to save".into()]);
+        spans.extend(["; ".into(), accept.into(), " to save or manage".into()]);
     }
     if let Some(cancel) = primary_binding(&list_keymap.cancel) {
         spans.extend(["; ".into(), cancel.into(), " to cancel".into()]);

@@ -268,6 +268,19 @@ pub(super) async fn prepare_startup_tooltip_override(
     Some(tooltip_override.message)
 }
 
+pub(super) async fn persist_dcg_nux(config: &Config) {
+    if let Err(err) = ConfigEditsBuilder::for_config(config)
+        .with_edits([crate::legacy_core::config::edit::ConfigEdit::SetPath {
+            segments: vec!["codex_plus_plus_dcg_nux_shown".to_string()],
+            value: true.into(),
+        }])
+        .apply()
+        .await
+    {
+        tracing::error!(error = %err, "failed to persist DCG introduction state");
+    }
+}
+
 pub(super) async fn handle_model_migration_prompt_if_needed(
     tui: &mut tui::Tui,
     config: &mut Config,
@@ -398,6 +411,28 @@ mod tests {
             vec![base_cwd.join("rel").into_path_buf()]
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn dcg_nux_persists_globally_and_prepares_once() {
+        let codex_home = tempdir().expect("temp codex home");
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("config");
+        assert!(!codex_config::codex_plus_plus_dcg_nux_shown(
+            &config.config_layer_stack
+        ));
+        persist_dcg_nux(&config).await;
+        let reloaded = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("reloaded config");
+        assert!(codex_config::codex_plus_plus_dcg_nux_shown(
+            &reloaded.config_layer_stack
+        ));
     }
 
     fn skill_error(path: &str, message: &str) -> SkillErrorInfo {

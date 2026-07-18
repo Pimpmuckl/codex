@@ -213,6 +213,14 @@ pub(crate) fn new_session_info(
             parts.push(Box::new(PlainHistoryCell { lines }));
         }
     }
+    if let Some(mut dcg_lines) = crate::codex_plus_plus::take_dcg_nux_help_lines() {
+        if !is_first_event {
+            let mut welcome_lines = crate::codex_plus_plus::welcome_help_lines();
+            welcome_lines.append(&mut dcg_lines);
+            dcg_lines = welcome_lines;
+        }
+        parts.push(Box::new(PlainHistoryCell { lines: dcg_lines }));
+    }
 
     SessionInfoCell(CompositeHistoryCell { parts })
 }

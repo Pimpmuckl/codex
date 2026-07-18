@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/codex_plus_plus_tests.rs
+expression: "format!(\"{}\\n{flow}\", states.map(render_dcg_item).join(\" || \"))"
+---
+Destructive Command Guard · Not installed | 1 action(s) || Destructive Command Guard · Enabled · 0.6.8-codexpp.1 | 1 action(s) || Destructive Command Guard · Disabled · 0.6.8-codexpp.1 | 1 action(s) || Destructive Command Guard · Update available · 0.6.8 | 1 action(s) || Destructive Command Guard · External installation | 0 action(s) || Destructive Command Guard · Needs repair | 1 action(s) || Destructive Command Guard · Needs repair | 0 action(s) || Destructive Command Guard · Unsupported on this platform | 0 action(s)
+Install Destructive Command Guard?
+Install and enable|Review destructive shell commands with Guardian.
+Cancel|
+Destructive Command Guard
+Installing and enabling…|Working…
+Destructive Command Guard
+Operation failed|The operation did not finish. Try again.

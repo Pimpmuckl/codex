@@ -33,6 +33,7 @@ use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
 use crate::chatwidget::ThreadInputState;
+use crate::codex_plus_plus::destructive_command_guard::DcgManager;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
 use crate::exec_command::split_command_string;
@@ -887,6 +888,12 @@ impl App {
                 &initial_images,
             );
         let thread_and_widget_started_at = Instant::now();
+        let _show_dcg_nux = DcgManager::management_supported(&app_server)
+            && !codex_config::codex_plus_plus_dcg_nux_shown(&config.config_layer_stack);
+        #[cfg(not(test))]
+        if _show_dcg_nux {
+            crate::codex_plus_plus::mark_dcg_nux_pending();
+        }
         let pending_startup_thread_start = matches!(
             &session_selection,
             SessionSelection::StartFresh | SessionSelection::Exit
@@ -1344,6 +1351,9 @@ See the Codex keymap documentation for supported actions and examples."
                     // Allow widgets to process any pending timers before rendering.
                     self.chat_widget.pre_draw_tick();
                     let rendered_area = self.render_chat_widget_frame(tui)?;
+                    if crate::codex_plus_plus::take_dcg_nux_render_pending() {
+                        persist_dcg_nux(&self.config).await;
+                    }
                     if self.chat_widget.ambient_pet_image_enabled() {
                         let terminal_size = tui.terminal.size()?;
                         let ambient_pet_area = Rect::new(

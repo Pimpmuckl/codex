@@ -4749,6 +4749,10 @@
       "default": null,
       "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codex home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
     },
+    "codex_plus_plus_dcg_nux_shown": {
+      "description": "Whether the global Destructive Command Guard introduction was shown.",
+      "type": "boolean"
+    },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
       "type": "string"
