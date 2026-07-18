@@ -103,11 +103,15 @@ impl App {
         request_id: u64,
     ) {
         let request_handle = app_server.request_handle();
+        let chatgpt_base_url = self.config.chatgpt_base_url.clone();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let result = crate::codex_plus_plus::fetch_live_status_account_snapshot(request_handle)
-                .await
-                .map_err(|err| err.to_string());
+            let result = crate::codex_plus_plus::fetch_live_status_account_snapshot(
+                request_handle,
+                chatgpt_base_url,
+            )
+            .await
+            .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::StatusAccountSnapshotLoaded { request_id, result });
         });
     }
