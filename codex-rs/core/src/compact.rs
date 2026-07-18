@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -237,6 +238,7 @@ async fn run_compact_task_inner_impl(
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut usage_limit_account_attempts = HashSet::new();
     let mut client_session = sess.services.model_client.new_session();
     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
     // request tracking)
@@ -265,6 +267,7 @@ async fn run_compact_task_inner_impl(
             &mut client_session,
             &responses_metadata,
             &prompt,
+            &mut usage_limit_account_attempts,
         )
         .await;
 
@@ -664,8 +667,10 @@ async fn drain_to_completed(
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
+    usage_limit_account_attempts: &mut HashSet<String>,
 ) -> CodexResult<()> {
-    let mut stream = client_session
+    client_session.begin_usage_limit_failover_tracking(usage_limit_account_attempts);
+    let stream = client_session
         .stream(
             prompt,
             &turn_context.model_info,
@@ -678,7 +683,15 @@ async fn drain_to_completed(
             // are left untraced until the reducer has a first-class local compaction lifecycle.
             &InferenceTraceContext::disabled(),
         )
-        .await?;
+        .await;
+    crate::codex_plus_plus::account_failover::report_tracked_client_failovers(
+        client_session,
+        usage_limit_account_attempts,
+        sess,
+        turn_context,
+    )
+    .await;
+    let mut stream = stream?;
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {

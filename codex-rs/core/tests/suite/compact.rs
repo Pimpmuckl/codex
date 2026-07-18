@@ -1,9 +1,13 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_config::types::AutomaticAccountSelection;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
 use codex_features::Feature;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
@@ -65,6 +69,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use wiremock::MockServer;
+use wiremock::ResponseTemplate;
 // --- Test helpers -----------------------------------------------------------
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";
@@ -917,6 +922,144 @@ async fn manual_compact_uses_custom_prompt() {
             "summarization prompt should not appear if compaction omits a prompt"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_compact_reports_account_failover_and_retries_same_input() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            sse_response(sse(vec![
+                ev_assistant_message("m0", FIRST_REPLY),
+                ev_completed("r0"),
+            ])),
+            ResponseTemplate::new(429).set_body_json(json!({
+                "error": {
+                    "type": "usage_limit_reached",
+                    "resets_at": 4_102_444_800_i64
+                }
+            })),
+            sse_response(sse(vec![
+                ev_assistant_message("m1", SUMMARY_TEXT),
+                ev_completed("r1"),
+            ])),
+        ],
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    let store = codex_login::AccountStore::new(home.path().to_path_buf());
+    super::client::write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-a",
+        Some("account-a"),
+    );
+    let first = store.import_current(
+        Some("first".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    super::client::write_auth_json(
+        home.as_ref(),
+        /*openai_api_key*/ None,
+        "pro",
+        "access-b",
+        Some("account-b"),
+    );
+    let second = store.import_current(
+        Some("second".to_string()),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    store.apply_imported_account_to_root_auth(
+        &first.id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let auth_manager = Arc::new(
+        AuthManager::new_with_automatic_account_selection(
+            home.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+            AutomaticAccountSelection::Enabled,
+        )
+        .await,
+    );
+    let test = test_codex()
+        .with_home(home)
+        .with_auth_manager(Arc::clone(&auth_manager))
+        .with_config(|config| {
+            config.automatic_account_selection = AutomaticAccountSelection::Enabled;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "USER_ONE".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    test.codex.submit(Op::Compact).await?;
+    let mut status_messages = Vec::new();
+    for _ in 0..2 {
+        let EventMsg::StreamError(event) = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::StreamError(_))
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        status_messages.push(event.message);
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(
+        status_messages,
+        vec![
+            "Selecting a replacement account...".to_string(),
+            "Retrying with second...".to_string(),
+        ]
+    );
+    assert_eq!(auth_manager.active_account_id(), Some(second.id));
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[1].header("authorization").as_deref(),
+        Some("Bearer access-a")
+    );
+    assert_eq!(
+        requests[2].header("authorization").as_deref(),
+        Some("Bearer access-b")
+    );
+    assert_eq!(requests[1].body_json(), requests[2].body_json());
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
