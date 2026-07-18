@@ -234,26 +234,24 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
         .map_or_else(String::new, |reset| {
             format!("    Unavailable until {reset}")
         });
-    let usage = match (
-        candidate.five_hour_usage_left_percent,
-        candidate.weekly_usage_left_percent,
-    ) {
-        (Some(primary_percent), Some(weekly_percent)) => format!(
-            "{} {}    Weekly {}",
-            candidate.primary_window_label,
-            usage_window(primary_percent, candidate.five_hour_reset.as_deref()),
-            usage_window(weekly_percent, candidate.weekly_reset.as_deref()),
-        ),
-        (Some(primary_percent), None) => format!(
+    let mut usage = Vec::with_capacity(2);
+    if let Some(percent) = candidate.five_hour_usage_left_percent {
+        usage.push(format!(
             "{} {}",
             candidate.primary_window_label,
-            usage_window(primary_percent, candidate.five_hour_reset.as_deref()),
-        ),
-        (None, Some(weekly_percent)) => format!(
+            usage_window(percent, candidate.five_hour_reset.as_deref()),
+        ));
+    }
+    if let Some(percent) = candidate.weekly_usage_left_percent {
+        usage.push(format!(
             "Weekly {}",
-            usage_window(weekly_percent, candidate.weekly_reset.as_deref()),
-        ),
-        (None, None) => "Usage unknown".to_string(),
+            usage_window(percent, candidate.weekly_reset.as_deref()),
+        ));
+    }
+    let usage = if usage.is_empty() {
+        "Usage unknown".to_string()
+    } else {
+        usage.join("    ")
     };
     SelectionItem {
         name: candidate.email.clone(),
