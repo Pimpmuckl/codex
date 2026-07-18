@@ -868,6 +868,18 @@ pub(crate) enum AppEvent {
         user_message_inbox: UserMessageInbox,
     },
 
+    OpenCodexPlusPlusSettings,
+    DcgStatusDetected(
+        u64,
+        crate::codex_plus_plus::destructive_command_guard::DcgStatus,
+    ),
+    OpenDcgInstallConfirmation,
+    ManageDcg(crate::codex_plus_plus::DcgAction),
+    DcgOperationCompleted {
+        action: crate::codex_plus_plus::DcgAction,
+        change: Option<crate::codex_plus_plus::destructive_command_guard::DcgChange>,
+    },
+
     OpenCodexPlusPlusAccounts,
     /// Update memory settings and persist them to config.toml.
     UpdateMemorySettings {

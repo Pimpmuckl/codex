@@ -8,6 +8,8 @@ use super::*;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::ListSelectionView;
+use crate::codex_plus_plus::destructive_command_guard::DcgUnsupportedReason;
+use crate::codex_plus_plus::destructive_command_guard::RepairReason;
 use crate::keymap::RuntimeKeymap;
 use crate::test_backend::VT100Backend;
 
@@ -30,6 +32,7 @@ fn settings_view(
                 capacity,
                 /*current_user_message_inbox*/ false,
                 weekly_supported,
+                None,
                 &keymap,
             ),
             AppEventSender::new(tx),
@@ -175,7 +178,69 @@ fn settings_hint_uses_list_keymap() {
         .map(|span| span.content.as_ref())
         .collect::<String>();
 
-    assert_eq!(text, "Press space to toggle; enter to save; q to cancel");
+    assert_eq!(
+        text,
+        "Press space to toggle; enter to save or manage; q to cancel"
+    );
+}
+
+#[test]
+fn dcg_views_snapshot() {
+    let i = dcg::settings_item(
+        DcgStatus::NotInstalled,
+        Default::default(),
+        /*save_weekly*/ false,
+    );
+    let (tx, mut rx) = unbounded_channel();
+    (i.actions[0])(&AppEventSender::new(tx));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PersistCodexPlusPlusSettings { .. })
+    );
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenDcgInstallConfirmation));
+    let states = [
+        DcgStatus::NotInstalled,
+        DcgStatus::Enabled("0.6.8-codexpp.1".to_string()),
+        DcgStatus::Disabled("0.6.8-codexpp.1".to_string()),
+        DcgStatus::UpdateAvailable {
+            installed_version: Some("0.6.7".to_string()),
+            target_version: "0.6.8".to_string(),
+        },
+        DcgStatus::ExternalInstallation("0.6.8".to_string()),
+        DcgStatus::NeedsRepair(RepairReason::HookUntrusted),
+        DcgStatus::NeedsRepair(RepairReason::StatusUnavailable),
+        DcgStatus::Unsupported(DcgUnsupportedReason::Platform),
+    ];
+    let flow = [
+        dcg::confirmation_params(),
+        dcg::progress_params(crate::codex_plus_plus::DcgAction::InstallAndEnable),
+        dcg::failure_params(),
+    ]
+    .map(summarize_params)
+    .join("\n");
+    insta::assert_snapshot!(
+        "codex_plus_plus_dcg_settings_states",
+        format!("{}\n{flow}", states.map(render_dcg_item).join(" || "))
+    );
+}
+
+fn render_dcg_item(status: DcgStatus) -> String {
+    let item = dcg::settings_item(
+        status,
+        SettingsSelection::default(),
+        /*save_weekly*/ false,
+    );
+    format!("{} | {} action(s)", item.name, item.actions.len())
+}
+
+fn summarize_params(params: SelectionViewParams) -> String {
+    let items = params
+        .items
+        .into_iter()
+        .map(|item| format!("{}|{}", item.name, item.description.unwrap_or_default()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{}\n{items}", params.title.unwrap_or_default())
 }
 
 #[test]

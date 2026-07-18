@@ -407,6 +407,12 @@ async fn queued_slash_menu_cancel_drains_next_input() {
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     )
     .await;
+    assert_cancelled_queued_menu_drains_next_input(
+        "/codexplusplus",
+        "Checking command guard",
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    )
+    .await;
 }
 
 #[tokio::test]

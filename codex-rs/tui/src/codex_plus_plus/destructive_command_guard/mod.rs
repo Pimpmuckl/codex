@@ -26,8 +26,14 @@ use codex_core_plugins::store::PluginStore;
 use codex_plugin::PluginId;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -38,6 +44,9 @@ const PINNED_SOURCE: &str = "https://github.com/Pimpmuckl/destructive_command_gu
 const PINNED_TAG: &str = "v0.6.8-codexpp.1";
 const PINNED_VERSION: &str = "0.6.8-codexpp.1";
 const PINNED_COMMIT: &str = "fd4e90a41fa493aa9a61c715bd5114b7fcf4348e";
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+static OPERATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static STATUS_DETECTION_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
 const BINARY_NAME: &str = "dcg.exe";
 #[cfg(not(target_os = "windows"))]
@@ -120,8 +129,11 @@ impl DcgManager {
                 return DcgStatus::NeedsRepair(RepairReason::PluginMissing);
             }
             Ok(None) => {
+                let Some(binary) = external_binary() else {
+                    return DcgStatus::NotInstalled;
+                };
                 return self
-                    .reported_version(Path::new("dcg"))
+                    .reported_version(&binary)
                     .await
                     .map_or(DcgStatus::NotInstalled, DcgStatus::ExternalInstallation);
             }
@@ -176,6 +188,26 @@ impl DcgManager {
 
     pub(crate) async fn install_and_enable(&self) -> Result<DcgChange> {
         self.install_managed().await
+    }
+
+    pub(crate) fn try_begin_operation() -> bool {
+        !OPERATION_IN_FLIGHT.swap(true, Ordering::AcqRel)
+    }
+
+    pub(crate) fn finish_operation() {
+        OPERATION_IN_FLIGHT.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn management_supported(app_server: &AppServerSession) -> bool {
+        PLATFORM_SUPPORTED && !app_server.uses_remote_workspace()
+    }
+
+    pub(crate) fn begin_status_detection() -> u64 {
+        STATUS_DETECTION_ID.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub(crate) fn is_current_status_detection(id: u64) -> bool {
+        STATUS_DETECTION_ID.load(Ordering::Acquire) == id
     }
 
     pub(crate) async fn enable(&self) -> Result<DcgChange> {
@@ -233,8 +265,10 @@ impl DcgManager {
             .await?;
         let plugin_was_enabled = self
             .read_plugin(marketplace.installed_root.as_path())
-            .await
-            .is_ok_and(|response| response.plugin.summary.enabled);
+            .await?
+            .plugin
+            .summary
+            .enabled;
         let binary = self.binary_path();
         let data_root = binary.parent().context("DCG binary path has no parent")?;
         tokio::fs::create_dir_all(data_root).await?;
@@ -490,7 +524,12 @@ impl DcgManager {
     }
 
     async fn reported_version(&self, binary: &Path) -> Option<String> {
-        let output = Command::new(binary).arg("--version").output().await.ok()?;
+        let mut command = Command::new(binary);
+        command.arg("--version").kill_on_drop(true);
+        let output = tokio::time::timeout(VERSION_PROBE_TIMEOUT, command.output())
+            .await
+            .ok()?
+            .ok()?;
         if !output.status.success() {
             return None;
         }
@@ -523,6 +562,19 @@ impl DcgManager {
         }
         Ok(())
     }
+}
+
+fn external_binary() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let mut candidates = std::env::split_paths(&path).map(|directory| directory.join(BINARY_NAME));
+    #[cfg(unix)]
+    return candidates.find(|candidate| {
+        candidate
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    });
+    #[cfg(not(unix))]
+    candidates.find(|candidate| candidate.is_file())
 }
 
 fn request_id(prefix: &str) -> RequestId {

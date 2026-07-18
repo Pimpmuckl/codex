@@ -1,6 +1,10 @@
 ---
 source: tui/src/codex_plus_plus/welcome_tests.rs
-expression: terminal.backend().to_string()
+expression: "[render_welcome(true, 5), render_welcome(false, 3),].join(\"\\n\")"
 ---
+  Welcome to Codex++. Use /codexplusplus for settings and /accounts to enable
+  or disable accounts.
+  Tip: Enable Destructive Command Guard in /codexplusplus to send risky
+  commands to Guardian for review even in full --yolo mode.
   Welcome to Codex++. Use /codexplusplus for settings and /accounts to enable
   or disable accounts.

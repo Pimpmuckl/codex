@@ -5,6 +5,10 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::codex_plus_plus::apply_dcg_action;
+use crate::codex_plus_plus::destructive_command_guard::DcgManager;
+use crate::codex_plus_plus::destructive_command_guard::DcgStatus;
+use crate::codex_plus_plus::destructive_command_guard::RepairReason;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
 #[cfg(target_os = "windows")]
@@ -1830,6 +1834,55 @@ impl App {
                     user_message_inbox,
                 )
                 .await;
+            }
+            AppEvent::OpenCodexPlusPlusSettings => {
+                let request_id = DcgManager::begin_status_detection();
+                let manager = DcgManager::new(app_server, &self.config);
+                let app_event_tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let status = match manager {
+                        Ok(manager) => manager.detect_status().await,
+                        Err(err) => {
+                            tracing::error!(error = %err, "failed to initialize DCG manager");
+                            DcgStatus::NeedsRepair(RepairReason::StatusUnavailable)
+                        }
+                    };
+                    app_event_tx.send(AppEvent::DcgStatusDetected(request_id, status));
+                });
+            }
+            AppEvent::DcgStatusDetected(request_id, status) => {
+                if DcgManager::is_current_status_detection(request_id) {
+                    self.chat_widget.finish_dcg_status_detection(status);
+                }
+            }
+            AppEvent::OpenDcgInstallConfirmation => {
+                self.chat_widget.open_dcg_install_confirmation();
+            }
+            AppEvent::ManageDcg(action) => {
+                if DcgManager::try_begin_operation() {
+                    let manager = DcgManager::new(app_server, &self.config);
+                    self.chat_widget.show_dcg_progress(action);
+                    let app_event_tx = self.app_event_tx.clone();
+                    tokio::spawn(async move {
+                        let change = match manager {
+                            Ok(manager) => apply_dcg_action(manager, action)
+                                .await
+                                .inspect_err(|err| {
+                                    tracing::error!(error = %err, ?action, "DCG operation failed");
+                                })
+                                .ok(),
+                            Err(err) => {
+                                tracing::error!(error = %err, "failed to initialize DCG manager");
+                                None
+                            }
+                        };
+                        app_event_tx.send(AppEvent::DcgOperationCompleted { action, change });
+                    });
+                }
+            }
+            AppEvent::DcgOperationCompleted { action, change } => {
+                DcgManager::finish_operation();
+                self.chat_widget.finish_dcg_action(action, change);
             }
             AppEvent::OpenCodexPlusPlusAccounts => {
                 let statuses = self

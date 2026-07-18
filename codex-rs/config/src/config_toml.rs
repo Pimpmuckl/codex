@@ -271,6 +271,8 @@ pub struct ConfigToml {
     pub model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
     /// Whether agents can leave durable, non-blocking messages for the user.
     pub user_message_inbox: Option<UserMessageInbox>,
+    /// Whether the global Destructive Command Guard introduction was shown.
+    pub codex_plus_plus_dcg_nux_shown: Option<bool>,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.

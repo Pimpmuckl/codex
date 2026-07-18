@@ -455,7 +455,8 @@ impl ChatWidget {
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::CodexPlusPlus => {
-                self.open_codex_plus_plus_popup();
+                self.show_dcg_status_progress();
+                self.app_event_tx.send(AppEvent::OpenCodexPlusPlusSettings);
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Inbox => {
