@@ -34,8 +34,6 @@ use uuid::Uuid;
 const MARKETPLACE_NAME: &str = "pimpmuckl-dcg";
 const PLUGIN_NAME: &str = "destructive-command-guard";
 const PLUGIN_ID: &str = "destructive-command-guard@pimpmuckl-dcg";
-const OWNER: &str = "Pimpmuckl";
-const REPO: &str = "destructive_command_guard";
 const PINNED_SOURCE: &str = "https://github.com/Pimpmuckl/destructive_command_guard.git";
 const PINNED_TAG: &str = "v0.6.8-codexpp.1";
 const PINNED_VERSION: &str = "0.6.8-codexpp.1";
@@ -297,7 +295,7 @@ impl DcgManager {
             .args(["-NoProfile", "-NonInteractive"])
             .args(["-ExecutionPolicy", "Bypass", "-File"])
             .arg(root.join("install.ps1"))
-            .args(["-Owner", OWNER, "-Repo", REPO])
+            .args(["-Owner", "Pimpmuckl", "-Repo", "destructive_command_guard"])
             .args(["-Version", PINNED_TAG, "-Dest"])
             .arg(data_root)
             .args(["-NoConfigure", "-Verify"])
@@ -309,8 +307,8 @@ impl DcgManager {
             .args(["--version", PINNED_TAG, "--dest"])
             .arg(data_root)
             .args(["--no-configure", "--verify"])
-            .env("OWNER", OWNER)
-            .env("REPO", REPO)
+            .env("OWNER", "Pimpmuckl")
+            .env("REPO", "destructive_command_guard")
             .output()
             .await?;
         if !output.status.success() {
@@ -363,7 +361,7 @@ impl DcgManager {
         if !hook.enabled {
             bail!("installed DCG plugin hook is disabled");
         }
-        write_hook_trusts(
+        let response = write_hook_trusts(
             self.request_handle.clone(),
             vec![HookTrustUpdate {
                 key: hook.key,
@@ -372,6 +370,9 @@ impl DcgManager {
         )
         .await
         .map_err(|err| anyhow::anyhow!("{err:#}"))?;
+        if response.status != codex_app_server_protocol::WriteStatus::Ok {
+            bail!("installed DCG hook trust is overridden by managed configuration");
+        }
         Ok(())
     }
 

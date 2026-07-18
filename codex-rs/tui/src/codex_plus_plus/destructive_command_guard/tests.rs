@@ -41,7 +41,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let hook = manager.managed_hook().await.unwrap().expect("managed hook");
     assert_eq!(hook.trust_status, HookTrustStatus::Trusted);
     let expected_log = format!(
-        "{OWNER}|{REPO}|{PINNED_TAG}|{}|True|True",
+        "Pimpmuckl|destructive_command_guard|{PINNED_TAG}|{}|True|True",
         manager.binary_path().parent().unwrap().display()
     );
     assert_eq!(
