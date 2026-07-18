@@ -247,11 +247,12 @@ fn row_description_uses_one_unknown_for_missing_usage_data() {
 fn row_description_uses_window_label_and_generic_blocked_reset() {
     let mut candidate = candidates()[2].clone();
     candidate.primary_window_label = "daily".to_string();
+    candidate.five_hour_usage_left_percent = Some(42);
     candidate.blocked_until = Some("Jul 14 08:00Z".to_string());
     let item = selection_item(&candidate);
 
     assert_eq!(
         item.description.as_deref(),
-        Some("Usage unknown    Unavailable until Jul 14 08:00Z")
+        Some("daily  42%    Unavailable until Jul 14 08:00Z")
     );
 }
