@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::Prompt;
@@ -342,11 +343,12 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retries = 0;
     let mut capacity_retries = 0;
+    let mut usage_limit_account_attempts = HashSet::new();
     // Remote compaction waits are interrupted by aborting the parent task, matching the existing
     // stream-retry behavior.
     let capacity_retry_cancellation = CancellationToken::new();
     loop {
-        let result = match client_session
+        let stream = client_session
             .stream(
                 prompt,
                 &turn_context.model_info,
@@ -357,14 +359,36 @@ async fn run_remote_compaction_request_v2(
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
             )
-            .await
-        {
+            .await;
+        crate::codex_plus_plus::account_failover::report_tracked_client_failovers(
+            client_session,
+            &mut usage_limit_account_attempts,
+            sess,
+            turn_context,
+        )
+        .await;
+        let result = match stream {
             Ok(stream) => collect_compaction_output(stream).await,
             Err(err) => Err(err),
         };
 
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
+            Err(CodexErr::UsageLimitReached(usage_limit)) => {
+                if !matches!(
+                    crate::codex_plus_plus::account_failover::switch_and_report(
+                        client_session,
+                        &mut usage_limit_account_attempts,
+                        sess,
+                        turn_context,
+                        &usage_limit,
+                    )
+                    .await,
+                    crate::codex_plus_plus::account_failover::UsageLimitFailoverOutcome::Retried
+                ) {
+                    return Err(CodexErr::UsageLimitReached(usage_limit));
+                }
+            }
             Err(err)
                 if crate::codex_plus_plus::model_capacity_retry::applies_to_sampling(
                     &err,

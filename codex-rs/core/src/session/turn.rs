@@ -74,14 +74,12 @@ use codex_analytics::InvocationType;
 use codex_analytics::TurnResolvedConfigFact;
 use codex_analytics::build_track_events_context;
 use codex_async_utils::OrCancelExt;
-use codex_config::types::AutomaticAccountSelection;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_git_utils::get_git_repo_root_with_fs;
-use codex_login::auth::ImportedAccountSwitchOutcome;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
@@ -1165,6 +1163,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_store),
             client_session,
             responses_metadata,
+            &mut usage_limit_account_attempts,
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
@@ -1179,53 +1178,39 @@ async fn run_sampling_request(
                 return Err(CodexErr::ContextWindowExceeded);
             }
             Err(CodexErr::UsageLimitReached(mut e)) => {
-                let rate_limits = e.rate_limits.clone();
-                if let Some(rate_limits) = rate_limits {
-                    sess.update_rate_limits(&turn_context, *rate_limits).await;
-                }
-                if let Some(auth_manager) = turn_context.auth_manager.as_ref() {
-                    if client_session.request_account_id() != auth_manager.active_account_id() {
+                match crate::codex_plus_plus::account_failover::switch_and_report(
+                    client_session,
+                    &mut usage_limit_account_attempts,
+                    &sess,
+                    &turn_context,
+                    &e,
+                )
+                .await
+                {
+                    crate::codex_plus_plus::account_failover::UsageLimitFailoverOutcome::Retried => {
+                        if original_input.is_none() {
+                            original_input = Some(prompt.input);
+                        }
+                        turn_context.turn_timing_state.record_sampling_retry();
+                        continue;
+                    }
+                    crate::codex_plus_plus::account_failover::UsageLimitFailoverOutcome::RequestAccountChanged => {
                         return Err(CodexErr::UsageLimitReached(e));
                     }
-                    if let Some(account_id) = auth_manager.active_account_id() {
-                        if let Some(resets_at) = e.resets_at.as_ref()
-                            && let Err(err) = auth_manager
-                                .record_imported_account_usage_limit_resets_at(
-                                    &account_id,
-                                    resets_at.timestamp(),
-                                )
-                        {
-                            warn!("failed to record account usage limit reset: {err}");
+                    crate::codex_plus_plus::account_failover::UsageLimitFailoverOutcome::Unavailable => {}
+                }
+                if let Some(auth_manager) = turn_context.auth_manager.as_ref()
+                    && auth_manager.automatic_account_selection()
+                        == codex_config::types::AutomaticAccountSelection::Disabled
+                    && auth_manager.active_account_id().is_some()
+                {
+                    let account_guidance = "Automatic account selection is disabled. Choose another account in the Codex TUI or enable automatic account selection";
+                    e.promo_message = Some(match e.promo_message.take() {
+                        Some(promo_message) => {
+                            format!("{promo_message}\n\n{account_guidance}")
                         }
-                        usage_limit_account_attempts.insert(account_id.to_string());
-                    }
-                    match auth_manager
-                        .switch_to_next_imported_account(&usage_limit_account_attempts)
-                        .await
-                    {
-                        ImportedAccountSwitchOutcome::ReadyToRetry => {
-                            client_session.reset_websocket_session();
-                            if original_input.is_none() {
-                                original_input = Some(prompt.input);
-                            }
-                            turn_context.turn_timing_state.record_sampling_retry();
-                            continue;
-                        }
-                        ImportedAccountSwitchOutcome::SelectedBlockedUntil { .. }
-                        | ImportedAccountSwitchOutcome::NoCandidate => {}
-                    }
-                    if auth_manager.automatic_account_selection()
-                        == AutomaticAccountSelection::Disabled
-                        && auth_manager.active_account_id().is_some()
-                    {
-                        let account_guidance = "Automatic account selection is disabled. Choose another account in the Codex TUI or enable automatic account selection";
-                        e.promo_message = Some(match e.promo_message.take() {
-                            Some(promo_message) => {
-                                format!("{promo_message}\n\n{account_guidance}")
-                            }
-                            None => account_guidance.to_string(),
-                        });
-                    }
+                        None => account_guidance.to_string(),
+                    });
                 }
                 return Err(CodexErr::UsageLimitReached(e));
             }
@@ -2013,6 +1998,7 @@ async fn try_run_sampling_request(
     turn_store: Arc<codex_extension_api::ExtensionData>,
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
+    usage_limit_account_attempts: &mut HashSet<String>,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
@@ -2036,7 +2022,7 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
-    let mut stream = client_session
+    let stream = client_session
         .stream(
             prompt,
             &turn_context.model_info,
@@ -2049,7 +2035,15 @@ async fn try_run_sampling_request(
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
-        .await??;
+        .await?;
+    crate::codex_plus_plus::account_failover::report_tracked_client_failovers(
+        client_session,
+        usage_limit_account_attempts,
+        &sess,
+        &turn_context,
+    )
+    .await;
+    let mut stream = stream?;
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
     let mut needs_follow_up = false;
