@@ -1,5 +1,5 @@
 use crate::app_server_session::AppServerSession;
-use crate::config_update::clear_config_value;
+use crate::config_update::replace_config_value;
 use crate::config_update::write_config_batch;
 use crate::hooks_rpc::HookTrustUpdate;
 use crate::hooks_rpc::fetch_hooks_list;
@@ -367,6 +367,10 @@ impl DcgManager {
             bail!("installed DCG plugin hook is disabled");
         }
         let key = hook.key;
+        let prior_state = std::fs::read_to_string(self.local_codex_home.join("config.toml"))
+            .ok()
+            .and_then(|contents| toml::from_str::<toml::Value>(&contents).ok())
+            .and_then(|config| config.get("hooks")?.get("state")?.get(&key).cloned());
         let response = write_hook_trusts(
             self.request_handle.clone(),
             vec![HookTrustUpdate {
@@ -377,12 +381,14 @@ impl DcgManager {
         .await
         .map_err(|err| anyhow::anyhow!("{err:#}"))?;
         if response.status != codex_app_server_protocol::WriteStatus::Ok {
+            let prior_state =
+                prior_state.map_or(Ok(serde_json::Value::Null), serde_json::to_value)?;
             write_config_batch(
                 self.request_handle.clone(),
-                vec![clear_config_value(format!(
-                    "hooks.state.{}",
-                    serde_json::to_string(&key)?
-                ))],
+                vec![replace_config_value(
+                    format!("hooks.state.{}", serde_json::to_string(&key)?),
+                    prior_state,
+                )],
             )
             .await
             .map_err(|err| anyhow::anyhow!("{err:#}"))?;
