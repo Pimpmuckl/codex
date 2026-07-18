@@ -2,11 +2,9 @@ use core_test_support::test_codex::local_selections;
 use std::fs;
 
 use anyhow::Result;
-use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AutomaticAccountSelection;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_features::Feature;
-use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuth;
@@ -1250,78 +1248,22 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
     skip_if_no_network!(Ok(()));
 
     let home = Arc::new(TempDir::new()?);
-    let store = codex_login::AccountStore::new(home.path().to_path_buf());
-    super::client::write_auth_json(
+    let (auth_manager, accounts) = super::client::imported_account_manager(
         home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-a",
-        Some("account-a"),
-    );
-    let first = store.import_current(
-        Some("first".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    super::client::write_auth_json(
-        home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-b",
-        Some("account-b"),
-    );
-    store.import_current(
-        Some("second".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    super::client::write_auth_json(
-        home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-c",
-        Some("account-c"),
-    );
-    store.import_current(
-        Some("third".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    super::client::write_auth_json(
-        home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-d",
-        Some("account-d"),
-    );
-    let fourth = store.import_current(
-        Some("fourth".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    store.apply_imported_account_to_root_auth(
-        &first.id,
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
+        &[
+            super::client::ImportedAccountSpec::new("first", "access-a", "account-a"),
+            super::client::ImportedAccountSpec::new("second", "access-b", "account-b"),
+            super::client::ImportedAccountSpec::new("third", "access-c", "account-c"),
+            super::client::ImportedAccountSpec::new("fourth", "access-d", "account-d"),
+        ],
+    )
+    .await?;
+    let fourth = &accounts[3];
     let in_use_manager = AuthManager::from_auth_for_testing_with_home(
         CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         home.path().to_path_buf(),
     );
     in_use_manager.activate_imported_account(&fourth.id).await?;
-    let auth_manager = Arc::new(
-        AuthManager::new_with_automatic_account_selection(
-            home.path().to_path_buf(),
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            /*forced_chatgpt_workspace_id*/ None,
-            /*chatgpt_base_url*/ None,
-            AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
-            AutomaticAccountSelection::Enabled,
-        )
-        .await,
-    );
     let harness = TestCodexHarness::with_builder(
         test_codex()
             .with_home(home)
@@ -1416,7 +1358,7 @@ async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit(
             "Retrying with fourth...".to_string(),
         ]
     );
-    assert_eq!(auth_manager.active_account_id(), Some(fourth.id));
+    assert_eq!(auth_manager.active_account_id(), Some(fourth.id.clone()));
     let requests = responses_mock.requests();
     assert_eq!(requests.len(), 7);
     assert_eq!(

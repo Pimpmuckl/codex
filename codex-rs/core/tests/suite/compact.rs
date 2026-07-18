@@ -1,13 +1,10 @@
 use anyhow::Result;
 use anyhow::anyhow;
-use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AutomaticAccountSelection;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
 use codex_features::Feature;
-use codex_login::AuthKeyringBackendKind;
-use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
@@ -950,49 +947,14 @@ async fn manual_compact_reports_account_failover_and_retries_same_input() -> Res
     )
     .await;
     let home = Arc::new(TempDir::new()?);
-    let store = codex_login::AccountStore::new(home.path().to_path_buf());
-    super::client::write_auth_json(
+    let (auth_manager, accounts) = super::client::imported_account_manager(
         home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-a",
-        Some("account-a"),
-    );
-    let first = store.import_current(
-        Some("first".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    super::client::write_auth_json(
-        home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-b",
-        Some("account-b"),
-    );
-    let second = store.import_current(
-        Some("second".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    store.apply_imported_account_to_root_auth(
-        &first.id,
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    let auth_manager = Arc::new(
-        AuthManager::new_with_automatic_account_selection(
-            home.path().to_path_buf(),
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            /*forced_chatgpt_workspace_id*/ None,
-            /*chatgpt_base_url*/ None,
-            AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
-            AutomaticAccountSelection::Enabled,
-        )
-        .await,
-    );
+        &[
+            super::client::ImportedAccountSpec::new("first", "access-a", "account-a"),
+            super::client::ImportedAccountSpec::new("second", "access-b", "account-b"),
+        ],
+    )
+    .await?;
     let test = test_codex()
         .with_home(home)
         .with_auth_manager(Arc::clone(&auth_manager))
@@ -1046,7 +1008,10 @@ async fn manual_compact_reports_account_failover_and_retries_same_input() -> Res
             "Retrying with second...".to_string(),
         ]
     );
-    assert_eq!(auth_manager.active_account_id(), Some(second.id));
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(accounts[1].id.clone())
+    );
     let requests = request_log.requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(

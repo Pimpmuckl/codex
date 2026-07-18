@@ -10,6 +10,7 @@ use codex_core::resolve_installation_id;
 use codex_core::thread_store_from_config;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
+use codex_login::AccountProfile;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -574,6 +575,66 @@ pub(super) fn write_auth_json(
     .unwrap();
 
     fake_jwt
+}
+
+pub(super) struct ImportedAccountSpec<'a> {
+    label: &'a str,
+    access_token: &'a str,
+    account_id: &'a str,
+}
+
+impl<'a> ImportedAccountSpec<'a> {
+    pub(super) fn new(label: &'a str, access_token: &'a str, account_id: &'a str) -> Self {
+        Self {
+            label,
+            access_token,
+            account_id,
+        }
+    }
+}
+
+pub(super) async fn imported_account_manager(
+    home: &TempDir,
+    specs: &[ImportedAccountSpec<'_>],
+) -> anyhow::Result<(Arc<AuthManager>, Vec<AccountProfile>)> {
+    let store = codex_login::AccountStore::new(home.path().to_path_buf());
+    let mut profiles = Vec::with_capacity(specs.len());
+    for spec in specs {
+        write_auth_json(
+            home,
+            /*openai_api_key*/ None,
+            "pro",
+            spec.access_token,
+            Some(spec.account_id),
+        );
+        profiles.push(store.import_current(
+            Some(spec.label.to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?);
+    }
+    let first = profiles
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("at least one imported account is required"))?;
+    store.apply_imported_account_to_root_auth(
+        &first.id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let manager = Arc::new(
+        AuthManager::new_with_automatic_account_selection(
+            home.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+            AutomaticAccountSelection::Enabled,
+        )
+        .await,
+    );
+    Ok((manager, profiles))
 }
 
 struct ProviderAuthCommandFixture {
@@ -3464,49 +3525,14 @@ async fn http_usage_limit_failover_reports_account_and_retries_same_input() -> a
     )
     .await;
     let home = Arc::new(TempDir::new()?);
-    let store = codex_login::AccountStore::new(home.path().to_path_buf());
-    write_auth_json(
+    let (auth_manager, accounts) = imported_account_manager(
         home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-a",
-        Some("account-a"),
-    );
-    let first = store.import_current(
-        Some("first".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    write_auth_json(
-        home.as_ref(),
-        /*openai_api_key*/ None,
-        "pro",
-        "access-b",
-        Some("account-b"),
-    );
-    let second = store.import_current(
-        Some("second".to_string()),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    store.apply_imported_account_to_root_auth(
-        &first.id,
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    )?;
-    let auth_manager = Arc::new(
-        AuthManager::new_with_automatic_account_selection(
-            home.path().to_path_buf(),
-            /*enable_codex_api_key_env*/ false,
-            AuthCredentialsStoreMode::File,
-            /*forced_chatgpt_workspace_id*/ None,
-            /*chatgpt_base_url*/ None,
-            AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
-            AutomaticAccountSelection::Enabled,
-        )
-        .await,
-    );
+        &[
+            ImportedAccountSpec::new("first", "access-a", "account-a"),
+            ImportedAccountSpec::new("second", "access-b", "account-b"),
+        ],
+    )
+    .await?;
     let fixture = test_codex()
         .with_home(home)
         .with_auth_manager(Arc::clone(&auth_manager))
@@ -3555,7 +3581,10 @@ async fn http_usage_limit_failover_reports_account_and_retries_same_input() -> a
             "Retrying with second...".to_string(),
         ]
     );
-    assert_eq!(auth_manager.active_account_id(), Some(second.id));
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(accounts[1].id.clone())
+    );
     let requests = responses_mock.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
