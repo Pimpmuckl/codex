@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -91,6 +92,7 @@ pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bo
 pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    usage_limit_account_attempts: &mut HashSet<String>,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -111,6 +113,7 @@ pub(crate) async fn run_inline_auto_compact_task(
         sess,
         turn_context,
         input,
+        Some(usage_limit_account_attempts),
         initial_context_injection,
         CompactionTrigger::Auto,
         reason,
@@ -137,6 +140,7 @@ pub(crate) async fn run_compact_task(
         sess.clone(),
         turn_context,
         input,
+        /*usage_limit_account_attempts*/ None,
         InitialContextInjection::DoNotInject,
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
@@ -146,10 +150,12 @@ pub(crate) async fn run_compact_task(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
+    usage_limit_account_attempts: Option<&mut HashSet<String>>,
     initial_context_injection: InitialContextInjection,
     trigger: CompactionTrigger,
     reason: CompactionReason,
@@ -186,6 +192,7 @@ async fn run_compact_task_inner(
         Arc::clone(&sess),
         Arc::clone(&turn_context),
         input,
+        usage_limit_account_attempts,
         initial_context_injection,
         compaction_metadata,
     )
@@ -221,6 +228,7 @@ async fn run_compact_task_inner_impl(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
+    usage_limit_account_attempts: Option<&mut HashSet<String>>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<String> {
@@ -237,6 +245,9 @@ async fn run_compact_task_inner_impl(
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut standalone_usage_limit_account_attempts = HashSet::new();
+    let usage_limit_account_attempts =
+        usage_limit_account_attempts.unwrap_or(&mut standalone_usage_limit_account_attempts);
     let mut client_session = sess.services.model_client.new_session();
     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
     // request tracking)
@@ -265,6 +276,7 @@ async fn run_compact_task_inner_impl(
             &mut client_session,
             &responses_metadata,
             &prompt,
+            usage_limit_account_attempts,
         )
         .await;
 
@@ -664,8 +676,10 @@ async fn drain_to_completed(
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
+    usage_limit_account_attempts: &mut HashSet<String>,
 ) -> CodexResult<()> {
-    let mut stream = client_session
+    client_session.begin_usage_limit_failover_tracking(usage_limit_account_attempts);
+    let stream = client_session
         .stream(
             prompt,
             &turn_context.model_info,
@@ -678,7 +692,15 @@ async fn drain_to_completed(
             // are left untraced until the reducer has a first-class local compaction lifecycle.
             &InferenceTraceContext::disabled(),
         )
-        .await?;
+        .await;
+    crate::codex_plus_plus::account_failover::report_tracked_client_failovers(
+        client_session,
+        usage_limit_account_attempts,
+        sess,
+        turn_context,
+    )
+    .await;
+    let mut stream = stream?;
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {

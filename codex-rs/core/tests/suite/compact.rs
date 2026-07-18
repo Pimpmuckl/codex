@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_config::types::AutomaticAccountSelection;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
@@ -65,6 +66,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use wiremock::MockServer;
+use wiremock::ResponseTemplate;
 // --- Test helpers -----------------------------------------------------------
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";
@@ -917,6 +919,141 @@ async fn manual_compact_uses_custom_prompt() {
             "summarization prompt should not appear if compaction omits a prompt"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_local_compact_preserves_account_failover_attempts() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            sse_response(sse(vec![
+                ev_function_call("call-before-compact", DUMMY_FUNCTION_NAME, "{}"),
+                ev_completed_with_tokens("r0", /*total_tokens*/ 500),
+            ])),
+            ResponseTemplate::new(429).set_body_json(json!({
+                "error": {
+                    "type": "usage_limit_reached",
+                    "resets_at": 4_102_444_800_i64
+                }
+            })),
+            sse_response(sse(vec![
+                ev_assistant_message("m1", SUMMARY_TEXT),
+                ev_completed("r1"),
+            ])),
+            sse_response(sse_failed(
+                "r2-usage-limit",
+                "usage_limit_reached",
+                "usage limit reached",
+            )),
+            sse_response(sse(vec![
+                ev_function_call("call-after-compact", DUMMY_FUNCTION_NAME, "{}"),
+                ev_completed_with_tokens("r2", /*total_tokens*/ 80),
+            ])),
+            sse_response(sse(vec![
+                ev_assistant_message("m2", FINAL_REPLY),
+                ev_completed_with_tokens("r3", /*total_tokens*/ 80),
+            ])),
+        ],
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    let (auth_manager, accounts) = super::client::imported_account_manager(
+        home.as_ref(),
+        &[
+            super::client::ImportedAccountSpec::new("first", "access-a", "account-a"),
+            super::client::ImportedAccountSpec::new("second", "access-b", "account-b"),
+            super::client::ImportedAccountSpec::new("third", "access-c", "account-c"),
+        ],
+    )
+    .await?;
+    let in_use_manager = codex_login::AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        home.path().to_path_buf(),
+    );
+    in_use_manager
+        .activate_imported_account(&accounts[2].id)
+        .await?;
+    let model_provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_home(home)
+        .with_auth_manager(Arc::clone(&auth_manager))
+        .with_config(move |config| {
+            config.automatic_account_selection = AutomaticAccountSelection::Enabled;
+            config.model_provider = model_provider;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+            config.model_auto_compact_token_limit = Some(200);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "RUN_WITH_LOCAL_ACCOUNT_FAILOVER".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    let mut status_messages = Vec::new();
+    for _ in 0..4 {
+        let EventMsg::StreamError(event) = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::StreamError(_))
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        status_messages.push(event.message);
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(
+        status_messages,
+        vec![
+            "Selecting a replacement account...".to_string(),
+            "Retrying with second...".to_string(),
+            "Selecting a replacement account...".to_string(),
+            "Retrying with third...".to_string(),
+        ]
+    );
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(accounts[2].id.clone())
+    );
+    let requests = request_log.requests();
+    assert_eq!(requests.len(), 6);
+    assert_eq!(
+        requests[1].header("authorization").as_deref(),
+        Some("Bearer access-a")
+    );
+    assert_eq!(
+        requests[2].header("authorization").as_deref(),
+        Some("Bearer access-b")
+    );
+    assert_eq!(requests[1].body_json(), requests[2].body_json());
+    assert_eq!(
+        requests[3].header("authorization").as_deref(),
+        Some("Bearer access-b")
+    );
+    assert_eq!(
+        requests[4].header("authorization").as_deref(),
+        Some("Bearer access-c")
+    );
+    assert_eq!(requests[3].body_json(), requests[4].body_json());
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -2,8 +2,10 @@ use core_test_support::test_codex::local_selections;
 use std::fs;
 
 use anyhow::Result;
+use codex_config::types::AutomaticAccountSelection;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_features::Feature;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuth;
 use codex_login::auth::AgentIdentityAuthRecord;
@@ -48,6 +50,8 @@ use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::sync::Arc;
+use tempfile::TempDir;
 use tokio::time::Duration;
 use wiremock::ResponseTemplate;
 
@@ -1234,6 +1238,157 @@ async fn remote_mid_turn_compact_v2_retries_capacity_and_resumes_turn() -> Resul
             .body_json()
             .to_string()
             .contains("V2_RETRIED_COMPACT_SUMMARY")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_mid_turn_compact_v2_switches_account_after_streamed_usage_limit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let home = Arc::new(TempDir::new()?);
+    let (auth_manager, accounts) = super::client::imported_account_manager(
+        home.as_ref(),
+        &[
+            super::client::ImportedAccountSpec::new("first", "access-a", "account-a"),
+            super::client::ImportedAccountSpec::new("second", "access-b", "account-b"),
+            super::client::ImportedAccountSpec::new("third", "access-c", "account-c"),
+            super::client::ImportedAccountSpec::new("fourth", "access-d", "account-d"),
+        ],
+    )
+    .await?;
+    let fourth = &accounts[3];
+    let in_use_manager = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        home.path().to_path_buf(),
+    );
+    in_use_manager.activate_imported_account(&fourth.id).await?;
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_home(home)
+            .with_auth_manager(Arc::clone(&auth_manager))
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.automatic_account_selection = AutomaticAccountSelection::Enabled;
+                config.model_auto_compact_token_limit = Some(200);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let responses_mock = responses::mount_response_sequence(
+        harness.server(),
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_function_call("call-before-compact", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("r1", /*total_tokens*/ 500),
+            ])),
+            responses::sse_response(responses::sse_failed(
+                "r-compact-usage-limit",
+                "usage_limit_reached",
+                "usage limit reached",
+            )),
+            ResponseTemplate::new(429).set_body_json(json!({
+                "error": {
+                    "type": "usage_limit_reached"
+                }
+            })),
+            responses::sse_response(responses::sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "V2_FAILOVER_COMPACT_SUMMARY",
+                    }
+                }),
+                responses::ev_completed("r-compact"),
+            ])),
+            responses::sse_response(responses::sse_failed(
+                "r2-usage-limit",
+                "usage_limit_reached",
+                "usage limit reached",
+            )),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_function_call("call-after-compact", DUMMY_FUNCTION_NAME, "{}"),
+                responses::ev_completed_with_tokens("r2", /*total_tokens*/ 80),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_assistant_message("m1", "FINAL_REPLY"),
+                responses::ev_completed_with_tokens("r3", /*total_tokens*/ 80),
+            ])),
+        ],
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "RUN_WITH_ACCOUNT_FAILOVER".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let mut status_messages = Vec::new();
+    for _ in 0..6 {
+        status_messages.push(
+            wait_for_event_match(&codex, |event| match event {
+                EventMsg::StreamError(event) => Some(event.message.clone()),
+                _ => None,
+            })
+            .await,
+        );
+    }
+    wait_for_turn_complete(&codex).await;
+
+    assert_eq!(
+        status_messages,
+        vec![
+            "Selecting a replacement account...".to_string(),
+            "Retrying with second...".to_string(),
+            "Selecting a replacement account...".to_string(),
+            "Retrying with third...".to_string(),
+            "Selecting a replacement account...".to_string(),
+            "Retrying with fourth...".to_string(),
+        ]
+    );
+    assert_eq!(auth_manager.active_account_id(), Some(fourth.id.clone()));
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        requests[1].header("authorization").as_deref(),
+        Some("Bearer access-a")
+    );
+    assert_eq!(
+        requests[2].header("authorization").as_deref(),
+        Some("Bearer access-b")
+    );
+    assert_eq!(
+        requests[3].header("authorization").as_deref(),
+        Some("Bearer access-c")
+    );
+    assert_eq!(requests[1].body_json(), requests[2].body_json());
+    assert_eq!(requests[1].body_json(), requests[3].body_json());
+    assert_eq!(
+        requests[4].header("authorization").as_deref(),
+        Some("Bearer access-c")
+    );
+    assert_eq!(
+        requests[5].header("authorization").as_deref(),
+        Some("Bearer access-d")
+    );
+    assert_eq!(requests[4].body_json(), requests[5].body_json());
+    assert!(
+        requests[4]
+            .body_json()
+            .to_string()
+            .contains("V2_FAILOVER_COMPACT_SUMMARY")
     );
 
     Ok(())

@@ -10,6 +10,7 @@ use codex_core::resolve_installation_id;
 use codex_core::thread_store_from_config;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
+use codex_login::AccountProfile;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -63,11 +64,13 @@ use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_response_sequence;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_failed;
+use core_test_support::responses::sse_response;
 use core_test_support::responses::strip_metadata_from_json;
 use core_test_support::responses_metadata as test_responses_metadata;
 use core_test_support::skip_if_no_network;
@@ -572,6 +575,66 @@ pub(super) fn write_auth_json(
     .unwrap();
 
     fake_jwt
+}
+
+pub(super) struct ImportedAccountSpec<'a> {
+    label: &'a str,
+    access_token: &'a str,
+    account_id: &'a str,
+}
+
+impl<'a> ImportedAccountSpec<'a> {
+    pub(super) fn new(label: &'a str, access_token: &'a str, account_id: &'a str) -> Self {
+        Self {
+            label,
+            access_token,
+            account_id,
+        }
+    }
+}
+
+pub(super) async fn imported_account_manager(
+    home: &TempDir,
+    specs: &[ImportedAccountSpec<'_>],
+) -> anyhow::Result<(Arc<AuthManager>, Vec<AccountProfile>)> {
+    let store = codex_login::AccountStore::new(home.path().to_path_buf());
+    let mut profiles = Vec::with_capacity(specs.len());
+    for spec in specs {
+        write_auth_json(
+            home,
+            /*openai_api_key*/ None,
+            "pro",
+            spec.access_token,
+            Some(spec.account_id),
+        );
+        profiles.push(store.import_current(
+            Some(spec.label.to_string()),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?);
+    }
+    let first = profiles
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("at least one imported account is required"))?;
+    store.apply_imported_account_to_root_auth(
+        &first.id,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let manager = Arc::new(
+        AuthManager::new_with_automatic_account_selection(
+            home.path().to_path_buf(),
+            /*enable_codex_api_key_env*/ false,
+            AuthCredentialsStoreMode::File,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::default(),
+            /*auth_route_config*/ None,
+            AutomaticAccountSelection::Enabled,
+        )
+        .await,
+    );
+    Ok((manager, profiles))
 }
 
 struct ProviderAuthCommandFixture {
@@ -3438,6 +3501,110 @@ async fn disabled_account_selection_does_not_fail_over_on_usage_limit() -> anyho
         .await?;
     wait_for_event(&fixture.codex, |msg| matches!(msg, EventMsg::Error(_))).await;
     assert_eq!(auth_manager.active_account_id(), Some(first.id));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_usage_limit_failover_reports_account_and_retries_same_input() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+    let responses_mock = mount_response_sequence(
+        &server,
+        vec![
+            ResponseTemplate::new(429).set_body_json(json!({
+                "error": {
+                    "type": "usage_limit_reached",
+                    "resets_at": 4_102_444_800_i64
+                }
+            })),
+            sse_response(sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ])),
+        ],
+    )
+    .await;
+    let home = Arc::new(TempDir::new()?);
+    let (auth_manager, accounts) = imported_account_manager(
+        home.as_ref(),
+        &[
+            ImportedAccountSpec::new("first", "access-a", "account-a"),
+            ImportedAccountSpec::new("second", "access-b", "account-b"),
+        ],
+    )
+    .await?;
+    let fixture = test_codex()
+        .with_home(home)
+        .with_auth_manager(Arc::clone(&auth_manager))
+        .with_config(|config| {
+            config.automatic_account_selection = AutomaticAccountSelection::Enabled;
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build(&server)
+        .await?;
+
+    fixture
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let mut status_messages = Vec::new();
+    for _ in 0..2 {
+        let EventMsg::StreamError(event) = wait_for_event(&fixture.codex, |msg| {
+            matches!(msg, EventMsg::StreamError(_))
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        status_messages.push(event.message);
+    }
+    wait_for_event(&fixture.codex, |msg| {
+        matches!(msg, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(
+        status_messages,
+        vec![
+            "Selecting a replacement account...".to_string(),
+            "Retrying with second...".to_string(),
+        ]
+    );
+    assert_eq!(
+        auth_manager.active_account_id(),
+        Some(accounts[1].id.clone())
+    );
+    let requests = responses_mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].header("authorization").as_deref(),
+        Some("Bearer access-a")
+    );
+    assert_eq!(
+        requests[1].header("authorization").as_deref(),
+        Some("Bearer access-b")
+    );
+    assert_eq!(requests[0].body_json(), requests[1].body_json());
+    assert_eq!(
+        requests[0]
+            .message_input_texts("user")
+            .into_iter()
+            .filter(|text| text == "hello")
+            .count(),
+        1
+    );
+
     Ok(())
 }
 

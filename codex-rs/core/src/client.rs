@@ -276,6 +276,8 @@ pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
     request_account_id: Option<AccountId>,
+    usage_limit_failover_tracking:
+        crate::codex_plus_plus::account_failover::UsageLimitFailoverTracking,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -485,6 +487,7 @@ impl ModelClient {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
             request_account_id: None,
+            usage_limit_failover_tracking: Default::default(),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -1128,6 +1131,23 @@ impl ModelClientSession {
         self.request_account_id.clone()
     }
 
+    pub(crate) fn take_usage_limit_failover_tracking(
+        &mut self,
+    ) -> crate::codex_plus_plus::account_failover::UsageLimitFailoverTracking {
+        std::mem::take(&mut self.usage_limit_failover_tracking)
+    }
+
+    pub(crate) fn begin_usage_limit_failover_tracking(
+        &mut self,
+        attempted_account_ids: &HashSet<String>,
+    ) {
+        self.usage_limit_failover_tracking =
+            crate::codex_plus_plus::account_failover::UsageLimitFailoverTracking {
+                attempted_account_ids: attempted_account_ids.clone(),
+                selected_account_ids: Vec::new(),
+            };
+    }
+
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
     }
@@ -1424,7 +1444,10 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
-        let mut attempted_account_ids = HashSet::new();
+        let mut attempted_account_ids = self
+            .usage_limit_failover_tracking
+            .attempted_account_ids
+            .clone();
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let request_account_id = auth_manager
@@ -1536,12 +1559,20 @@ impl ModelClientSession {
                                         );
                                     }
                                     attempted_account_ids.insert(account_id.to_string());
+                                    self.usage_limit_failover_tracking
+                                        .attempted_account_ids
+                                        .insert(account_id.to_string());
                                 }
                                 match manager
                                     .switch_to_next_imported_account(&attempted_account_ids)
                                     .await
                                 {
                                     ImportedAccountSwitchOutcome::ReadyToRetry => {
+                                        if let Some(account_id) = manager.active_account_id() {
+                                            self.usage_limit_failover_tracking
+                                                .selected_account_ids
+                                                .push(account_id);
+                                        }
                                         auth_recovery = Some(manager.unauthorized_recovery());
                                         pending_retry = PendingUnauthorizedRetry::default();
                                         continue;
