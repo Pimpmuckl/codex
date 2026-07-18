@@ -62,8 +62,19 @@ fn candidates() -> Vec<AccountPickerCandidate> {
 
 #[test]
 fn account_picker_snapshot() {
+    let mut rows = candidates();
+    rows[1].weekly_usage_left_percent = None;
+    let mut weekly_only = rows[1].clone();
+    weekly_only.id = "acct_weekly".to_string();
+    weekly_only.email = "weekly@example.com".to_string();
+    weekly_only.five_hour_reset = None;
+    weekly_only.five_hour_usage_left_percent = None;
+    weekly_only.weekly_reset = Some("Jul 15 12:00Z".to_string());
+    weekly_only.weekly_usage_left_percent = Some(84);
+    weekly_only.is_default = false;
+    rows.push(weekly_only);
     let view = new_view(
-        &candidates(),
+        &rows,
         /*selected_idx*/ 1,
         /*seconds_remaining*/ Some(15),
     );
@@ -84,9 +95,7 @@ fn account_picker_snapshot() {
     insta::assert_snapshot!("account_picker_startup", terminal.backend());
 
     let view = new_view(
-        &candidates(),
-        /*selected_idx*/ 1,
-        /*seconds_remaining*/ None,
+        &rows, /*selected_idx*/ 1, /*seconds_remaining*/ None,
     );
     terminal
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
@@ -228,13 +237,10 @@ async fn manual_mode_waits_for_selection() {
 }
 
 #[test]
-fn row_description_uses_unknown_for_missing_usage_data() {
+fn row_description_uses_one_unknown_for_missing_usage_data() {
     let item = selection_item(&candidates()[2]);
 
-    assert_eq!(
-        item.description.as_deref(),
-        Some("5h unknown    Weekly unknown")
-    );
+    assert_eq!(item.description.as_deref(), Some("Usage unknown"));
 }
 
 #[test]
@@ -246,6 +252,6 @@ fn row_description_uses_window_label_and_generic_blocked_reset() {
 
     assert_eq!(
         item.description.as_deref(),
-        Some("daily unknown    Weekly unknown    Unavailable until Jul 14 08:00Z")
+        Some("Usage unknown    Unavailable until Jul 14 08:00Z")
     );
 }

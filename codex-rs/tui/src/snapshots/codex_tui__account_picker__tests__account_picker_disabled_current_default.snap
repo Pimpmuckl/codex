@@ -7,7 +7,7 @@ expression: terminal.backend()
 
 › 1. first@example.com (default)  5h  50% (Jul 10 17:00Z)    Weekly  12% (Jul 14)
   2. best@example.com             5h  72% (Jul 10 18:00Z)    Weekly  84%
-  3. unknown@example.com          5h unknown    Weekly unknown
+  3. unknown@example.com          Usage unknown
 
 
 
