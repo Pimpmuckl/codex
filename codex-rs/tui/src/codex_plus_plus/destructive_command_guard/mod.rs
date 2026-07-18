@@ -1,4 +1,6 @@
 use crate::app_server_session::AppServerSession;
+use crate::config_update::clear_config_value;
+use crate::config_update::write_config_batch;
 use crate::hooks_rpc::HookTrustUpdate;
 use crate::hooks_rpc::fetch_hooks_list;
 use crate::hooks_rpc::hooks_list_entry_for_cwd;
@@ -361,16 +363,26 @@ impl DcgManager {
         if !hook.enabled {
             bail!("installed DCG plugin hook is disabled");
         }
+        let key = hook.key;
         let response = write_hook_trusts(
             self.request_handle.clone(),
             vec![HookTrustUpdate {
-                key: hook.key,
+                key: key.clone(),
                 current_hash: hook.current_hash,
             }],
         )
         .await
         .map_err(|err| anyhow::anyhow!("{err:#}"))?;
         if response.status != codex_app_server_protocol::WriteStatus::Ok {
+            write_config_batch(
+                self.request_handle.clone(),
+                vec![clear_config_value(format!(
+                    "hooks.state.{}",
+                    serde_json::to_string(&key)?
+                ))],
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!("{err:#}"))?;
             bail!("installed DCG hook trust is overridden by managed configuration");
         }
         Ok(())

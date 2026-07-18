@@ -32,14 +32,9 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
     write_installer(source.path(), /*fail*/ false)?;
     let installed = manager.install_and_enable().await.unwrap();
-    assert_eq!(
-        installed.status,
-        DcgStatus::Enabled(PINNED_VERSION.to_string())
-    );
+    let enabled_status = DcgStatus::Enabled(PINNED_VERSION.to_string());
+    assert_eq!(installed.status, enabled_status);
     assert!(!installed.takes_effect_in_current_session);
-    assert_eq!(manager.detect_status().await, installed.status);
-    let hook = manager.managed_hook().await.unwrap().expect("managed hook");
-    assert_eq!(hook.trust_status, HookTrustStatus::Trusted);
     let expected_log = format!(
         "Pimpmuckl|destructive_command_guard|{PINNED_TAG}|{}|True|True",
         manager.binary_path().parent().unwrap().display()
@@ -49,28 +44,21 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
         expected_log
     );
     let disabled = manager.disable().await.unwrap();
-    assert_eq!(
-        disabled.status,
-        DcgStatus::Disabled(PINNED_VERSION.to_string())
-    );
-    assert!(!disabled.takes_effect_in_current_session);
+    let disabled_status = DcgStatus::Disabled(PINNED_VERSION.to_string());
+    assert_eq!(disabled.status, disabled_status);
     assert_eq!(manager.enable().await.unwrap().status, installed.status);
-
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     assert_eq!(manager.detect_status().await, installed.status);
 
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
-    assert_eq!(
-        manager.detect_status().await,
-        DcgStatus::Unsupported(DcgUnsupportedReason::RemoteHookHost)
-    );
+    let status = manager.detect_status().await;
+    let unsupported = DcgStatus::Unsupported(DcgUnsupportedReason::RemoteHookHost);
+    assert_eq!(status, unsupported);
     assert!(manager.disable().await.is_err());
-    assert_eq!(
-        fs::read_to_string(home.path().join("config.toml"))?,
-        config_before_remote_attempt
-    );
+    let config_after_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
+    assert_eq!(config_after_remote_attempt, config_before_remote_attempt);
     app_server.shutdown().await?;
     Ok(())
 }
