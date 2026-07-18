@@ -10,8 +10,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     if !PLATFORM_SUPPORTED {
         return Ok(());
     }
-    let home = TempDir::new()?;
-    let source = TempDir::new()?;
+    let (home, source) = (TempDir::new()?, TempDir::new()?);
     fs::write(
         home.path().join("config.toml"),
         "[features]\nplugins = true\n",
@@ -19,7 +18,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_marketplace(source.path())?;
     compile_fake_dcg(source.path())?;
     write_installer(source.path(), /*fail*/ true)?;
-
     let config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())
         .build()
@@ -50,7 +48,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     assert_eq!(manager.detect_status().await, installed.status);
-
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
     let status = manager.detect_status().await;

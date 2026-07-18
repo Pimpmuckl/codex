@@ -98,9 +98,12 @@ pub(crate) struct DcgManager {
 
 impl DcgManager {
     pub(crate) fn new(app_server: &AppServerSession, config: &Config) -> Result<Self> {
+        let app_server_home = app_server
+            .codex_home_path(&config.codex_home)
+            .context("app-server did not report its Codex home")?;
         Ok(Self {
             request_handle: app_server.request_handle(),
-            local_codex_home: config.codex_home.to_path_buf(),
+            local_codex_home: app_server_home.as_str().into(),
             remote_hook_host: app_server.uses_remote_workspace(),
             cwd: config.cwd.to_path_buf(),
             marketplace_source: PINNED_SOURCE.to_string(),
