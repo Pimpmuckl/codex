@@ -2903,7 +2903,7 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
 }
 
 #[tokio::test]
-async fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
+async fn inactive_thread_started_notification_does_not_read_rollout_model() -> Result<()> {
     let mut app = make_test_app().await;
     let temp_dir = tempdir()?;
     let main_thread_id =
@@ -2984,11 +2984,12 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         .lock()
         .await;
     let session = store.session.clone().expect("inferred session");
+    let snapshot = store.snapshot();
     drop(store);
 
     assert_eq!(session.thread_id, agent_thread_id);
     assert_eq!(session.thread_name, Some("agent thread".to_string()));
-    assert_eq!(session.model, "gpt-agent");
+    assert_eq!(session.model, "");
     assert_eq!(session.model_provider_id, "agent-provider");
     assert_eq!(session.approval_policy, primary_session.approval_policy);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/agent").as_path());
@@ -3007,13 +3008,17 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             is_closed: false,
         })
     );
+    assert!(app.should_refresh_snapshot_session(
+        agent_thread_id,
+        /*is_replay_only*/ false,
+        &snapshot
+    ));
 
     Ok(())
 }
 
 #[tokio::test]
-async fn inactive_thread_started_notification_preserves_primary_model_when_path_missing()
--> Result<()> {
+async fn inactive_thread_started_notification_does_not_inherit_primary_model() -> Result<()> {
     let mut app = make_test_app().await;
     let main_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
@@ -3080,7 +3085,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
         .await;
     let session = store.session.clone().expect("inferred session");
 
-    assert_eq!(session.model, primary_session.model);
+    assert_eq!(session.model, "");
 
     Ok(())
 }
