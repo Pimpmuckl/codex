@@ -5,7 +5,6 @@
 //! when the visible thread changes.
 
 use super::*;
-use crate::session_resume::read_session_model;
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadRollbackOrigin {
@@ -893,9 +892,7 @@ impl App {
             self.apply_thread_settings_to_cached_session(thread_id, &notification.thread_settings)
                 .await;
         }
-        let inferred_session = self
-            .infer_session_for_thread_notification(thread_id, &notification)
-            .await;
+        let inferred_session = self.infer_session_for_thread_notification(thread_id, &notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
@@ -983,7 +980,7 @@ impl App {
         }
     }
 
-    pub(super) async fn infer_session_for_thread_notification(
+    pub(super) fn infer_session_for_thread_notification(
         &mut self,
         thread_id: ThreadId,
         notification: &ServerNotification,
@@ -994,19 +991,12 @@ impl App {
         let mut session = self.primary_session_configured.clone()?;
         session.thread_id = thread_id;
         session.thread_name = notification.thread.name.clone();
+        session.model.clear();
         session.model_provider_id = notification.thread.model_provider.clone();
         session
             .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
-        let rollout_path = notification.thread.path.clone();
-        if let Some(model) =
-            read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await
-        {
-            session.model = model;
-        } else if rollout_path.is_some() {
-            session.model.clear();
-        }
         session.message_history = None;
-        session.rollout_path = rollout_path;
+        session.rollout_path = notification.thread.path.clone();
         self.upsert_agent_picker_thread(
             thread_id,
             notification.thread.agent_nickname.clone(),
