@@ -4,7 +4,6 @@ use color_eyre::Result;
 use pretty_assertions::assert_eq;
 use std::fs;
 use tempfile::TempDir;
-const TEST_VERSION: &str = "0.6.8-codexpp.1";
 
 #[tokio::test]
 async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> Result<()> {
@@ -38,6 +37,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
+    assert!(crate::codex_plus_plus::dcg_update_available());
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
     assert!(manager.disable().await.is_err());
@@ -60,7 +60,7 @@ fn write_marketplace(root: &Path) -> Result<()> {
     )?;
     fs::write(
         plugin.join(".codex-plugin/plugin.json"),
-        format!(r#"{{"name":"{PLUGIN_NAME}","version":"{TEST_VERSION}","description":"test"}}"#),
+        format!(r#"{{"name":"{PLUGIN_NAME}","version":"0.6.8-codexpp.1","description":"test"}}"#),
     )?;
     fs::write(
         plugin.join("hooks/hooks.json"),
@@ -73,7 +73,7 @@ fn compile_fake_dcg(root: &Path) -> Result<()> {
     let source = root.join("fake-dcg.rs");
     fs::write(
         &source,
-        format!(r#"fn main() {{ println!("dcg {TEST_VERSION}"); }}"#),
+        r#"fn main() { println!("dcg 0.6.8-codexpp.1"); }"#, // Fake binary source.
     )?;
     let status = std::process::Command::new("rustc")
         .arg(source)

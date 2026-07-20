@@ -44,7 +44,6 @@ const MARKETPLACE_NAME: &str = "pimpmuckl-dcg";
 const PLUGIN_NAME: &str = "destructive-command-guard";
 const PLUGIN_ID: &str = "destructive-command-guard@pimpmuckl-dcg";
 const MARKETPLACE_SOURCE: &str = "https://github.com/Pimpmuckl/destructive_command_guard.git";
-const RELEASE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 static OPERATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static STATUS_DETECTION_ID: AtomicU64 = AtomicU64::new(0);
@@ -288,10 +287,7 @@ impl DcgManager {
             Err(reason) => bail!("cannot install while marketplace state is {reason:?}"),
         };
         let (marketplace_root, prior_target) = match current_marketplace {
-            Some((marketplace_root, installed_target)) => {
-                let prior_target = (installed_target.tag != target.tag).then_some(installed_target);
-                (marketplace_root, prior_target)
-            }
+            Some((root, installed)) => (root, Some(installed)),
             None => {
                 #[cfg(not(test))]
                 let ref_name = Some(target.tag.clone());
@@ -354,9 +350,9 @@ impl DcgManager {
             self.trust_managed_hook(&target).await?;
             if preserve_enablement && plugin_before.installed && !plugin_before.enabled {
                 self.write_enabled(false).await?;
-                Ok(DcgStatus::Disabled(target.version))
+                Ok(DcgStatus::Disabled(target.version.clone()))
             } else {
-                Ok(DcgStatus::Enabled(target.version))
+                Ok(DcgStatus::Enabled(target.version.clone()))
             }
         }
         .await;
@@ -372,6 +368,8 @@ impl DcgManager {
                     },
                 };
                 let result = self.rollback(prior, &manifest, enabled, Err(err)).await;
+                let available = prior.filter(|old| old.precedence < target.precedence);
+                self.record_update_available(available);
                 let enablement_rollback = self.write_enabled(enabled).await;
                 if let Err(rollback_err) = rollback {
                     return result.context(format!("binary rollback also failed: {rollback_err}"));
@@ -554,6 +552,9 @@ impl DcgManager {
     }
 
     async fn switch_marketplace_ref(&self, tag: &str) -> Result<()> {
+        if self.marketplace_source != MARKETPLACE_SOURCE {
+            return Ok(());
+        }
         let response = self
             .write_config_without_reload(replace_config_value(
                 format!("marketplaces.\"{MARKETPLACE_NAME}\".ref"),
@@ -615,9 +616,8 @@ impl DcgManager {
     }
 
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
-        let installed = installed.filter(|target| {
-            matches!(self.managed_marketplace(), Ok(Some((_, current))) if current == **target)
-        });
+        let current = self.managed_marketplace();
+        let installed = installed.filter(|t| matches!(current, Ok(Some((_, ref x))) if *x == **t));
         let marker = self.binary_path().with_extension("update-available");
         match installed {
             Some(target) => _ = std::fs::write(marker, &target.version),
@@ -705,7 +705,7 @@ impl DcgManager {
         }
         let release: serde_json::Value = create_client()
             .get("https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases/latest")
-            .timeout(RELEASE_PROBE_TIMEOUT)
+            .timeout(Duration::from_secs(5))
             .send()
             .await?
             .error_for_status()?
@@ -722,7 +722,7 @@ impl DcgManager {
                 format!("refs/tags/{}^{{}}", target.tag),
             ])
             .kill_on_drop(true);
-        let output = tokio::time::timeout(RELEASE_PROBE_TIMEOUT, command.output())
+        let output = tokio::time::timeout(Duration::from_secs(5), command.output())
             .await
             .context("timed out resolving the DCG release tag")??;
         let commit = String::from_utf8(output.stdout)?
