@@ -4,6 +4,13 @@ use color_eyre::Result;
 use pretty_assertions::assert_eq;
 use std::fs;
 use tempfile::TempDir;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+
+const TEST_TAG: &str = "v0.6.8-codexpp.1";
+const TEST_VERSION: &str = "0.6.8-codexpp.1";
 
 #[tokio::test]
 async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> Result<()> {
@@ -25,12 +32,32 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let app_server = crate::start_embedded_app_server_for_picker(&config).await?;
     let mut manager = DcgManager::new(&app_server, &config).unwrap();
     manager.marketplace_source = fs::canonicalize(source.path())?.display().to_string();
-    manager.marketplace_ref = None;
+    let installed_target = DcgTarget::from_tag(TEST_TAG).unwrap();
+    manager.target_override = Some(installed_target.clone());
+    manager.local_marketplace_target = Some(installed_target.clone());
     assert!(manager.install_and_enable().await.is_err());
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
     write_installer(source.path(), /*fail*/ false)?;
     let installed = manager.install_and_enable().await.unwrap();
     assert!(!installed.takes_effect_in_current_session);
+    let newer_target = DcgTarget::from_tag("v0.6.9-codexpp.2").unwrap();
+    manager.target_override = Some(newer_target.clone());
+    assert_eq!(
+        manager.detect_status().await,
+        DcgStatus::UpdateAvailable {
+            installed_version: Some(TEST_VERSION.to_string()),
+            target_version: newer_target.version,
+        }
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    manager.target_override = None;
+    manager.latest_release_api = server.uri();
+    assert_eq!(manager.detect_status().await, installed.status);
+    manager.target_override = Some(installed_target);
     manager.enable().await.unwrap();
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
@@ -42,6 +69,54 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     assert_eq!(config_after_remote_attempt, config_before_remote_attempt);
     app_server.shutdown().await?;
     Ok(())
+}
+
+#[test]
+fn release_target_accepts_only_the_owned_stable_channel() {
+    let target = GitHubRelease {
+        tag_name: "v1.2.3-codexpp.4".to_string(),
+        draft: false,
+        prerelease: false,
+        published_at: Some("2026-07-20T00:00:00Z".to_string()),
+    }
+    .into_target()
+    .unwrap();
+    assert_eq!(
+        target,
+        DcgTarget {
+            tag: "v1.2.3-codexpp.4".to_string(),
+            version: "1.2.3-codexpp.4".to_string(),
+            precedence: [1, 2, 3, 4],
+        }
+    );
+    for release in [
+        GitHubRelease {
+            tag_name: "v1.2.3-codexpp.4".to_string(),
+            draft: true,
+            prerelease: false,
+            published_at: Some("2026-07-20T00:00:00Z".to_string()),
+        },
+        GitHubRelease {
+            tag_name: "v1.2.3-codexpp.4".to_string(),
+            draft: false,
+            prerelease: true,
+            published_at: Some("2026-07-20T00:00:00Z".to_string()),
+        },
+        GitHubRelease {
+            tag_name: "v1.2.3".to_string(),
+            draft: false,
+            prerelease: false,
+            published_at: Some("2026-07-20T00:00:00Z".to_string()),
+        },
+        GitHubRelease {
+            tag_name: "v1.2.3-codexpp.4".to_string(),
+            draft: false,
+            prerelease: false,
+            published_at: None,
+        },
+    ] {
+        assert!(release.into_target().is_err());
+    }
 }
 
 fn write_marketplace(root: &Path) -> Result<()> {
@@ -57,7 +132,7 @@ fn write_marketplace(root: &Path) -> Result<()> {
     )?;
     fs::write(
         plugin.join(".codex-plugin/plugin.json"),
-        format!(r#"{{"name":"{PLUGIN_NAME}","version":"{PINNED_VERSION}","description":"test"}}"#),
+        format!(r#"{{"name":"{PLUGIN_NAME}","version":"{TEST_VERSION}","description":"test"}}"#),
     )?;
     fs::write(
         plugin.join("hooks/hooks.json"),
@@ -70,7 +145,7 @@ fn compile_fake_dcg(root: &Path) -> Result<()> {
     let source = root.join("fake-dcg.rs");
     fs::write(
         &source,
-        format!(r#"fn main() {{ println!("dcg {PINNED_VERSION}"); }}"#),
+        format!(r#"fn main() {{ println!("dcg {TEST_VERSION}"); }}"#),
     )?;
     let status = std::process::Command::new("rustc")
         .arg(source)

@@ -38,3 +38,24 @@ fn welcome_help_first_and_later_startup_snapshot() {
         .join("\n")
     );
 }
+
+#[test]
+fn dcg_update_tip_selects_both_existing_slot_branches() {
+    assert_eq!(
+        [DCG_UPDATE_TIP, WELCOME_TIP, WELCOME_TIP],
+        [
+            select_fork_tip(/*update_available*/ true, /*show_update*/ true),
+            select_fork_tip(/*update_available*/ true, /*show_update*/ false),
+            select_fork_tip(/*update_available*/ false, /*show_update*/ true),
+        ]
+    );
+    let mut terminal =
+        Terminal::new(VT100Backend::new(/*width*/ 80, /*height*/ 2)).expect("terminal");
+    terminal
+        .draw(|frame| frame.render_widget(Text::from(wrapped_tip(DCG_UPDATE_TIP)), frame.area()))
+        .expect("render update tip");
+    insta::assert_snapshot!(terminal.backend().to_string(), @r"
+  Tip: Destructive Command Guard was updated. Use /codexplusplus to upgrade
+  when convenient.
+    ");
+}

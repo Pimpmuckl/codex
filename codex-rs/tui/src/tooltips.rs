@@ -73,7 +73,7 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
             }
             _ => {
                 let tooltip = if IS_MACOS {
-                    WELCOME_TIP
+                    maybe_dcg_update_tip(WELCOME_TIP, &mut rng)
                 } else {
                     OTHER_TOOLTIP_NON_MAC
                 };
@@ -102,7 +102,7 @@ fn pick_paid_tooltip<R: Rng + ?Sized>(
     fast_mode_enabled: bool,
 ) -> Option<&'static str> {
     if fast_mode_enabled || rng.random_bool(0.5) {
-        paid_app_tooltip()
+        paid_app_tooltip().map(|tip| maybe_dcg_update_tip(tip, rng))
     } else {
         Some(FAST_TOOLTIP)
     }
@@ -115,6 +115,18 @@ fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<&'static str> {
         ALL_TOOLTIPS
             .get(rng.random_range(0..ALL_TOOLTIPS.len()))
             .copied()
+            .map(|tip| maybe_dcg_update_tip(tip, rng))
+    }
+}
+
+fn maybe_dcg_update_tip<R: Rng + ?Sized>(tip: &'static str, rng: &mut R) -> &'static str {
+    if tip == WELCOME_TIP {
+        crate::codex_plus_plus::select_fork_tip(
+            crate::codex_plus_plus::dcg_update_available(),
+            rng.random_bool(0.5),
+        )
+    } else {
+        tip
     }
 }
 

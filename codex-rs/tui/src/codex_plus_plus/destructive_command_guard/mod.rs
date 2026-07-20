@@ -23,8 +23,10 @@ use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::RequestId;
 use codex_core_plugins::installed_marketplaces::marketplace_install_root;
 use codex_core_plugins::store::PluginStore;
+use codex_login::default_client::create_client;
 use codex_plugin::PluginId;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use serde::Deserialize;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -40,10 +42,11 @@ use uuid::Uuid;
 const MARKETPLACE_NAME: &str = "pimpmuckl-dcg";
 const PLUGIN_NAME: &str = "destructive-command-guard";
 const PLUGIN_ID: &str = "destructive-command-guard@pimpmuckl-dcg";
-const PINNED_SOURCE: &str = "https://github.com/Pimpmuckl/destructive_command_guard.git";
-const PINNED_TAG: &str = "v0.6.8-codexpp.1";
-const PINNED_VERSION: &str = "0.6.8-codexpp.1";
-const PINNED_COMMIT: &str = "fd4e90a41fa493aa9a61c715bd5114b7fcf4348e";
+const MARKETPLACE_SOURCE: &str = "https://github.com/Pimpmuckl/destructive_command_guard.git";
+const LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases/latest";
+const MAX_RELEASE_BODY_BYTES: u64 = 2 * 1024 * 1024;
+const RELEASE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 static OPERATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static STATUS_DETECTION_ID: AtomicU64 = AtomicU64::new(0);
@@ -99,8 +102,32 @@ pub(crate) struct DcgManager {
     remote_hook_host: bool,
     cwd: PathBuf,
     marketplace_source: String,
-    marketplace_ref: Option<String>,
+    latest_release_api: String,
     plugin_id: PluginId,
+    #[cfg(test)]
+    target_override: Option<DcgTarget>,
+    #[cfg(test)]
+    local_marketplace_target: Option<DcgTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DcgTarget {
+    tag: String,
+    version: String,
+    precedence: [u64; 4],
+}
+
+#[derive(Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    published_at: Option<String>,
+}
+
+struct ManagedMarketplace {
+    root: PathBuf,
+    target: DcgTarget,
 }
 
 impl DcgManager {
@@ -113,9 +140,13 @@ impl DcgManager {
             local_codex_home: app_server_home.as_str().into(),
             remote_hook_host: app_server.uses_remote_workspace(),
             cwd: config.cwd.to_path_buf(),
-            marketplace_source: PINNED_SOURCE.to_string(),
-            marketplace_ref: Some(PINNED_TAG.to_string()),
+            marketplace_source: MARKETPLACE_SOURCE.to_string(),
+            latest_release_api: LATEST_RELEASE_API.to_string(),
             plugin_id: PluginId::parse(PLUGIN_ID)?,
+            #[cfg(test)]
+            target_override: None,
+            #[cfg(test)]
+            local_marketplace_target: None,
         })
     }
 
@@ -123,8 +154,8 @@ impl DcgManager {
         if let Some(reason) = self.unsupported_reason() {
             return DcgStatus::Unsupported(reason);
         }
-        let marketplace_root = match self.marketplace_root() {
-            Ok(Some(root)) => root,
+        let marketplace = match self.managed_marketplace() {
+            Ok(Some(marketplace)) => marketplace,
             Ok(None) if self.binary_path().is_file() => {
                 return DcgStatus::NeedsRepair(RepairReason::PluginMissing);
             }
@@ -139,20 +170,20 @@ impl DcgManager {
             }
             Err(reason) => return DcgStatus::NeedsRepair(reason),
         };
-        if !marketplace_root.is_dir() {
+        if !marketplace.root.is_dir() {
             return DcgStatus::NeedsRepair(RepairReason::MarketplaceUnavailable);
         }
-        let plugin = match self.read_plugin(&marketplace_root).await {
+        let plugin = match self.read_plugin(&marketplace.root).await {
             Ok(response) => response.plugin.summary,
             Err(_) => return DcgStatus::NeedsRepair(RepairReason::PluginMissing),
         };
         if !plugin.installed {
             return DcgStatus::NeedsRepair(RepairReason::PluginMissing);
         }
-        if plugin.local_version.as_deref() != Some(PINNED_VERSION) {
+        if plugin.local_version.as_deref() != Some(marketplace.target.version.as_str()) {
             return DcgStatus::UpdateAvailable {
                 installed_version: plugin.local_version,
-                target_version: PINNED_VERSION.to_string(),
+                target_version: marketplace.target.version,
             };
         }
         let binary = self.binary_path();
@@ -162,27 +193,47 @@ impl DcgManager {
         let Some(version) = self.reported_version(&binary).await else {
             return DcgStatus::NeedsRepair(RepairReason::BinaryVersionUnreadable);
         };
-        if version != PINNED_VERSION {
+        if version != marketplace.target.version {
             return DcgStatus::UpdateAvailable {
                 installed_version: Some(version),
-                target_version: PINNED_VERSION.to_string(),
+                target_version: marketplace.target.version,
             };
         }
-        if !plugin.enabled {
-            return DcgStatus::Disabled(version);
-        }
-        let hook = match self.managed_hook().await {
-            Ok(Some(hook)) => hook,
-            Ok(None) => return DcgStatus::NeedsRepair(RepairReason::HookMissing),
-            Err(_) => return DcgStatus::NeedsRepair(RepairReason::StatusUnavailable),
+        let status = if plugin.enabled {
+            let hook = match self.managed_hook(&marketplace.target).await {
+                Ok(Some(hook)) => hook,
+                Ok(None) => return DcgStatus::NeedsRepair(RepairReason::HookMissing),
+                Err(_) => return DcgStatus::NeedsRepair(RepairReason::StatusUnavailable),
+            };
+            if !hook.enabled {
+                return DcgStatus::NeedsRepair(RepairReason::HookDisabled);
+            }
+            match hook.trust_status {
+                HookTrustStatus::Managed | HookTrustStatus::Trusted => DcgStatus::Enabled(version),
+                HookTrustStatus::Untrusted => DcgStatus::NeedsRepair(RepairReason::HookUntrusted),
+                HookTrustStatus::Modified => DcgStatus::NeedsRepair(RepairReason::HookModified),
+            }
+        } else {
+            DcgStatus::Disabled(version)
         };
-        if !hook.enabled {
-            return DcgStatus::NeedsRepair(RepairReason::HookDisabled);
+        if !matches!(&status, DcgStatus::Enabled(_) | DcgStatus::Disabled(_)) {
+            return status;
         }
-        match hook.trust_status {
-            HookTrustStatus::Managed | HookTrustStatus::Trusted => DcgStatus::Enabled(version),
-            HookTrustStatus::Untrusted => DcgStatus::NeedsRepair(RepairReason::HookUntrusted),
-            HookTrustStatus::Modified => DcgStatus::NeedsRepair(RepairReason::HookModified),
+        match self.resolve_latest_target().await {
+            Ok(target) if target.precedence > marketplace.target.precedence => {
+                #[cfg(not(test))]
+                super::welcome::set_dcg_update_available(true);
+                DcgStatus::UpdateAvailable {
+                    installed_version: Some(marketplace.target.version),
+                    target_version: target.version,
+                }
+            }
+            Ok(_) => {
+                #[cfg(not(test))]
+                super::welcome::set_dcg_update_available(false);
+                status
+            }
+            Err(_) => status,
         }
     }
 
@@ -243,25 +294,33 @@ impl DcgManager {
 
     async fn install_managed(&self) -> Result<DcgChange> {
         self.ensure_supported()?;
-        if let Err(reason) = self.marketplace_root() {
+        let target = self.resolve_latest_target().await?;
+        if let Err(reason) = self.managed_marketplace() {
             bail!("cannot install while marketplace state is {reason:?}");
         }
+        #[cfg(not(test))]
+        let ref_name = Some(target.tag.clone());
+        #[cfg(test)]
+        let ref_name = self
+            .local_marketplace_target
+            .is_none()
+            .then(|| target.tag.clone());
         let marketplace: MarketplaceAddResponse = self
             .request_handle
             .request_typed(ClientRequest::MarketplaceAdd {
                 request_id: request_id("dcg-marketplace-add"),
                 params: MarketplaceAddParams {
                     source: self.marketplace_source.clone(),
-                    ref_name: self.marketplace_ref.clone(),
+                    ref_name,
                     sparse_paths: None,
                 },
             })
             .await
-            .context("failed to add the pinned DCG marketplace")?;
+            .context("failed to add the resolved DCG marketplace")?;
         if marketplace.marketplace_name != MARKETPLACE_NAME {
-            bail!("pinned checkout exposed an unexpected marketplace name");
+            bail!("resolved checkout exposed an unexpected marketplace name");
         }
-        self.verify_marketplace_checkout(marketplace.installed_root.as_path())
+        self.verify_marketplace_checkout(marketplace.installed_root.as_path(), &target)
             .await?;
         let plugin_was_enabled = self
             .read_plugin(marketplace.installed_root.as_path())
@@ -294,12 +353,12 @@ impl DcgManager {
                 },
             })
             .await
-            .context("failed to install the pinned DCG plugin")?;
+            .context("failed to install the resolved DCG plugin")?;
         let result = async {
-            self.run_installer(marketplace.installed_root.as_path(), data_root)
+            self.run_installer(marketplace.installed_root.as_path(), data_root, &target)
                 .await?;
-            self.verify_binary().await?;
-            self.trust_managed_hook().await
+            self.verify_binary(&target).await?;
+            self.trust_managed_hook(&target).await
         }
         .await;
         if let Err(err) = result {
@@ -321,19 +380,19 @@ impl DcgManager {
             return Err(err);
         }
         Ok(DcgChange {
-            status: DcgStatus::Enabled(PINNED_VERSION.to_string()),
+            status: DcgStatus::Enabled(target.version),
             takes_effect_in_current_session: false,
         })
     }
 
-    async fn run_installer(&self, root: &Path, data_root: &Path) -> Result<()> {
+    async fn run_installer(&self, root: &Path, data_root: &Path, target: &DcgTarget) -> Result<()> {
         #[cfg(target_os = "windows")]
         let output = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive"])
             .args(["-ExecutionPolicy", "Bypass", "-File"])
             .arg(root.join("install.ps1"))
             .args(["-Owner", "Pimpmuckl", "-Repo", "destructive_command_guard"])
-            .args(["-Version", PINNED_TAG, "-Dest"])
+            .args(["-Version", target.tag.as_str(), "-Dest"])
             .arg(data_root)
             .args(["-NoConfigure", "-Verify"])
             .output()
@@ -341,7 +400,7 @@ impl DcgManager {
         #[cfg(not(target_os = "windows"))]
         let output = Command::new("bash")
             .arg(root.join("install.sh"))
-            .args(["--version", PINNED_TAG, "--dest"])
+            .args(["--version", target.tag.as_str(), "--dest"])
             .arg(data_root)
             .args(["--no-configure", "--verify"])
             .env("OWNER", "Pimpmuckl")
@@ -350,7 +409,7 @@ impl DcgManager {
             .await?;
         if !output.status.success() {
             bail!(
-                "pinned DCG installer failed with {}: {}",
+                "resolved DCG installer failed with {}: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             );
@@ -358,8 +417,9 @@ impl DcgManager {
         Ok(())
     }
 
-    async fn verify_marketplace_checkout(&self, root: &Path) -> Result<()> {
-        if self.marketplace_ref.is_none() {
+    async fn verify_marketplace_checkout(&self, root: &Path, target: &DcgTarget) -> Result<()> {
+        #[cfg(test)]
+        if self.local_marketplace_target.is_some() {
             return Ok(());
         }
         let output = Command::new("git")
@@ -368,31 +428,41 @@ impl DcgManager {
             .output()
             .await?;
         let status = String::from_utf8_lossy(&output.stdout);
-        let expected_oid = format!("# branch.oid {PINNED_COMMIT}");
-        if !output.status.success()
-            || !status.lines().any(|line| line == expected_oid)
-            || status.lines().any(|line| !line.starts_with("# "))
-        {
-            bail!("pinned DCG marketplace checkout is not the clean {PINNED_COMMIT} tree");
+        if !output.status.success() || status.lines().any(|line| !line.starts_with("# ")) {
+            bail!("resolved DCG marketplace checkout is not clean");
+        }
+        let tag = Command::new("git")
+            .args(["-C", &root.to_string_lossy(), "describe"])
+            .args(["--tags", "--exact-match", "HEAD"])
+            .output()
+            .await?;
+        if !tag.status.success() || String::from_utf8_lossy(&tag.stdout).trim() != target.tag {
+            bail!(
+                "resolved DCG marketplace checkout is not tag {}",
+                target.tag
+            );
         }
         Ok(())
     }
 
-    async fn verify_binary(&self) -> Result<()> {
+    async fn verify_binary(&self, target: &DcgTarget) -> Result<()> {
         let version = self
             .reported_version(&self.binary_path())
             .await
             .context("managed DCG binary did not report a version")?;
-        if version != PINNED_VERSION {
-            bail!("managed DCG binary reported {version}, expected {PINNED_VERSION}");
+        if version != target.version {
+            bail!(
+                "managed DCG binary reported {version}, expected {}",
+                target.version
+            );
         }
         Ok(())
     }
 
-    async fn trust_managed_hook(&self) -> Result<()> {
+    async fn trust_managed_hook(&self, target: &DcgTarget) -> Result<()> {
         let mut hook = None;
         for _ in 0..100 {
-            hook = self.managed_hook().await?;
+            hook = self.managed_hook(target).await?;
             if hook.is_some() {
                 break;
             }
@@ -428,7 +498,7 @@ impl DcgManager {
         Ok(())
     }
 
-    async fn managed_hook(&self) -> Result<Option<HookMetadata>> {
+    async fn managed_hook(&self, target: &DcgTarget) -> Result<Option<HookMetadata>> {
         let response = fetch_hooks_list(self.request_handle.clone(), self.cwd.clone())
             .await
             .map_err(|err| anyhow::anyhow!("{err:#}"))?;
@@ -442,7 +512,7 @@ impl DcgManager {
                     .source_path
                     .as_path()
                     .components()
-                    .any(|part| part.as_os_str() == PINNED_VERSION)
+                    .any(|part| part.as_os_str() == target.version.as_str())
         }))
     }
 
@@ -491,7 +561,7 @@ impl DcgManager {
             .await?)
     }
 
-    fn marketplace_root(&self) -> std::result::Result<Option<PathBuf>, RepairReason> {
+    fn managed_marketplace(&self) -> std::result::Result<Option<ManagedMarketplace>, RepairReason> {
         let home = &self.local_codex_home;
         let contents = match std::fs::read_to_string(home.join("config.toml")) {
             Ok(contents) => contents,
@@ -507,20 +577,59 @@ impl DcgManager {
         else {
             return Ok(None);
         };
-        let expected_type = self.marketplace_ref.as_ref().map_or("local", |_| "git");
-        if marketplace.get("source_type").and_then(toml::Value::as_str) != Some(expected_type)
-            || marketplace.get("source").and_then(toml::Value::as_str)
-                != Some(self.marketplace_source.as_str())
-            || marketplace.get("ref").and_then(toml::Value::as_str)
-                != self.marketplace_ref.as_deref()
+        #[cfg(test)]
+        if let Some(target) = &self.local_marketplace_target {
+            if marketplace.get("source_type").and_then(toml::Value::as_str) != Some("local")
+                || marketplace.get("source").and_then(toml::Value::as_str)
+                    != Some(self.marketplace_source.as_str())
+                || marketplace.get("ref").is_some()
+            {
+                return Err(RepairReason::MarketplacePinMismatch);
+            }
+            return Ok(Some(ManagedMarketplace {
+                root: PathBuf::from(&self.marketplace_source),
+                target: target.clone(),
+            }));
+        }
+        let target = marketplace
+            .get("ref")
+            .and_then(toml::Value::as_str)
+            .and_then(DcgTarget::from_tag)
+            .ok_or(RepairReason::MarketplacePinMismatch)?;
+        if marketplace.get("source").and_then(toml::Value::as_str)
+            != Some(self.marketplace_source.as_str())
+            || marketplace.get("source_type").and_then(toml::Value::as_str) != Some("git")
         {
             return Err(RepairReason::MarketplacePinMismatch);
         }
-        Ok(Some(if expected_type == "local" {
-            PathBuf::from(&self.marketplace_source)
-        } else {
-            marketplace_install_root(home).join(MARKETPLACE_NAME)
+        Ok(Some(ManagedMarketplace {
+            root: marketplace_install_root(home).join(MARKETPLACE_NAME),
+            target,
         }))
+    }
+
+    async fn resolve_latest_target(&self) -> Result<DcgTarget> {
+        #[cfg(test)]
+        if let Some(target) = &self.target_override {
+            return Ok(target.clone());
+        }
+        let mut response = create_client()
+            .get(&self.latest_release_api)
+            .timeout(RELEASE_PROBE_TIMEOUT)
+            .send()
+            .await?
+            .error_for_status()?;
+        if response.content_length().unwrap_or_default() > MAX_RELEASE_BODY_BYTES {
+            bail!("DCG release response exceeds {MAX_RELEASE_BODY_BYTES} bytes");
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() as u64 + chunk.len() as u64 > MAX_RELEASE_BODY_BYTES {
+                bail!("DCG release response exceeds {MAX_RELEASE_BODY_BYTES} bytes");
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice::<GitHubRelease>(&body)?.into_target()
     }
 
     async fn reported_version(&self, binary: &Path) -> Option<String> {
@@ -561,6 +670,39 @@ impl DcgManager {
             bail!("DCG management is unsupported for {reason:?}");
         }
         Ok(())
+    }
+}
+
+impl DcgTarget {
+    fn from_tag(tag: &str) -> Option<Self> {
+        let version = tag.strip_prefix('v')?;
+        let (base, revision) = version.split_once("-codexpp.")?;
+        let mut base_parts = base.split('.');
+        let major = base_parts.next()?.parse().ok()?;
+        let minor = base_parts.next()?.parse().ok()?;
+        let patch = base_parts.next()?.parse().ok()?;
+        if base_parts.next().is_some()
+            || revision.is_empty()
+            || !revision.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let revision = revision.parse().ok()?;
+        Some(Self {
+            tag: tag.to_string(),
+            version: version.to_string(),
+            precedence: [major, minor, patch, revision],
+        })
+    }
+}
+
+impl GitHubRelease {
+    fn into_target(self) -> Result<DcgTarget> {
+        if self.draft || self.prerelease || self.published_at.as_deref().is_none_or(str::is_empty) {
+            bail!("latest DCG release is not published and stable");
+        }
+        DcgTarget::from_tag(&self.tag_name)
+            .context("latest DCG release tag does not match vX.Y.Z-codexpp.N")
     }
 }
 
