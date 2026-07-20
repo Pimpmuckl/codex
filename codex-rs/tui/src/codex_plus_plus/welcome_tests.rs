@@ -37,11 +37,6 @@ fn welcome_help_first_and_later_startup_snapshot() {
         ]
         .join("\n")
     );
-}
-
-#[test]
-fn dcg_update_tip_selects_both_existing_slot_branches() {
-    assert_eq!(DCG_UPDATE_TIP, select_fork_tip(true, true));
     let mut terminal =
         Terminal::new(VT100Backend::new(/*width*/ 80, /*height*/ 2)).expect("terminal");
     terminal

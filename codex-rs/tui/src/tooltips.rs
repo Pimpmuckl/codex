@@ -120,11 +120,9 @@ fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<&'static str> {
 }
 
 fn maybe_dcg_update_tip<R: Rng + ?Sized>(tip: &'static str, rng: &mut R) -> &'static str {
-    if tip == WELCOME_TIP {
-        crate::codex_plus_plus::select_fork_tip(
-            crate::codex_plus_plus::dcg_update_available(),
-            rng.random_bool(0.5),
-        )
+    if tip == WELCOME_TIP && crate::codex_plus_plus::dcg_update_available() && rng.random_bool(0.5)
+    {
+        crate::codex_plus_plus::DCG_UPDATE_TIP
     } else {
         tip
     }

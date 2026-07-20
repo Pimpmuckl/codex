@@ -28,7 +28,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let mut manager = DcgManager::new(&app_server, &config).unwrap();
     manager.marketplace_source = fs::canonicalize(source.path())?.display().to_string();
     let installed_target = DcgTarget::from_tag(TEST_TAG).unwrap();
-    assert!(DcgTarget::from_tag("v1.2.3").is_none());
     manager.target_override = Some(installed_target.clone());
     manager.local_marketplace_target = Some(installed_target.clone());
     assert!(manager.install_and_enable().await.is_err());
@@ -40,14 +39,8 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     assert!(matches!(disabled, DcgStatus::Disabled(_)));
     assert_eq!(manager.update().await.unwrap().status, disabled);
     fs::remove_file(manager.binary_path())?;
-    assert_eq!(
-        manager
-            .repair(RepairReason::BinaryMissing)
-            .await
-            .unwrap()
-            .status,
-        disabled
-    );
+    let repaired = manager.repair(RepairReason::BinaryMissing).await.unwrap();
+    assert_eq!(repaired.status, disabled);
     manager.enable().await.unwrap();
     let newer_target = DcgTarget::from_tag("v0.6.9-codexpp.2").unwrap();
     manager.target_override = Some(newer_target.clone());

@@ -801,7 +801,7 @@ impl App {
             None => app_server.bootstrap(&config).await?,
         };
         #[cfg(not(test))]
-        crate::codex_plus_plus::start_dcg_update_detection(&app_server, &config);
+        crate::codex_plus_plus::detect_dcg_update(&app_server, &config).await;
         let bootstrap_ms = bootstrap.duration.as_millis();
         if matches!(
             &session_selection,

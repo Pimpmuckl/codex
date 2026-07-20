@@ -36,14 +36,6 @@ pub(crate) fn dcg_update_available() -> bool {
     DCG_UPDATE_AVAILABLE.load(Ordering::Relaxed)
 }
 
-pub(crate) fn select_fork_tip(update_available: bool, show_update: bool) -> &'static str {
-    if update_available && show_update {
-        DCG_UPDATE_TIP
-    } else {
-        WELCOME_TIP
-    }
-}
-
 pub(crate) fn welcome_help_lines() -> Vec<Line<'static>> {
     wrapped_tip(&WELCOME_TIP.replace("**", ""))
 }

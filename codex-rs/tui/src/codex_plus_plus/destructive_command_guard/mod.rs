@@ -124,7 +124,6 @@ struct GitHubRelease {
     tag_name: String,
     draft: bool,
     prerelease: bool,
-    published_at: Option<String>,
 }
 
 impl DcgManager {
@@ -222,11 +221,7 @@ impl DcgManager {
                     target_version: target.version,
                 }
             }
-            Ok(_) => {
-                #[cfg(not(test))]
-                super::welcome::set_dcg_update_available(false);
-                status
-            }
+            Ok(_) => status,
             Err(_) => status,
         }
     }
@@ -340,27 +335,17 @@ impl DcgManager {
         };
         let manifest =
             AbsolutePathBuf::try_from(marketplace_root.join(".agents/plugins/marketplace.json"))?;
+        let prior = prior_target.as_ref();
         if let Some(prior) = &prior_target {
             let switched = self.switch_marketplace_ref(&target.tag).await;
-            self.rollback(Some(prior), switched).await?;
+            self.rollback(Some(prior), &manifest, switched).await?;
         }
         let verification = self
             .verify_marketplace_checkout(&marketplace_root, &target)
             .await;
-        self.rollback(prior_target.as_ref(), verification).await?;
-        let installation: Result<PluginInstallResponse> = self
-            .request_handle
-            .request_typed(ClientRequest::PluginInstall {
-                request_id: request_id("dcg-plugin-install"),
-                params: PluginInstallParams {
-                    marketplace_path: Some(manifest),
-                    remote_marketplace_name: None,
-                    plugin_name: PLUGIN_NAME.to_string(),
-                },
-            })
-            .await
-            .context("failed to install the resolved DCG plugin");
-        self.rollback(prior_target.as_ref(), installation).await?;
+        self.rollback(prior, &manifest, verification).await?;
+        let installation = self.install_plugin(&manifest).await;
+        self.rollback(prior, &manifest, installation).await?;
         let result = async {
             self.run_installer(&marketplace_root, data_root, &target)
                 .await?;
@@ -386,7 +371,7 @@ impl DcgManager {
                     },
                 };
                 let enablement_rollback = self.write_enabled(plugin_before.enabled).await;
-                let result = self.rollback(prior_target.as_ref(), Err(err)).await;
+                let result = self.rollback(prior, &manifest, Err(err)).await;
                 if let Err(rollback_err) = rollback {
                     return result.context(format!("binary rollback also failed: {rollback_err}"));
                 }
@@ -597,11 +582,35 @@ impl DcgManager {
         Ok(())
     }
 
-    async fn rollback<T>(&self, prior: Option<&DcgTarget>, result: Result<T>) -> Result<T> {
+    async fn install_plugin(&self, manifest: &AbsolutePathBuf) -> Result<PluginInstallResponse> {
+        self.request_handle
+            .request_typed(ClientRequest::PluginInstall {
+                request_id: request_id("dcg-plugin-install"),
+                params: PluginInstallParams {
+                    marketplace_path: Some(manifest.clone()),
+                    remote_marketplace_name: None,
+                    plugin_name: PLUGIN_NAME.to_string(),
+                },
+            })
+            .await
+            .context("failed to install the resolved DCG plugin")
+    }
+
+    async fn rollback<T>(
+        &self,
+        prior: Option<&DcgTarget>,
+        manifest: &AbsolutePathBuf,
+        result: Result<T>,
+    ) -> Result<T> {
         if let (Some(prior), Err(error)) = (prior, &result)
-            && let Err(rollback) = self.switch_marketplace_ref(&prior.tag).await
+            && let Err(rollback) = async {
+                self.switch_marketplace_ref(&prior.tag).await?;
+                self.install_plugin(manifest).await?;
+                Result::<()>::Ok(())
+            }
+            .await
         {
-            bail!("{error:#}; marketplace rollback also failed: {rollback:#}");
+            bail!("{error:#}; DCG rollback also failed: {rollback:#}");
         }
         result
     }
@@ -666,11 +675,15 @@ impl DcgManager {
         if let Some(target) = &self.target_override {
             return Ok(target.clone());
         }
-        let release = self.fetch_latest_release().await?;
-        if release.draft
-            || release.prerelease
-            || release.published_at.as_deref().is_none_or(str::is_empty)
-        {
+        let release: GitHubRelease = create_client()
+            .get(&self.latest_release_api)
+            .timeout(RELEASE_PROBE_TIMEOUT)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if release.draft || release.prerelease {
             bail!("latest DCG release is not published and stable");
         }
         let mut target = DcgTarget::from_tag(&release.tag_name)
@@ -698,17 +711,6 @@ impl DcgManager {
         }
         target.commit = Some(commit);
         Ok(target)
-    }
-
-    async fn fetch_latest_release(&self) -> Result<GitHubRelease> {
-        Ok(create_client()
-            .get(&self.latest_release_api)
-            .timeout(RELEASE_PROBE_TIMEOUT)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
     }
 
     async fn reported_version(&self, binary: &Path) -> Option<String> {
@@ -755,20 +757,20 @@ impl DcgManager {
 impl DcgTarget {
     fn from_tag(tag: &str) -> Option<Self> {
         let version = tag.strip_prefix('v')?;
-        let captures = regex_lite::Regex::new(r"^v(\d+)\.(\d+)\.(\d+)-codexpp\.(\d+)$")
-            .ok()?
-            .captures(tag)?;
-        Some(Self {
+        let (base, fork) = version.split_once("-codexpp.")?;
+        let mut parts = base.split('.').chain(std::iter::once(fork));
+        let target = Self {
             tag: tag.to_string(),
             version: version.to_string(),
             precedence: [
-                captures.get(1)?.as_str().parse().ok()?,
-                captures.get(2)?.as_str().parse().ok()?,
-                captures.get(3)?.as_str().parse().ok()?,
-                captures.get(4)?.as_str().parse().ok()?,
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
             ],
             commit: None,
-        })
+        };
+        parts.next().is_none().then_some(target)
     }
 }
 
