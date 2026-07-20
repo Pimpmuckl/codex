@@ -582,7 +582,6 @@ impl DcgManager {
         }
         Ok(())
     }
-
     async fn install_plugin(&self, manifest: &AbsolutePathBuf) -> Result<PluginInstallResponse> {
         self.request_handle
             .request_typed(ClientRequest::PluginInstall {
@@ -596,7 +595,6 @@ impl DcgManager {
             .await
             .context("failed to install the resolved DCG plugin")
     }
-
     async fn rollback<T>(
         &self,
         prior: Option<&DcgTarget>,
@@ -637,24 +635,28 @@ impl DcgManager {
     }
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
-        let path = self.local_codex_home.join(".dcg-update.lock");
-        let lock = tokio::task::spawn_blocking(move || {
-            std::fs::File::create(path).and_then(|lock| lock.lock_exclusive().map(|()| lock))
-        })
-        .await;
-        let Ok(Ok(_lock)) = lock else {
-            return;
+        let restore = async {
+            let _lock = loop {
+                if let Ok(lock) = self.mutation_lock() {
+                    break lock;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            let version = match self.status(/*probe_latest*/ false).await {
+                DcgStatus::Enabled(version) | DcgStatus::Disabled(version) => version,
+                _ => return self.write_notice(None),
+            };
+            let marker =
+                std::fs::read_to_string(self.binary_path().with_extension("update-available"));
+            let available = marker.is_ok_and(|cached| cached == version);
+            super::welcome::DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
         };
-        let local_status =
-            tokio::time::timeout(VERSION_PROBE_TIMEOUT, self.status(/*probe_latest*/ false)).await;
-        let version = match local_status {
-            Ok(DcgStatus::Enabled(version) | DcgStatus::Disabled(version)) => version,
-            Ok(_) => return self.write_notice(None),
-            Err(_) => return super::welcome::DCG_UPDATE_AVAILABLE.store(false, Ordering::Relaxed),
-        };
-        let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
-        let available = marker.is_ok_and(|cached| cached == version);
-        super::welcome::DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
+        if tokio::time::timeout(VERSION_PROBE_TIMEOUT, restore)
+            .await
+            .is_err()
+        {
+            super::welcome::DCG_UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
+        }
     }
 
     async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
