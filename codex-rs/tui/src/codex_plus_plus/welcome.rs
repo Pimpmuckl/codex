@@ -7,8 +7,7 @@ use std::sync::atomic::Ordering;
 
 pub(crate) const WELCOME_TIP: &str = "Welcome to **Codex++**. Use **/codexplusplus** for settings and **/accounts** to enable or disable accounts.";
 pub(crate) const DCG_NUX_TIP: &str = "Tip: Enable Destructive Command Guard in /codexplusplus to send risky commands to Guardian for review even in full --yolo mode.";
-pub(crate) const DCG_UPDATE_TIP: &str =
-    "Tip: A Destructive Command Guard update is available in /codexplusplus.";
+pub(crate) const DCG_UPDATE_TIP: &str = "Tip: Update Destructive Command Guard in /codexplusplus.";
 
 static DCG_NUX_PENDING: AtomicBool = AtomicBool::new(false);
 static DCG_NUX_RENDER_PENDING: AtomicBool = AtomicBool::new(false);

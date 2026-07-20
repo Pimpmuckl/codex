@@ -531,8 +531,9 @@ impl DcgManager {
 
     async fn set_enabled(&self, enabled: bool) -> Result<DcgChange> {
         self.ensure_supported()?;
-        let _lock = self.mutation_lock()?;
+        let lock = self.mutation_lock()?;
         self.write_enabled(enabled).await?;
+        drop(lock);
         Ok(DcgChange {
             status: self.detect_status().await,
             takes_effect_in_current_session: false,
@@ -618,9 +619,9 @@ impl DcgManager {
     }
 
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
-        _ = self
-            .mutation_lock()
-            .map(|_lock| self.record_update_notice(installed));
+        _ = Result::map(self.mutation_lock(), |_| {
+            self.record_update_notice(installed)
+        });
     }
 
     fn record_update_notice(&self, installed: Option<&DcgTarget>) {
@@ -641,11 +642,14 @@ impl DcgManager {
 
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
+        let Some(_lock) = self.mutation_lock().ok() else {
+            return;
+        };
         let local_status =
             tokio::time::timeout(VERSION_PROBE_TIMEOUT, self.status(/*probe_latest*/ false)).await;
         let version = match local_status {
             Ok(DcgStatus::Enabled(version) | DcgStatus::Disabled(version)) => version,
-            Ok(_) => return self.record_update_available(None),
+            Ok(_) => return self.record_update_notice(None),
             Err(_) => return super::welcome::DCG_UPDATE_AVAILABLE.store(false, Ordering::Relaxed),
         };
         let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
