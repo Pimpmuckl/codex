@@ -65,7 +65,6 @@ pub(crate) async fn apply_dcg_action(manager: DcgManager, action: DcgAction) -> 
         DcgAction::Repair(reason) => manager.repair(reason).await,
     }
 }
-
 #[cfg(not(test))]
 pub(crate) async fn start_dcg_update_detection(
     app_server: &crate::app_server_session::AppServerSession,

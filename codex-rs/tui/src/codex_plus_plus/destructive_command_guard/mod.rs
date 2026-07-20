@@ -106,7 +106,6 @@ pub(crate) struct DcgManager {
     #[cfg(test)]
     local_marketplace_target: Option<DcgTarget>,
 }
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DcgTarget {
     tag: String,
@@ -349,10 +348,10 @@ impl DcgManager {
             self.run_installer(&marketplace_root, data_root, &target)
                 .await?;
             self.verify_binary(&target).await?;
+            self.trust_managed_hook(&target).await?;
             if disabled {
                 self.write_enabled(false).await?;
             }
-            self.trust_managed_hook(&target, disabled).await?;
             let make: fn(_) -> _ = [DcgStatus::Enabled, DcgStatus::Disabled][disabled as usize];
             Ok(make(target.version.clone()))
         }
@@ -428,6 +427,7 @@ impl DcgManager {
         let output = Command::new("git")
             .args(["-C", &root.to_string_lossy(), "status"])
             .args(["--porcelain=v2", "--branch", "--untracked-files=all"])
+            .args(["--", ".", ":(exclude).codex-marketplace-install.json"])
             .output()
             .await?;
         let status = String::from_utf8_lossy(&output.stdout);
@@ -455,7 +455,7 @@ impl DcgManager {
         Ok(())
     }
 
-    async fn trust_managed_hook(&self, target: &DcgTarget, allow_disabled: bool) -> Result<()> {
+    async fn trust_managed_hook(&self, target: &DcgTarget) -> Result<()> {
         let mut hook = None;
         for _ in 0..100 {
             hook = self.managed_hook(target).await?;
@@ -465,7 +465,7 @@ impl DcgManager {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let hook = hook.context("installed DCG plugin hook was not discovered")?;
-        if !hook.enabled && !allow_disabled {
+        if !hook.enabled {
             bail!("installed DCG plugin hook is disabled");
         }
         let key = hook.key;
