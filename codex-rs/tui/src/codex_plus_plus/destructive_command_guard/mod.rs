@@ -28,6 +28,7 @@ use codex_core_plugins::store::PluginStore;
 use codex_login::default_client::create_client;
 use codex_plugin::PluginId;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use fs2::FileExt as _;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -111,7 +112,7 @@ struct DcgTarget {
     tag: String,
     version: String,
     precedence: [u64; 4],
-    commit: Option<String>,
+    commit: String,
 }
 
 impl DcgManager {
@@ -134,14 +135,14 @@ impl DcgManager {
     }
 
     pub(crate) async fn detect_status(&self) -> DcgStatus {
-        self.detect_status_with(/*probe_latest*/ true).await
+        self.status(/*probe_latest*/ true).await
     }
 
-    pub(super) async fn detect_status_with(&self, probe_latest: bool) -> DcgStatus {
+    async fn status(&self, probe_latest: bool) -> DcgStatus {
         if let Some(reason) = self.unsupported_reason() {
             return DcgStatus::Unsupported(reason);
         }
-        let (marketplace_root, installed_target) = match self.managed_marketplace() {
+        let (marketplace_root, installed_target) = match self.checkout() {
             Ok(Some(marketplace)) => marketplace,
             Ok(None) if self.binary_path().is_file() => {
                 return DcgStatus::NeedsRepair(RepairReason::PluginMissing);
@@ -214,11 +215,11 @@ impl DcgManager {
                     target_version: target.version,
                 }
             }
-            Ok(_) => {
+            Ok(_) if matches!(self.checkout(), Ok(Some((_, ref x))) if *x == installed_target) => {
                 self.record_update_available(None);
                 status
             }
-            Err(_) => status,
+            Ok(_) | Err(_) => status,
         }
     }
 
@@ -281,8 +282,11 @@ impl DcgManager {
 
     async fn install_managed(&self, preserve_enablement: bool) -> Result<DcgChange> {
         self.ensure_supported()?;
+        let lock = std::fs::File::create(self.local_codex_home.join(".dcg-update.lock"))?;
+        lock.try_lock_exclusive()
+            .context("another DCG operation is already in progress")?;
         let target = self.resolve_latest_target().await?;
-        let current_marketplace = match self.managed_marketplace() {
+        let current_marketplace = match self.checkout() {
             Ok(marketplace) => marketplace,
             Err(reason) => bail!("cannot install while marketplace state is {reason:?}"),
         };
@@ -330,6 +334,7 @@ impl DcgManager {
             AbsolutePathBuf::try_from(marketplace_root.join(".agents/plugins/marketplace.json"))?;
         let prior = prior_target.as_ref();
         let enabled = plugin_before.enabled;
+        let disabled = preserve_enablement && plugin_before.installed && !enabled;
         if let Some(prior) = &prior_target {
             let switched = self.switch_marketplace_ref(&target.tag).await;
             self.rollback(Some(prior), &manifest, enabled, switched)
@@ -347,13 +352,11 @@ impl DcgManager {
             self.run_installer(&marketplace_root, data_root, &target)
                 .await?;
             self.verify_binary(&target).await?;
-            self.trust_managed_hook(&target).await?;
-            if preserve_enablement && plugin_before.installed && !plugin_before.enabled {
+            if disabled {
                 self.write_enabled(false).await?;
-                Ok(DcgStatus::Disabled(target.version.clone()))
-            } else {
-                Ok(DcgStatus::Enabled(target.version.clone()))
             }
+            self.trust_managed_hook(&target, disabled).await?;
+            Ok(target.status(disabled))
         }
         .await;
         let status = match result {
@@ -430,10 +433,7 @@ impl DcgManager {
             .output()
             .await?;
         let status = String::from_utf8_lossy(&output.stdout);
-        let commit = target
-            .commit
-            .as_deref()
-            .context("resolved DCG target is missing its commit")?;
+        let commit = &target.commit;
         let expected_oid = format!("# branch.oid {commit}");
         if !output.status.success()
             || !status.lines().any(|line| line == expected_oid)
@@ -455,7 +455,7 @@ impl DcgManager {
         Ok(())
     }
 
-    async fn trust_managed_hook(&self, target: &DcgTarget) -> Result<()> {
+    async fn trust_managed_hook(&self, target: &DcgTarget, allow_disabled: bool) -> Result<()> {
         let mut hook = None;
         for _ in 0..100 {
             hook = self.managed_hook(target).await?;
@@ -465,7 +465,7 @@ impl DcgManager {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let hook = hook.context("installed DCG plugin hook was not discovered")?;
-        if !hook.enabled {
+        if !hook.enabled && !allow_disabled {
             bail!("installed DCG plugin hook is disabled");
         }
         let key = hook.key;
@@ -616,7 +616,7 @@ impl DcgManager {
     }
 
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
-        let current = self.managed_marketplace();
+        let current = self.checkout();
         let installed = installed.filter(|t| matches!(current, Ok(Some((_, ref x))) if *x == **t));
         let marker = self.binary_path().with_extension("update-available");
         match installed {
@@ -628,11 +628,8 @@ impl DcgManager {
 
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
-        let local_status = tokio::time::timeout(
-            VERSION_PROBE_TIMEOUT,
-            self.detect_status_with(/*probe_latest*/ false),
-        )
-        .await;
+        let local_status =
+            tokio::time::timeout(VERSION_PROBE_TIMEOUT, self.status(/*probe_latest*/ false)).await;
         let version = match local_status {
             Ok(DcgStatus::Enabled(version) | DcgStatus::Disabled(version)) => version,
             Ok(_) => return self.record_update_available(None),
@@ -658,9 +655,7 @@ impl DcgManager {
             .await?)
     }
 
-    fn managed_marketplace(
-        &self,
-    ) -> std::result::Result<Option<(PathBuf, DcgTarget)>, RepairReason> {
+    fn checkout(&self) -> std::result::Result<Option<(PathBuf, DcgTarget)>, RepairReason> {
         let home = &self.local_codex_home;
         let contents = match std::fs::read_to_string(home.join("config.toml")) {
             Ok(contents) => contents,
@@ -730,12 +725,9 @@ impl DcgManager {
             .last()
             .and_then(|line| line.split_once('\t'))
             .map(|(sha, _)| sha.to_string())
-            .filter(|sha| sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .filter(|sha| output.status.success() && sha.len() == 40)
             .context("resolved DCG release tag did not identify an immutable commit")?;
-        if !output.status.success() {
-            bail!("failed to resolve the DCG release tag");
-        }
-        target.commit = Some(commit);
+        target.commit = commit;
         Ok(target)
     }
 
@@ -781,22 +773,26 @@ impl DcgManager {
 }
 
 impl DcgTarget {
+    fn status(&self, disabled: bool) -> DcgStatus {
+        [DcgStatus::Enabled, DcgStatus::Disabled][usize::from(disabled)](self.version.clone())
+    }
+
     fn from_tag(tag: &str) -> Option<Self> {
         let version = tag.strip_prefix('v')?;
         let (base, fork) = version.split_once("-codexpp.")?;
         let mut parts = base.split('.').chain(std::iter::once(fork));
-        let target = Self {
+        let precedence = [
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+            parts.next()?.parse().ok()?,
+        ];
+        parts.next().is_none().then_some(Self {
             tag: tag.to_string(),
             version: version.to_string(),
-            precedence: [
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-            ],
-            commit: None,
-        };
-        parts.next().is_none().then_some(target)
+            precedence,
+            commit: String::new(),
+        })
     }
 }
 
