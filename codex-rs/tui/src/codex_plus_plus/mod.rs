@@ -67,12 +67,12 @@ pub(crate) async fn apply_dcg_action(manager: DcgManager, action: DcgAction) -> 
 }
 
 #[cfg(not(test))]
-pub(crate) fn start_dcg_update_detection(
+pub(crate) async fn start_dcg_update_detection(
     app_server: &crate::app_server_session::AppServerSession,
     config: &crate::legacy_core::config::Config,
 ) {
     if let Ok(manager) = DcgManager::new(app_server, config) {
-        manager.restore_cached_update_available();
+        manager.restore_cached_update_available().await;
         tokio::spawn(async move { manager.detect_status().await });
     }
 }

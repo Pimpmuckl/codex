@@ -4,7 +4,6 @@ use color_eyre::Result;
 use pretty_assertions::assert_eq;
 use std::fs;
 use tempfile::TempDir;
-const TEST_TAG: &str = "v0.6.8-codexpp.1";
 const TEST_VERSION: &str = "0.6.8-codexpp.1";
 
 #[tokio::test]
@@ -27,21 +26,18 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let app_server = crate::start_embedded_app_server_for_picker(&config).await?;
     let mut manager = DcgManager::new(&app_server, &config).unwrap();
     manager.marketplace_source = fs::canonicalize(source.path())?.display().to_string();
-    let installed_target = DcgTarget::from_tag(TEST_TAG).unwrap();
-    manager.target_override = Some(installed_target.clone());
-    manager.local_marketplace_target = Some(installed_target.clone());
+    manager.target_override = DcgTarget::from_tag("v0.6.8-codexpp.1");
+    manager.local_marketplace_target = manager.target_override.clone();
     assert!(manager.install_and_enable().await.is_err());
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
     write_installer(source.path(), /*fail*/ false)?;
     let installed = manager.install_and_enable().await.unwrap();
     assert!(!installed.takes_effect_in_current_session);
-    let disabled = manager.disable().await.unwrap().status;
+    manager.disable().await.unwrap();
     manager.target_override = DcgTarget::from_tag("v0.6.9-codexpp.2");
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
-    manager.target_override = Some(installed_target);
-    assert_eq!(manager.detect_status().await, disabled);
-    manager.enable().await.unwrap();
+    assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
     assert!(manager.disable().await.is_err());

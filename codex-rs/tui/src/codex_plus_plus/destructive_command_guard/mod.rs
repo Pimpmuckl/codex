@@ -135,6 +135,10 @@ impl DcgManager {
     }
 
     pub(crate) async fn detect_status(&self) -> DcgStatus {
+        self.detect_status_with(/*probe_latest*/ true).await
+    }
+
+    pub(super) async fn detect_status_with(&self, probe_latest: bool) -> DcgStatus {
         if let Some(reason) = self.unsupported_reason() {
             return DcgStatus::Unsupported(reason);
         }
@@ -200,6 +204,9 @@ impl DcgManager {
         } else {
             DcgStatus::Disabled(version)
         };
+        if !probe_latest {
+            return status;
+        }
         match self.resolve_latest_target().await {
             Ok(target) if target.precedence > installed_target.precedence => {
                 self.record_update_available(Some(&installed_target));
@@ -406,7 +413,7 @@ impl DcgManager {
             .await?;
         if !output.status.success() {
             bail!(
-                "resolved DCG installer failed with {}: {}",
+                "pinned DCG installer failed with {}: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             );
@@ -620,16 +627,17 @@ impl DcgManager {
     }
 
     #[cfg(not(test))]
-    pub(super) fn restore_cached_update_available(&self) {
+    pub(super) async fn restore_cached_update_available(&self) {
+        let local_status = self.detect_status_with(/*probe_latest*/ false).await;
+        if !matches!(local_status, DcgStatus::Enabled(_) | DcgStatus::Disabled(_)) {
+            self.record_update_available(None);
+            return;
+        }
         let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
         let installed =
             PluginStore::new(self.local_codex_home.clone()).active_plugin_version(&self.plugin_id);
-        let managed = self.managed_marketplace().ok().flatten();
-        super::welcome::set_dcg_update_available(
-            marker.is_ok_and(|version| Some(version) == installed)
-                && self.binary_path().is_file()
-                && managed.is_some_and(|(root, _)| root.is_dir()),
-        );
+        let available = marker.is_ok_and(|version| Some(version) == installed);
+        super::welcome::set_dcg_update_available(available);
     }
 
     async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
