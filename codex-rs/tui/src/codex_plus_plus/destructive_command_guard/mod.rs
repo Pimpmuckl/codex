@@ -344,10 +344,7 @@ impl DcgManager {
             self.run_installer(&marketplace_root, data_root, &target)
                 .await?;
             self.verify_binary(&target).await?;
-            self.trust_managed_hook(&target).await?;
-            if disabled {
-                self.write_enabled(false).await?;
-            }
+            self.trust_managed_hook(&target, disabled).await?;
             let make: fn(_) -> _ = [DcgStatus::Enabled, DcgStatus::Disabled][disabled as usize];
             Ok(make(target.version.clone()))
         }
@@ -451,7 +448,7 @@ impl DcgManager {
         Ok(())
     }
 
-    async fn trust_managed_hook(&self, target: &DcgTarget) -> Result<()> {
+    async fn trust_managed_hook(&self, target: &DcgTarget, disabled: bool) -> Result<()> {
         let mut hook = None;
         for _ in 0..100 {
             hook = self.managed_hook(target).await?;
@@ -463,6 +460,9 @@ impl DcgManager {
         let hook = hook.context("installed DCG plugin hook was not discovered")?;
         if !hook.enabled {
             bail!("installed DCG plugin hook is disabled");
+        }
+        if disabled {
+            self.write_enabled(false).await?;
         }
         let key = hook.key;
         let key_path = format!("hooks.state.{}", serde_json::to_string(&key)?);
@@ -620,6 +620,7 @@ impl DcgManager {
             Some(target) => _ = std::fs::write(marker, &target.version),
             None => _ = std::fs::remove_file(marker),
         }
+        #[cfg(not(test))]
         super::welcome::DCG_UPDATE_AVAILABLE.store(installed.is_some(), Ordering::Relaxed);
     }
     fn mutation_lock(&self) -> std::io::Result<std::fs::File> {

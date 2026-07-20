@@ -9,18 +9,14 @@ const UPDATED_VERSION: &str = "0.6.9-codexpp.2";
 
 #[test]
 fn release_metadata_accepts_only_eligible_owned_channel() {
-    let tag = "v0.6.9-codexpp.1";
-    assert_eq!(
-        DcgTarget::from_release(&json!({"tag_name": tag, "draft": false, "prerelease": false})),
-        DcgTarget::from_tag(tag)
-    );
-    for rejected in [
-        json!({"tag_name": tag, "draft": true, "prerelease": false}),
-        json!({"tag_name": tag, "draft": false, "prerelease": true}),
-        json!({"tag_name": "v0.6.9", "draft": false, "prerelease": false}),
-    ] {
-        assert_eq!(DcgTarget::from_release(&rejected), None);
-    }
+    let releases = [
+        json!({"tag_name": "v0.7.0", "draft": false, "prerelease": false}),
+        json!({"tag_name": "v0.6.10-codexpp.1", "draft": true, "prerelease": false}),
+        json!({"tag_name": "v0.6.10-codexpp.1", "draft": false, "prerelease": true}),
+        json!({"tag_name": "v0.6.9-codexpp.1", "draft": false, "prerelease": false}),
+    ];
+    let expected = DcgTarget::from_tag("v0.6.9-codexpp.1");
+    assert_eq!(DcgTarget::from_releases(&releases), expected);
 }
 
 #[tokio::test]
@@ -55,7 +51,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
-    manager.write_notice(None);
     write_marketplace(source.path(), UPDATED_VERSION)?;
     write_installer(source.path(), /*fail*/ false)?;
     let updated = manager.update().await.unwrap();

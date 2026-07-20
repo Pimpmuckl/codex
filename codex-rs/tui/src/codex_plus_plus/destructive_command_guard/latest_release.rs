@@ -30,18 +30,26 @@ impl DcgTarget {
             .flatten()
             .and_then(Self::from_tag)
     }
+    pub(super) fn from_releases(xs: &[serde_json::Value]) -> Option<Self> {
+        let targets = xs.iter().filter_map(Self::from_release);
+        targets.max_by_key(|x| x.precedence)
+    }
 }
 pub(super) async fn resolve(source: &str) -> Result<DcgTarget> {
-    let release = create_client()
-        .get("https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases/latest")
+    let mut response = create_client()
+        .get("https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases?per_page=100")
         .timeout(Duration::from_secs(5))
         .send()
         .await?
-        .error_for_status()?
-        .json::<serde_json::Value>()
-        .await?;
-    let mut target = DcgTarget::from_release(&release)
-        .context("latest DCG release is not an eligible vX.Y.Z-codexpp.N release")?;
+        .error_for_status()?;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        anyhow::ensure!(body.len() + chunk.len() <= 2 << 20);
+        body.extend_from_slice(&chunk);
+    }
+    let releases: Vec<serde_json::Value> = serde_json::from_slice(&body)?;
+    let mut target = DcgTarget::from_releases(&releases)
+        .context("no eligible vX.Y.Z-codexpp.N DCG release was found")?;
     let mut command = Command::new("git");
     command
         .args(["ls-remote", source])
