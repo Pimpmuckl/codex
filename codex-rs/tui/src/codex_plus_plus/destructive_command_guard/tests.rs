@@ -4,11 +4,6 @@ use color_eyre::Result;
 use pretty_assertions::assert_eq;
 use std::fs;
 use tempfile::TempDir;
-use wiremock::Mock;
-use wiremock::MockServer;
-use wiremock::ResponseTemplate;
-use wiremock::matchers::method;
-
 const TEST_TAG: &str = "v0.6.8-codexpp.1";
 const TEST_VERSION: &str = "0.6.8-codexpp.1";
 
@@ -40,6 +35,15 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_installer(source.path(), /*fail*/ false)?;
     let installed = manager.install_and_enable().await.unwrap();
     assert!(!installed.takes_effect_in_current_session);
+    assert!(matches!(
+        manager.disable().await.unwrap().status,
+        DcgStatus::Disabled(_)
+    ));
+    assert!(matches!(
+        manager.update().await.unwrap().status,
+        DcgStatus::Disabled(_)
+    ));
+    manager.enable().await.unwrap();
     let newer_target = DcgTarget::from_tag("v0.6.9-codexpp.2").unwrap();
     manager.target_override = Some(newer_target.clone());
     assert_eq!(
@@ -49,16 +53,10 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
             target_version: newer_target.version,
         }
     );
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(503))
-        .mount(&server)
-        .await;
     manager.target_override = None;
-    manager.latest_release_api = server.uri();
+    manager.latest_release_api = "http://127.0.0.1:1".to_string();
     assert_eq!(manager.detect_status().await, installed.status);
     manager.target_override = Some(installed_target);
-    manager.enable().await.unwrap();
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     assert_eq!(manager.detect_status().await, installed.status);
@@ -73,49 +71,32 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
 
 #[test]
 fn release_target_accepts_only_the_owned_stable_channel() {
-    let target = GitHubRelease {
+    let valid = GitHubRelease {
         tag_name: "v1.2.3-codexpp.4".to_string(),
         draft: false,
         prerelease: false,
         published_at: Some("2026-07-20T00:00:00Z".to_string()),
-    }
-    .into_target()
-    .unwrap();
+    };
     assert_eq!(
-        target,
-        DcgTarget {
-            tag: "v1.2.3-codexpp.4".to_string(),
-            version: "1.2.3-codexpp.4".to_string(),
-            precedence: [1, 2, 3, 4],
-        }
+        valid.into_target().unwrap(),
+        DcgTarget::from_tag("v1.2.3-codexpp.4").unwrap()
     );
-    for release in [
-        GitHubRelease {
-            tag_name: "v1.2.3-codexpp.4".to_string(),
-            draft: true,
-            prerelease: false,
-            published_at: Some("2026-07-20T00:00:00Z".to_string()),
-        },
-        GitHubRelease {
-            tag_name: "v1.2.3-codexpp.4".to_string(),
-            draft: false,
-            prerelease: true,
-            published_at: Some("2026-07-20T00:00:00Z".to_string()),
-        },
-        GitHubRelease {
-            tag_name: "v1.2.3".to_string(),
-            draft: false,
-            prerelease: false,
-            published_at: Some("2026-07-20T00:00:00Z".to_string()),
-        },
-        GitHubRelease {
-            tag_name: "v1.2.3-codexpp.4".to_string(),
-            draft: false,
-            prerelease: false,
-            published_at: None,
-        },
+    assert!(DcgTarget::from_tag("v1.2.3").is_none());
+    for (draft, prerelease, published_at) in [
+        (true, false, Some("x")),
+        (false, true, Some("x")),
+        (false, false, None),
     ] {
-        assert!(release.into_target().is_err());
+        assert!(
+            GitHubRelease {
+                tag_name: "v1.2.3-codexpp.4".to_string(),
+                draft,
+                prerelease,
+                published_at: published_at.map(str::to_string),
+            }
+            .into_target()
+            .is_err()
+        );
     }
 }
 

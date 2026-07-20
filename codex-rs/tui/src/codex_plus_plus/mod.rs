@@ -71,15 +71,7 @@ pub(crate) fn start_dcg_update_detection(
     app_server: &crate::app_server_session::AppServerSession,
     config: &crate::legacy_core::config::Config,
 ) {
-    if !DcgManager::management_supported(app_server) {
-        return;
-    }
-    match DcgManager::new(app_server, config) {
-        Ok(manager) => {
-            tokio::spawn(async move {
-                manager.detect_status().await;
-            });
-        }
-        Err(err) => tracing::warn!(error = %err, "failed to initialize startup DCG update check"),
+    if let Ok(manager) = DcgManager::new(app_server, config) {
+        tokio::spawn(async move { manager.detect_status().await });
     }
 }

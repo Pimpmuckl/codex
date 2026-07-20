@@ -146,9 +146,10 @@ fn action_verb(action: DcgAction) -> &'static str {
     }
 }
 
-fn action_succeeded(action: DcgAction, status: &DcgStatus) -> bool {
+pub(super) fn action_succeeded(action: DcgAction, status: &DcgStatus) -> bool {
     match action {
         DcgAction::Disable => matches!(status, DcgStatus::Disabled(_)),
+        DcgAction::Update => matches!(status, DcgStatus::Enabled(_) | DcgStatus::Disabled(_)),
         _ => matches!(status, DcgStatus::Enabled(_)),
     }
 }
