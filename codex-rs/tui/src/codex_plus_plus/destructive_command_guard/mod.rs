@@ -371,7 +371,7 @@ impl DcgManager {
                 };
                 let result = self.rollback(prior, &manifest, enabled, Err(err)).await;
                 let available = prior.filter(|old| old.precedence < target.precedence);
-                self.record_update_notice(available);
+                self.write_notice(available);
                 let enablement_rollback = self.write_enabled(enabled).await;
                 if let Err(rollback_err) = rollback {
                     return result.context(format!("binary rollback also failed: {rollback_err}"));
@@ -382,7 +382,7 @@ impl DcgManager {
                 return result;
             }
         };
-        self.record_update_notice(None);
+        self.write_notice(None);
         Ok(DcgChange {
             status,
             takes_effect_in_current_session: false,
@@ -619,12 +619,10 @@ impl DcgManager {
     }
 
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
-        _ = Result::map(self.mutation_lock(), |_| {
-            self.record_update_notice(installed)
-        });
+        _ = Result::map(self.mutation_lock(), |_| self.write_notice(installed));
     }
 
-    fn record_update_notice(&self, installed: Option<&DcgTarget>) {
+    fn write_notice(&self, installed: Option<&DcgTarget>) {
         let current = self.checkout();
         let installed = installed.filter(|t| matches!(current, Ok(Some((_, ref x))) if *x == **t));
         let marker = self.binary_path().with_extension("update-available");
@@ -642,14 +640,16 @@ impl DcgManager {
 
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
-        let Some(_lock) = self.mutation_lock().ok() else {
+        let lock = std::fs::File::create(self.local_codex_home.join(".dcg-update.lock"))
+            .and_then(|lock| lock.lock_exclusive().map(|()| lock));
+        let Ok(_lock) = lock else {
             return;
         };
         let local_status =
             tokio::time::timeout(VERSION_PROBE_TIMEOUT, self.status(/*probe_latest*/ false)).await;
         let version = match local_status {
             Ok(DcgStatus::Enabled(version) | DcgStatus::Disabled(version)) => version,
-            Ok(_) => return self.record_update_notice(None),
+            Ok(_) => return self.write_notice(None),
             Err(_) => return super::welcome::DCG_UPDATE_AVAILABLE.store(false, Ordering::Relaxed),
         };
         let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
