@@ -73,7 +73,7 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
             }
             _ => {
                 let tooltip = if IS_MACOS {
-                    WELCOME_TIP
+                    choose_dcg_update_tip(WELCOME_TIP, &mut rng)
                 } else {
                     OTHER_TOOLTIP_NON_MAC
                 };
@@ -102,7 +102,7 @@ fn pick_paid_tooltip<R: Rng + ?Sized>(
     fast_mode_enabled: bool,
 ) -> Option<&'static str> {
     if fast_mode_enabled || rng.random_bool(0.5) {
-        paid_app_tooltip()
+        paid_app_tooltip().map(|tip| choose_dcg_update_tip(tip, rng))
     } else {
         Some(FAST_TOOLTIP)
     }
@@ -115,6 +115,27 @@ fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<&'static str> {
         ALL_TOOLTIPS
             .get(rng.random_range(0..ALL_TOOLTIPS.len()))
             .copied()
+            .map(|tip| choose_dcg_update_tip(tip, rng))
+    }
+}
+
+fn choose_dcg_update_tip<R: Rng + ?Sized>(tip: &'static str, rng: &mut R) -> &'static str {
+    maybe_dcg_update_tip(
+        tip,
+        crate::codex_plus_plus::dcg_update_available(),
+        rng.random_bool(0.5),
+    )
+}
+
+fn maybe_dcg_update_tip(
+    tip: &'static str,
+    update_available: bool,
+    choose_update: bool,
+) -> &'static str {
+    if tip == WELCOME_TIP && update_available && choose_update {
+        crate::codex_plus_plus::DCG_UPDATE_TIP
+    } else {
+        tip
     }
 }
 
@@ -323,6 +344,7 @@ pub(crate) mod announcement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex_plus_plus::DCG_UPDATE_TIP;
     use crate::tooltips::announcement::parse_announcement_tip_toml;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
@@ -336,6 +358,18 @@ mod tests {
     #[test]
     fn file_backed_app_promo_uses_welcome_tip() {
         assert!(TOOLTIPS.contains(&WELCOME_TIP));
+    }
+
+    #[test]
+    fn dcg_update_tip_replaces_only_an_eligible_welcome_tip() {
+        assert_eq!(
+            [
+                maybe_dcg_update_tip(WELCOME_TIP, true, true),
+                maybe_dcg_update_tip(WELCOME_TIP, true, false),
+                maybe_dcg_update_tip(WELCOME_TIP, false, true),
+            ],
+            [DCG_UPDATE_TIP, WELCOME_TIP, WELCOME_TIP]
+        );
     }
 
     #[test]

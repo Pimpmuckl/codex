@@ -7,9 +7,12 @@ use std::sync::atomic::Ordering;
 
 pub(crate) const WELCOME_TIP: &str = "Welcome to **Codex++**. Use **/codexplusplus** for settings and **/accounts** to enable or disable accounts.";
 pub(crate) const DCG_NUX_TIP: &str = "Tip: Enable Destructive Command Guard in /codexplusplus to send risky commands to Guardian for review even in full --yolo mode.";
+pub(crate) const DCG_UPDATE_TIP: &str =
+    "Tip: Destructive Command Guard was updated. Use /codexplusplus to upgrade when convenient.";
 
 static DCG_NUX_PENDING: AtomicBool = AtomicBool::new(false);
 static DCG_NUX_RENDER_PENDING: AtomicBool = AtomicBool::new(false);
+pub(super) static DCG_UPDATE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(not(test))]
 pub(crate) fn mark_dcg_nux_pending() {
@@ -22,6 +25,10 @@ pub(crate) fn replace_upstream_app_promo(tip: &'static str) -> &'static str {
     } else {
         tip
     }
+}
+
+pub(crate) fn dcg_update_available() -> bool {
+    DCG_UPDATE_AVAILABLE.load(Ordering::Relaxed)
 }
 
 pub(crate) fn welcome_help_lines() -> Vec<Line<'static>> {

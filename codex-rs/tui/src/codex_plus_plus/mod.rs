@@ -37,7 +37,9 @@ pub(crate) use user_message_inbox::enabled as user_message_inbox_enabled;
 pub(crate) use user_message_inbox::recognize as recognize_user_message;
 pub(crate) use weekly_window_scheduler::WeeklyWindowScheduler;
 pub(crate) use weekly_window_scheduler::WeeklyWindowStatus;
+pub(crate) use welcome::DCG_UPDATE_TIP;
 pub(crate) use welcome::WELCOME_TIP;
+pub(crate) use welcome::dcg_update_available;
 #[cfg(not(test))]
 pub(crate) use welcome::mark_dcg_nux_pending;
 pub(crate) use welcome::replace_upstream_app_promo;
@@ -61,5 +63,15 @@ pub(crate) async fn apply_dcg_action(manager: DcgManager, action: DcgAction) -> 
         DcgAction::Disable => manager.disable().await,
         DcgAction::Update => manager.update().await,
         DcgAction::Repair(reason) => manager.repair(reason).await,
+    }
+}
+#[cfg(not(test))]
+pub(crate) async fn start_dcg_update_detection(
+    app_server: &crate::app_server_session::AppServerSession,
+    config: &crate::legacy_core::config::Config,
+) {
+    if let Ok(manager) = DcgManager::new(app_server, config) {
+        manager.restore_cached_update_available();
+        tokio::spawn(manager.reconcile_and_detect());
     }
 }
