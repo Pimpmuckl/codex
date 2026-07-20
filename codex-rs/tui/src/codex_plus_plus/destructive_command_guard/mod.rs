@@ -452,10 +452,7 @@ impl DcgManager {
             .await
             .context("managed DCG binary did not report a version")?;
         if version != target.version {
-            bail!(
-                "managed DCG binary reported {version}, expected {}",
-                target.version
-            );
+            bail!("DCG binary is {version}; expected {}", target.version);
         }
         Ok(())
     }
@@ -628,8 +625,13 @@ impl DcgManager {
 
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
-        let local_status = self.detect_status_with(/*probe_latest*/ false).await;
-        if !matches!(local_status, DcgStatus::Enabled(_) | DcgStatus::Disabled(_)) {
+        use DcgStatus as S;
+        let local_status = tokio::time::timeout(
+            VERSION_PROBE_TIMEOUT,
+            self.detect_status_with(/*probe_latest*/ false),
+        )
+        .await;
+        if !matches!(local_status, Ok(S::Enabled(_) | S::Disabled(_))) {
             self.record_update_available(None);
             return;
         }
@@ -708,9 +710,7 @@ impl DcgManager {
             .error_for_status()?
             .json()
             .await?;
-        let tag = release["tag_name"]
-            .as_str()
-            .context("latest DCG release has no tag")?;
+        let tag = release["tag_name"].as_str().unwrap_or_default();
         let mut target = DcgTarget::from_tag(tag)
             .context("latest DCG release tag does not match vX.Y.Z-codexpp.N")?;
         let mut command = Command::new("git");
