@@ -624,8 +624,11 @@ impl DcgManager {
         let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
         let installed =
             PluginStore::new(self.local_codex_home.clone()).active_plugin_version(&self.plugin_id);
+        let managed = self.managed_marketplace().ok().flatten();
         super::welcome::set_dcg_update_available(
-            marker.is_ok_and(|version| Some(version) == installed),
+            marker.is_ok_and(|version| Some(version) == installed)
+                && self.binary_path().is_file()
+                && managed.is_some_and(|(root, _)| root.is_dir()),
         );
     }
 

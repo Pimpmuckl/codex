@@ -36,8 +36,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let installed = manager.install_and_enable().await.unwrap();
     assert!(!installed.takes_effect_in_current_session);
     let disabled = manager.disable().await.unwrap().status;
-    let newer_target = DcgTarget::from_tag("v0.6.9-codexpp.2").unwrap();
-    manager.target_override = Some(newer_target);
+    manager.target_override = DcgTarget::from_tag("v0.6.9-codexpp.2");
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     manager.target_override = Some(installed_target);
