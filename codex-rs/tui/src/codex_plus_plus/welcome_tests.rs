@@ -37,10 +37,4 @@ fn welcome_help_first_and_later_startup_snapshot() {
         ]
         .join("\n")
     );
-    let mut term = Terminal::new(VT100Backend::new(/*width*/ 80, /*height*/ 2)).expect("terminal");
-    term.draw(|frame| frame.render_widget(Text::from(wrapped_tip(DCG_UPDATE_TIP)), frame.area()))
-        .expect("render update tip");
-    insta::assert_snapshot!(term.backend().to_string(), @r"
-  Tip: Update Destructive Command Guard in /codexplusplus.
-    ");
 }

@@ -1,3 +1,5 @@
+mod latest_release;
+
 use crate::app_server_session::AppServerSession;
 use crate::config_update::replace_config_value;
 use crate::config_update::write_config_batch;
@@ -25,7 +27,6 @@ use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::RequestId;
 use codex_core_plugins::installed_marketplaces::marketplace_install_root;
 use codex_core_plugins::store::PluginStore;
-use codex_login::default_client::create_client;
 use codex_plugin::PluginId;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use fs2::FileExt as _;
@@ -40,6 +41,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::process::Command;
 use uuid::Uuid;
+
+use latest_release::DcgTarget;
 
 const MARKETPLACE_NAME: &str = "pimpmuckl-dcg";
 const PLUGIN_NAME: &str = "destructive-command-guard";
@@ -105,13 +108,6 @@ pub(crate) struct DcgManager {
     target_override: Option<DcgTarget>,
     #[cfg(test)]
     local_marketplace_target: Option<DcgTarget>,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DcgTarget {
-    tag: String,
-    version: String,
-    precedence: [u64; 4],
-    commit: String,
 }
 
 impl DcgManager {
@@ -718,37 +714,7 @@ impl DcgManager {
         if let Some(target) = &self.target_override {
             return Ok(target.clone());
         }
-        let release: serde_json::Value = create_client()
-            .get("https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases/latest")
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        let tag = release["tag_name"].as_str().unwrap_or_default();
-        let mut target = DcgTarget::from_tag(tag)
-            .context("latest DCG release tag does not match vX.Y.Z-codexpp.N")?;
-        let mut command = Command::new("git");
-        command
-            .args(["ls-remote", self.marketplace_source.as_str()])
-            .args([
-                format!("refs/tags/{}", target.tag),
-                format!("refs/tags/{}^{{}}", target.tag),
-            ])
-            .kill_on_drop(true);
-        let output = tokio::time::timeout(Duration::from_secs(5), command.output())
-            .await
-            .context("timed out resolving the DCG release tag")??;
-        let commit = String::from_utf8(output.stdout)?
-            .lines()
-            .last()
-            .and_then(|line| line.split_once('\t'))
-            .map(|(sha, _)| sha.to_string())
-            .filter(|sha| output.status.success() && sha.len() == 40)
-            .context("resolved DCG release tag did not identify an immutable commit")?;
-        target.commit = commit;
-        Ok(target)
+        latest_release::resolve(&self.marketplace_source).await
     }
 
     async fn reported_version(&self, binary: &Path) -> Option<String> {
@@ -789,21 +755,6 @@ impl DcgManager {
             bail!("DCG management is unsupported for {reason:?}");
         }
         Ok(())
-    }
-}
-impl DcgTarget {
-    fn from_tag(tag: &str) -> Option<Self> {
-        let version = tag.strip_prefix('v')?;
-        let (base, fork) = version.split_once("-codexpp.")?;
-        let mut parts = base.split('.').chain(std::iter::once(fork));
-        let mut next = || parts.next()?.parse::<u64>().ok();
-        let precedence = [next()?, next()?, next()?, next()?];
-        parts.next().is_none().then_some(Self {
-            tag: tag.to_string(),
-            version: version.to_string(),
-            precedence,
-            commit: String::new(),
-        })
     }
 }
 

@@ -2,9 +2,26 @@ use super::*;
 use crate::legacy_core::config::ConfigBuilder;
 use color_eyre::Result;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::fs;
 use tempfile::TempDir;
-const PINNED_VERSION: &str = "0.6.8-codexpp.1";
+const UPDATED_VERSION: &str = "0.6.9-codexpp.2";
+
+#[test]
+fn release_metadata_accepts_only_eligible_owned_channel() {
+    let tag = "v0.6.9-codexpp.1";
+    assert_eq!(
+        DcgTarget::from_release(&json!({"tag_name": tag, "draft": false, "prerelease": false})),
+        DcgTarget::from_tag(tag)
+    );
+    for rejected in [
+        json!({"tag_name": tag, "draft": true, "prerelease": false}),
+        json!({"tag_name": tag, "draft": false, "prerelease": true}),
+        json!({"tag_name": "v0.6.9", "draft": false, "prerelease": false}),
+    ] {
+        assert_eq!(DcgTarget::from_release(&rejected), None);
+    }
+}
 
 #[tokio::test]
 async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> Result<()> {
@@ -16,7 +33,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
         home.path().join("config.toml"),
         "[features]\nplugins = true\n",
     )?;
-    write_marketplace(source.path())?;
+    write_marketplace(source.path(), "0.6.8-codexpp.1")?;
     compile_fake_dcg(source.path())?;
     write_installer(source.path(), /*fail*/ true)?;
     let config = ConfigBuilder::default()
@@ -39,6 +56,19 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     assert!(manager.update().await.is_err());
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
     manager.write_notice(None);
+    write_marketplace(source.path(), UPDATED_VERSION)?;
+    write_installer(source.path(), /*fail*/ false)?;
+    let updated = manager.update().await.unwrap();
+    let installed_tag =
+        fs::read_to_string(manager.binary_path().with_file_name("installed-version"))?;
+    let expected = DcgChange {
+        status: DcgStatus::Disabled(UPDATED_VERSION.to_string()),
+        takes_effect_in_current_session: false,
+    };
+    assert_eq!(
+        (updated, installed_tag),
+        (expected, format!("v{UPDATED_VERSION}"))
+    );
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
     assert!(manager.disable().await.is_err());
@@ -48,7 +78,7 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     Ok(())
 }
 
-fn write_marketplace(root: &Path) -> Result<()> {
+fn write_marketplace(root: &Path, version: &str) -> Result<()> {
     let plugin = root.join("plugins").join(PLUGIN_NAME);
     fs::create_dir_all(root.join(".agents/plugins"))?;
     fs::create_dir_all(plugin.join(".codex-plugin"))?;
@@ -61,7 +91,7 @@ fn write_marketplace(root: &Path) -> Result<()> {
     )?;
     fs::write(
         plugin.join(".codex-plugin/plugin.json"),
-        format!(r#"{{"name":"{PLUGIN_NAME}","version":"{PINNED_VERSION}","description":"test"}}"#),
+        format!(r#"{{"name":"{PLUGIN_NAME}","version":"{version}","description":"test"}}"#),
     )?;
     fs::write(
         plugin.join("hooks/hooks.json"),
@@ -74,7 +104,7 @@ fn compile_fake_dcg(root: &Path) -> Result<()> {
     let source = root.join("fake-dcg.rs");
     fs::write(
         &source,
-        format!(r#"fn main() {{ println!("dcg {PINNED_VERSION}"); }}"#),
+        r#"fn main() { let path = std::env::current_exe().unwrap().with_file_name("installed-version"); println!("dcg {}", std::fs::read_to_string(path).unwrap().trim_start_matches('v')); }"#,
     )?;
     let status = std::process::Command::new("rustc")
         .arg(source)
@@ -90,7 +120,7 @@ fn write_installer(root: &Path, fail: bool) -> Result<()> {
     let body = if fail {
         r#"Param([string]$Owner,[string]$Repo,[string]$Version,[string]$Dest,[switch]$NoConfigure,[switch]$Verify); [IO.File]::WriteAllText((Join-Path $Dest 'dcg.exe'), 'broken'); exit 7"#
     } else {
-        r#"Param([string]$Owner,[string]$Repo,[string]$Version,[string]$Dest,[switch]$NoConfigure,[switch]$Verify); if($Owner -ne 'Pimpmuckl' -or $Repo -ne 'destructive_command_guard' -or $Version -ne 'v0.6.8-codexpp.1' -or -not $NoConfigure -or -not $Verify){exit 8}; Copy-Item (Join-Path $PSScriptRoot 'fake-dcg.exe') (Join-Path $Dest 'dcg.exe') -Force"#
+        r#"Param([string]$Owner,[string]$Repo,[string]$Version,[string]$Dest,[switch]$NoConfigure,[switch]$Verify); if($Owner -ne 'Pimpmuckl' -or $Repo -ne 'destructive_command_guard' -or -not $NoConfigure -or -not $Verify){exit 8}; [IO.File]::WriteAllText((Join-Path $Dest 'installed-version'), $Version); Copy-Item (Join-Path $PSScriptRoot 'fake-dcg.exe') (Join-Path $Dest 'dcg.exe') -Force"#
     };
     fs::write(root.join("install.ps1"), body)?;
     Ok(())
@@ -103,7 +133,7 @@ fn write_installer(root: &Path, fail: bool) -> Result<()> {
 set -eu; while (($#)); do if [[ $1 == --dest ]]; then dest=$2; shift; fi; shift; done; printf broken > "$dest/dcg"; exit 7"#
     } else {
         r#"#!/usr/bin/env bash
-set -eu; no_configure=0; verify=0; while (($#)); do case $1 in --version) version=$2; shift;; --dest) dest=$2; shift;; --no-configure) no_configure=1;; --verify) verify=1;; esac; shift; done; [[ $OWNER == Pimpmuckl && $REPO == destructive_command_guard && $version == v0.6.8-codexpp.1 && $no_configure == 1 && $verify == 1 ]]; cp "$(dirname "$0")/fake-dcg" "$dest/dcg"; chmod +x "$dest/dcg""#
+set -eu; no_configure=0; verify=0; while (($#)); do case $1 in --version) version=$2; shift;; --dest) dest=$2; shift;; --no-configure) no_configure=1;; --verify) verify=1;; esac; shift; done; [[ $OWNER == Pimpmuckl && $REPO == destructive_command_guard && $no_configure == 1 && $verify == 1 ]]; printf %s "$version" > "$dest/installed-version"; cp "$(dirname "$0")/fake-dcg" "$dest/dcg"; chmod +x "$dest/dcg""#
     };
     fs::write(root.join("install.sh"), body)?;
     Ok(())
