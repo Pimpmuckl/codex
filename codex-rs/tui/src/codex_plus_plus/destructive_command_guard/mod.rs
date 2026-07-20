@@ -615,6 +615,9 @@ impl DcgManager {
     }
 
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
+        let installed = installed.filter(|target| {
+            matches!(self.managed_marketplace(), Ok(Some((_, current))) if current == **target)
+        });
         let marker = self.binary_path().with_extension("update-available");
         match installed {
             Some(target) => _ = std::fs::write(marker, &target.version),
@@ -625,20 +628,18 @@ impl DcgManager {
 
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
-        use DcgStatus as S;
         let local_status = tokio::time::timeout(
             VERSION_PROBE_TIMEOUT,
             self.detect_status_with(/*probe_latest*/ false),
         )
         .await;
-        if !matches!(local_status, Ok(S::Enabled(_) | S::Disabled(_))) {
-            self.record_update_available(None);
-            return;
-        }
+        let version = match local_status {
+            Ok(DcgStatus::Enabled(version) | DcgStatus::Disabled(version)) => version,
+            Ok(_) => return self.record_update_available(None),
+            Err(_) => return super::welcome::set_dcg_update_available(false),
+        };
         let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
-        let installed =
-            PluginStore::new(self.local_codex_home.clone()).active_plugin_version(&self.plugin_id);
-        let available = marker.is_ok_and(|version| Some(version) == installed);
+        let available = marker.is_ok_and(|cached| cached == version);
         super::welcome::set_dcg_update_available(available);
     }
 

@@ -43,7 +43,6 @@ fn welcome_help_first_and_later_startup_snapshot() {
         .draw(|frame| frame.render_widget(Text::from(wrapped_tip(DCG_UPDATE_TIP)), frame.area()))
         .expect("render update tip");
     insta::assert_snapshot!(terminal.backend().to_string(), @r"
-  Tip: Destructive Command Guard was updated. Use /codexplusplus to upgrade
-  when convenient.
+  Tip: A Destructive Command Guard update is available in /codexplusplus.
     ");
 }
