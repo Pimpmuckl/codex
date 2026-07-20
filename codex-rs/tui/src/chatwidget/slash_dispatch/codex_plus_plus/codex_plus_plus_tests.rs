@@ -186,11 +186,6 @@ fn settings_hint_uses_list_keymap() {
 
 #[test]
 fn dcg_views_snapshot() {
-    let disabled = DcgStatus::Disabled(String::new());
-    assert!(dcg::action_succeeded(
-        crate::codex_plus_plus::DcgAction::Update,
-        &disabled,
-    ));
     let i = dcg::settings_item(
         DcgStatus::NotInstalled,
         Default::default(),

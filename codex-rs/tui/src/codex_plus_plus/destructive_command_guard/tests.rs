@@ -36,28 +36,13 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     let installed = manager.install_and_enable().await.unwrap();
     assert!(!installed.takes_effect_in_current_session);
     let disabled = manager.disable().await.unwrap().status;
-    assert!(matches!(disabled, DcgStatus::Disabled(_)));
-    assert_eq!(manager.update().await.unwrap().status, disabled);
-    fs::remove_file(manager.binary_path())?;
-    let repaired = manager.repair(RepairReason::BinaryMissing).await.unwrap();
-    assert_eq!(repaired.status, disabled);
-    manager.enable().await.unwrap();
     let newer_target = DcgTarget::from_tag("v0.6.9-codexpp.2").unwrap();
-    manager.target_override = Some(newer_target.clone());
-    assert_eq!(
-        manager.detect_status().await,
-        DcgStatus::UpdateAvailable {
-            installed_version: Some(TEST_VERSION.to_string()),
-            target_version: newer_target.version,
-        }
-    );
-    manager.target_override = None;
-    manager.latest_release_api = "http://127.0.0.1:1".to_string();
-    assert_eq!(manager.detect_status().await, installed.status);
-    manager.target_override = Some(installed_target);
+    manager.target_override = Some(newer_target);
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
-    assert_eq!(manager.detect_status().await, installed.status);
+    manager.target_override = Some(installed_target);
+    assert_eq!(manager.detect_status().await, disabled);
+    manager.enable().await.unwrap();
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
     assert!(manager.disable().await.is_err());

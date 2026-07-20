@@ -28,7 +28,6 @@ use codex_core_plugins::store::PluginStore;
 use codex_login::default_client::create_client;
 use codex_plugin::PluginId;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use serde::Deserialize;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -45,8 +44,6 @@ const MARKETPLACE_NAME: &str = "pimpmuckl-dcg";
 const PLUGIN_NAME: &str = "destructive-command-guard";
 const PLUGIN_ID: &str = "destructive-command-guard@pimpmuckl-dcg";
 const MARKETPLACE_SOURCE: &str = "https://github.com/Pimpmuckl/destructive_command_guard.git";
-const LATEST_RELEASE_API: &str =
-    "https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases/latest";
 const RELEASE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 static OPERATION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -103,7 +100,6 @@ pub(crate) struct DcgManager {
     remote_hook_host: bool,
     cwd: PathBuf,
     marketplace_source: String,
-    latest_release_api: String,
     plugin_id: PluginId,
     #[cfg(test)]
     target_override: Option<DcgTarget>,
@@ -119,13 +115,6 @@ struct DcgTarget {
     commit: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    draft: bool,
-    prerelease: bool,
-}
-
 impl DcgManager {
     pub(crate) fn new(app_server: &AppServerSession, config: &Config) -> Result<Self> {
         let app_server_home = app_server
@@ -137,7 +126,6 @@ impl DcgManager {
             remote_hook_host: app_server.uses_remote_workspace(),
             cwd: config.cwd.to_path_buf(),
             marketplace_source: MARKETPLACE_SOURCE.to_string(),
-            latest_release_api: LATEST_RELEASE_API.to_string(),
             plugin_id: PluginId::parse(PLUGIN_ID)?,
             #[cfg(test)]
             target_override: None,
@@ -214,14 +202,16 @@ impl DcgManager {
         };
         match self.resolve_latest_target().await {
             Ok(target) if target.precedence > installed_target.precedence => {
-                #[cfg(not(test))]
-                super::welcome::set_dcg_update_available(true);
+                self.record_update_available(Some(&installed_target));
                 DcgStatus::UpdateAvailable {
                     installed_version: Some(installed_target.version),
                     target_version: target.version,
                 }
             }
-            Ok(_) => status,
+            Ok(_) => {
+                self.record_update_available(None);
+                status
+            }
             Err(_) => status,
         }
     }
@@ -336,16 +326,20 @@ impl DcgManager {
         let manifest =
             AbsolutePathBuf::try_from(marketplace_root.join(".agents/plugins/marketplace.json"))?;
         let prior = prior_target.as_ref();
+        let enabled = plugin_before.enabled;
         if let Some(prior) = &prior_target {
             let switched = self.switch_marketplace_ref(&target.tag).await;
-            self.rollback(Some(prior), &manifest, switched).await?;
+            self.rollback(Some(prior), &manifest, enabled, switched)
+                .await?;
         }
         let verification = self
             .verify_marketplace_checkout(&marketplace_root, &target)
             .await;
-        self.rollback(prior, &manifest, verification).await?;
+        self.rollback(prior, &manifest, enabled, verification)
+            .await?;
         let installation = self.install_plugin(&manifest).await;
-        self.rollback(prior, &manifest, installation).await?;
+        self.rollback(prior, &manifest, enabled, installation)
+            .await?;
         let result = async {
             self.run_installer(&marketplace_root, data_root, &target)
                 .await?;
@@ -370,8 +364,8 @@ impl DcgManager {
                         Err(remove_err) => Err(remove_err),
                     },
                 };
-                let enablement_rollback = self.write_enabled(plugin_before.enabled).await;
-                let result = self.rollback(prior, &manifest, Err(err)).await;
+                let result = self.rollback(prior, &manifest, enabled, Err(err)).await;
+                let enablement_rollback = self.write_enabled(enabled).await;
                 if let Err(rollback_err) = rollback {
                     return result.context(format!("binary rollback also failed: {rollback_err}"));
                 }
@@ -381,8 +375,7 @@ impl DcgManager {
                 return result;
             }
         };
-        #[cfg(not(test))]
-        super::welcome::set_dcg_update_available(false);
+        self.record_update_available(None);
         Ok(DcgChange {
             status,
             takes_effect_in_current_session: false,
@@ -600,12 +593,14 @@ impl DcgManager {
         &self,
         prior: Option<&DcgTarget>,
         manifest: &AbsolutePathBuf,
+        enabled: bool,
         result: Result<T>,
     ) -> Result<T> {
         if let (Some(prior), Err(error)) = (prior, &result)
             && let Err(rollback) = async {
                 self.switch_marketplace_ref(&prior.tag).await?;
                 self.install_plugin(manifest).await?;
+                self.write_enabled(enabled).await?;
                 Result::<()>::Ok(())
             }
             .await
@@ -613,6 +608,25 @@ impl DcgManager {
             bail!("{error:#}; DCG rollback also failed: {rollback:#}");
         }
         result
+    }
+
+    fn record_update_available(&self, installed: Option<&DcgTarget>) {
+        let marker = self.binary_path().with_extension("update-available");
+        match installed {
+            Some(target) => _ = std::fs::write(marker, &target.version),
+            None => _ = std::fs::remove_file(marker),
+        }
+        super::welcome::set_dcg_update_available(installed.is_some());
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn restore_cached_update_available(&self) {
+        let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
+        let installed =
+            PluginStore::new(self.local_codex_home.clone()).active_plugin_version(&self.plugin_id);
+        super::welcome::set_dcg_update_available(
+            marker.is_ok_and(|version| Some(version) == installed),
+        );
     }
 
     async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
@@ -675,18 +689,18 @@ impl DcgManager {
         if let Some(target) = &self.target_override {
             return Ok(target.clone());
         }
-        let release: GitHubRelease = create_client()
-            .get(&self.latest_release_api)
+        let release: serde_json::Value = create_client()
+            .get("https://api.github.com/repos/Pimpmuckl/destructive_command_guard/releases/latest")
             .timeout(RELEASE_PROBE_TIMEOUT)
             .send()
             .await?
             .error_for_status()?
             .json()
             .await?;
-        if release.draft || release.prerelease {
-            bail!("latest DCG release is not published and stable");
-        }
-        let mut target = DcgTarget::from_tag(&release.tag_name)
+        let tag = release["tag_name"]
+            .as_str()
+            .context("latest DCG release has no tag")?;
+        let mut target = DcgTarget::from_tag(tag)
             .context("latest DCG release tag does not match vX.Y.Z-codexpp.N")?;
         let mut command = Command::new("git");
         command

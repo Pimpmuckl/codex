@@ -27,7 +27,6 @@ pub(crate) fn replace_upstream_app_promo(tip: &'static str) -> &'static str {
     }
 }
 
-#[cfg(not(test))]
 pub(super) fn set_dcg_update_available(available: bool) {
     DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
 }
