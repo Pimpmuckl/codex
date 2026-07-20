@@ -12,7 +12,7 @@ pub(crate) const DCG_UPDATE_TIP: &str =
 
 static DCG_NUX_PENDING: AtomicBool = AtomicBool::new(false);
 static DCG_NUX_RENDER_PENDING: AtomicBool = AtomicBool::new(false);
-static DCG_UPDATE_AVAILABLE: AtomicBool = AtomicBool::new(false);
+pub(super) static DCG_UPDATE_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(not(test))]
 pub(crate) fn mark_dcg_nux_pending() {
@@ -25,10 +25,6 @@ pub(crate) fn replace_upstream_app_promo(tip: &'static str) -> &'static str {
     } else {
         tip
     }
-}
-
-pub(super) fn set_dcg_update_available(available: bool) {
-    DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
 }
 
 pub(crate) fn dcg_update_available() -> bool {

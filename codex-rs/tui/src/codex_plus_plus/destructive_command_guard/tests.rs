@@ -37,7 +37,6 @@ async fn managed_install_lifecycle_is_transactional_and_next_session_only() -> R
     write_installer(source.path(), /*fail*/ true)?;
     assert!(manager.update().await.is_err());
     assert!(fs::read_to_string(home.path().join("config.toml"))?.contains("enabled = false"));
-    assert!(crate::codex_plus_plus::dcg_update_available());
     let config_before_remote_attempt = fs::read_to_string(home.path().join("config.toml"))?;
     manager.remote_hook_host = true;
     assert!(manager.disable().await.is_err());

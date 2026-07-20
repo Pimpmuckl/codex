@@ -282,9 +282,7 @@ impl DcgManager {
 
     async fn install_managed(&self, preserve_enablement: bool) -> Result<DcgChange> {
         self.ensure_supported()?;
-        let lock = std::fs::File::create(self.local_codex_home.join(".dcg-update.lock"))?;
-        lock.try_lock_exclusive()
-            .context("another DCG operation is already in progress")?;
+        let _lock = self.mutation_lock()?;
         let target = self.resolve_latest_target().await?;
         let current_marketplace = match self.checkout() {
             Ok(marketplace) => marketplace,
@@ -356,7 +354,8 @@ impl DcgManager {
                 self.write_enabled(false).await?;
             }
             self.trust_managed_hook(&target, disabled).await?;
-            Ok(target.status(disabled))
+            let make: fn(_) -> _ = [DcgStatus::Enabled, DcgStatus::Disabled][disabled as usize];
+            Ok(make(target.version.clone()))
         }
         .await;
         let status = match result {
@@ -372,7 +371,7 @@ impl DcgManager {
                 };
                 let result = self.rollback(prior, &manifest, enabled, Err(err)).await;
                 let available = prior.filter(|old| old.precedence < target.precedence);
-                self.record_update_available(available);
+                self.record_update_notice(available);
                 let enablement_rollback = self.write_enabled(enabled).await;
                 if let Err(rollback_err) = rollback {
                     return result.context(format!("binary rollback also failed: {rollback_err}"));
@@ -383,7 +382,7 @@ impl DcgManager {
                 return result;
             }
         };
-        self.record_update_available(None);
+        self.record_update_notice(None);
         Ok(DcgChange {
             status,
             takes_effect_in_current_session: false,
@@ -433,13 +432,15 @@ impl DcgManager {
             .output()
             .await?;
         let status = String::from_utf8_lossy(&output.stdout);
-        let commit = &target.commit;
-        let expected_oid = format!("# branch.oid {commit}");
+        let expected_oid = format!("# branch.oid {}", target.commit);
         if !output.status.success()
             || !status.lines().any(|line| line == expected_oid)
             || status.lines().any(|line| !line.starts_with("# "))
         {
-            bail!("resolved DCG marketplace checkout is not the clean {commit} tree");
+            bail!(
+                "resolved DCG marketplace checkout is not the clean {} tree",
+                target.commit
+            );
         }
         Ok(())
     }
@@ -530,6 +531,7 @@ impl DcgManager {
 
     async fn set_enabled(&self, enabled: bool) -> Result<DcgChange> {
         self.ensure_supported()?;
+        let _lock = self.mutation_lock()?;
         self.write_enabled(enabled).await?;
         Ok(DcgChange {
             status: self.detect_status().await,
@@ -616,6 +618,12 @@ impl DcgManager {
     }
 
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
+        _ = self
+            .mutation_lock()
+            .map(|_lock| self.record_update_notice(installed));
+    }
+
+    fn record_update_notice(&self, installed: Option<&DcgTarget>) {
         let current = self.checkout();
         let installed = installed.filter(|t| matches!(current, Ok(Some((_, ref x))) if *x == **t));
         let marker = self.binary_path().with_extension("update-available");
@@ -623,7 +631,12 @@ impl DcgManager {
             Some(target) => _ = std::fs::write(marker, &target.version),
             None => _ = std::fs::remove_file(marker),
         }
-        super::welcome::set_dcg_update_available(installed.is_some());
+        super::welcome::DCG_UPDATE_AVAILABLE.store(installed.is_some(), Ordering::Relaxed);
+    }
+
+    fn mutation_lock(&self) -> std::io::Result<std::fs::File> {
+        let lock = std::fs::File::create(self.local_codex_home.join(".dcg-update.lock"))?;
+        lock.try_lock_exclusive().map(|()| lock)
     }
 
     #[cfg(not(test))]
@@ -633,11 +646,11 @@ impl DcgManager {
         let version = match local_status {
             Ok(DcgStatus::Enabled(version) | DcgStatus::Disabled(version)) => version,
             Ok(_) => return self.record_update_available(None),
-            Err(_) => return super::welcome::set_dcg_update_available(false),
+            Err(_) => return super::welcome::DCG_UPDATE_AVAILABLE.store(false, Ordering::Relaxed),
         };
         let marker = std::fs::read_to_string(self.binary_path().with_extension("update-available"));
         let available = marker.is_ok_and(|cached| cached == version);
-        super::welcome::set_dcg_update_available(available);
+        super::welcome::DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
     }
 
     async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
@@ -773,20 +786,12 @@ impl DcgManager {
 }
 
 impl DcgTarget {
-    fn status(&self, disabled: bool) -> DcgStatus {
-        [DcgStatus::Enabled, DcgStatus::Disabled][usize::from(disabled)](self.version.clone())
-    }
-
     fn from_tag(tag: &str) -> Option<Self> {
         let version = tag.strip_prefix('v')?;
         let (base, fork) = version.split_once("-codexpp.")?;
         let mut parts = base.split('.').chain(std::iter::once(fork));
-        let precedence = [
-            parts.next()?.parse().ok()?,
-            parts.next()?.parse().ok()?,
-            parts.next()?.parse().ok()?,
-            parts.next()?.parse().ok()?,
-        ];
+        let mut next = || parts.next()?.parse::<u64>().ok();
+        let precedence = [next()?, next()?, next()?, next()?];
         parts.next().is_none().then_some(Self {
             tag: tag.to_string(),
             version: version.to_string(),
