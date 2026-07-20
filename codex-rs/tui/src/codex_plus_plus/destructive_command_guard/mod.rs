@@ -7,7 +7,6 @@ use crate::legacy_core::config::Config;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-use anyhow::ensure;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigEdit;
@@ -128,11 +127,6 @@ struct GitHubRelease {
     published_at: Option<String>,
 }
 
-struct ManagedMarketplace {
-    root: PathBuf,
-    target: DcgTarget,
-}
-
 impl DcgManager {
     pub(crate) fn new(app_server: &AppServerSession, config: &Config) -> Result<Self> {
         let app_server_home = app_server
@@ -157,7 +151,7 @@ impl DcgManager {
         if let Some(reason) = self.unsupported_reason() {
             return DcgStatus::Unsupported(reason);
         }
-        let marketplace = match self.managed_marketplace() {
+        let (marketplace_root, installed_target) = match self.managed_marketplace() {
             Ok(Some(marketplace)) => marketplace,
             Ok(None) if self.binary_path().is_file() => {
                 return DcgStatus::NeedsRepair(RepairReason::PluginMissing);
@@ -173,20 +167,20 @@ impl DcgManager {
             }
             Err(reason) => return DcgStatus::NeedsRepair(reason),
         };
-        if !marketplace.root.is_dir() {
+        if !marketplace_root.is_dir() {
             return DcgStatus::NeedsRepair(RepairReason::MarketplaceUnavailable);
         }
-        let plugin = match self.read_plugin(&marketplace.root).await {
+        let plugin = match self.read_plugin(&marketplace_root).await {
             Ok(response) => response.plugin.summary,
             Err(_) => return DcgStatus::NeedsRepair(RepairReason::PluginMissing),
         };
         if !plugin.installed {
             return DcgStatus::NeedsRepair(RepairReason::PluginMissing);
         }
-        if plugin.local_version.as_deref() != Some(marketplace.target.version.as_str()) {
+        if plugin.local_version.as_deref() != Some(installed_target.version.as_str()) {
             return DcgStatus::UpdateAvailable {
                 installed_version: plugin.local_version,
-                target_version: marketplace.target.version,
+                target_version: installed_target.version,
             };
         }
         let binary = self.binary_path();
@@ -196,14 +190,14 @@ impl DcgManager {
         let Some(version) = self.reported_version(&binary).await else {
             return DcgStatus::NeedsRepair(RepairReason::BinaryVersionUnreadable);
         };
-        if version != marketplace.target.version {
+        if version != installed_target.version {
             return DcgStatus::UpdateAvailable {
                 installed_version: Some(version),
-                target_version: marketplace.target.version,
+                target_version: installed_target.version,
             };
         }
         let status = if plugin.enabled {
-            let hook = match self.managed_hook(&marketplace.target).await {
+            let hook = match self.managed_hook(&installed_target).await {
                 Ok(Some(hook)) => hook,
                 Ok(None) => return DcgStatus::NeedsRepair(RepairReason::HookMissing),
                 Err(_) => return DcgStatus::NeedsRepair(RepairReason::StatusUnavailable),
@@ -220,11 +214,11 @@ impl DcgManager {
             DcgStatus::Disabled(version)
         };
         match self.resolve_latest_target().await {
-            Ok(target) if target.precedence > marketplace.target.precedence => {
+            Ok(target) if target.precedence > installed_target.precedence => {
                 #[cfg(not(test))]
                 super::welcome::set_dcg_update_available(true);
                 DcgStatus::UpdateAvailable {
-                    installed_version: Some(marketplace.target.version),
+                    installed_version: Some(installed_target.version),
                     target_version: target.version,
                 }
             }
@@ -238,7 +232,7 @@ impl DcgManager {
     }
 
     pub(crate) async fn install_and_enable(&self) -> Result<DcgChange> {
-        self.install_managed().await
+        self.install_managed(/*preserve_enablement*/ false).await
     }
 
     pub(crate) fn try_begin_operation() -> bool {
@@ -270,7 +264,7 @@ impl DcgManager {
     }
 
     pub(crate) async fn update(&self) -> Result<DcgChange> {
-        self.install_managed().await
+        self.install_managed(/*preserve_enablement*/ true).await
     }
 
     pub(crate) async fn repair(&self, reason: RepairReason) -> Result<DcgChange> {
@@ -282,7 +276,9 @@ impl DcgManager {
             | RepairReason::BinaryVersionUnreadable
             | RepairReason::HookMissing
             | RepairReason::HookUntrusted
-            | RepairReason::HookModified => self.install_managed().await,
+            | RepairReason::HookModified => {
+                self.install_managed(/*preserve_enablement*/ true).await
+            }
             RepairReason::MarketplaceConfigMalformed
             | RepairReason::MarketplacePinMismatch
             | RepairReason::HookDisabled
@@ -292,7 +288,7 @@ impl DcgManager {
         }
     }
 
-    async fn install_managed(&self) -> Result<DcgChange> {
+    async fn install_managed(&self, preserve_enablement: bool) -> Result<DcgChange> {
         self.ensure_supported()?;
         let target = self.resolve_latest_target().await?;
         let current_marketplace = match self.managed_marketplace() {
@@ -300,17 +296,9 @@ impl DcgManager {
             Err(reason) => bail!("cannot install while marketplace state is {reason:?}"),
         };
         let (marketplace_root, prior_target) = match current_marketplace {
-            Some(marketplace) if marketplace.target.tag == target.tag => (marketplace.root, None),
-            Some(marketplace) => {
-                let prior_target = marketplace.target;
-                if let Err(err) = self.switch_marketplace_ref(&target.tag).await {
-                    let rollback = self.switch_marketplace_ref(&prior_target.tag).await;
-                    if let Err(rollback_err) = rollback {
-                        bail!("{err:#}; marketplace rollback also failed: {rollback_err:#}");
-                    }
-                    return Err(err);
-                }
-                (marketplace.root, Some(prior_target))
+            Some((marketplace_root, installed_target)) => {
+                let prior_target = (installed_target.tag != target.tag).then_some(installed_target);
+                (marketplace_root, prior_target)
             }
             None => {
                 #[cfg(not(test))]
@@ -338,17 +326,6 @@ impl DcgManager {
                 (marketplace.installed_root.as_path().to_path_buf(), None)
             }
         };
-        if let Err(err) = self
-            .verify_marketplace_checkout(&marketplace_root, &target)
-            .await
-        {
-            if let Some(prior_target) = prior_target
-                && let Err(rollback_err) = self.switch_marketplace_ref(&prior_target.tag).await
-            {
-                bail!("{err:#}; marketplace rollback also failed: {rollback_err:#}");
-            }
-            return Err(err);
-        }
         let plugin_before = self.read_plugin(&marketplace_root).await?.plugin.summary;
         let binary = self.binary_path();
         let data_root = binary.parent().context("DCG binary path has no parent")?;
@@ -363,7 +340,15 @@ impl DcgManager {
         };
         let manifest =
             AbsolutePathBuf::try_from(marketplace_root.join(".agents/plugins/marketplace.json"))?;
-        let _: PluginInstallResponse = self
+        if let Some(prior) = &prior_target {
+            let switched = self.switch_marketplace_ref(&target.tag).await;
+            self.rollback(Some(prior), switched).await?;
+        }
+        let verification = self
+            .verify_marketplace_checkout(&marketplace_root, &target)
+            .await;
+        self.rollback(prior_target.as_ref(), verification).await?;
+        let installation: Result<PluginInstallResponse> = self
             .request_handle
             .request_typed(ClientRequest::PluginInstall {
                 request_id: request_id("dcg-plugin-install"),
@@ -374,37 +359,42 @@ impl DcgManager {
                 },
             })
             .await
-            .context("failed to install the resolved DCG plugin")?;
+            .context("failed to install the resolved DCG plugin");
+        self.rollback(prior_target.as_ref(), installation).await?;
         let result = async {
             self.run_installer(&marketplace_root, data_root, &target)
                 .await?;
             self.verify_binary(&target).await?;
-            self.trust_managed_hook(&target).await
+            self.trust_managed_hook(&target).await?;
+            if preserve_enablement && plugin_before.installed && !plugin_before.enabled {
+                self.write_enabled(false).await?;
+                Ok(DcgStatus::Disabled(target.version))
+            } else {
+                Ok(DcgStatus::Enabled(target.version))
+            }
         }
         .await;
-        if let Err(err) = result {
-            let rollback = match &backup {
-                Some((_, path)) => tokio::fs::copy(path, &binary).await.map(|_| ()),
-                None => match tokio::fs::remove_file(&binary).await {
-                    Ok(()) => Ok(()),
-                    Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => Ok(()),
-                    Err(remove_err) => Err(remove_err),
-                },
-            };
-            let enablement_rollback = self.write_enabled(plugin_before.enabled).await;
-            if let Err(rollback_err) = rollback {
-                bail!("{err:#}; binary rollback also failed: {rollback_err}");
+        let status = match result {
+            Ok(status) => status,
+            Err(err) => {
+                let rollback = match &backup {
+                    Some((_, path)) => tokio::fs::copy(path, &binary).await.map(|_| ()),
+                    None => match tokio::fs::remove_file(&binary).await {
+                        Ok(()) => Ok(()),
+                        Err(remove_err) if remove_err.kind() == ErrorKind::NotFound => Ok(()),
+                        Err(remove_err) => Err(remove_err),
+                    },
+                };
+                let enablement_rollback = self.write_enabled(plugin_before.enabled).await;
+                let result = self.rollback(prior_target.as_ref(), Err(err)).await;
+                if let Err(rollback_err) = rollback {
+                    return result.context(format!("binary rollback also failed: {rollback_err}"));
+                }
+                if let Err(rollback_err) = enablement_rollback {
+                    return result.context(format!("enable rollback failed: {rollback_err:#}"));
+                }
+                return result;
             }
-            if let Err(rollback_err) = enablement_rollback {
-                bail!("{err:#}; plugin enablement rollback also failed: {rollback_err:#}");
-            }
-            return Err(err);
-        }
-        let status = if backup.is_some() && plugin_before.installed && !plugin_before.enabled {
-            self.write_enabled(false).await?;
-            DcgStatus::Disabled(target.version)
-        } else {
-            DcgStatus::Enabled(target.version)
         };
         #[cfg(not(test))]
         super::welcome::set_dcg_update_available(false);
@@ -582,10 +572,9 @@ impl DcgManager {
     }
 
     async fn switch_marketplace_ref(&self, tag: &str) -> Result<()> {
-        let marketplace = serde_json::to_string(MARKETPLACE_NAME)?;
         let response = self
             .write_config_without_reload(replace_config_value(
-                format!("marketplaces.{marketplace}.ref"),
+                format!("marketplaces.\"{MARKETPLACE_NAME}\".ref"),
                 serde_json::json!(tag),
             ))
             .await?;
@@ -608,6 +597,15 @@ impl DcgManager {
         Ok(())
     }
 
+    async fn rollback<T>(&self, prior: Option<&DcgTarget>, result: Result<T>) -> Result<T> {
+        if let (Some(prior), Err(error)) = (prior, &result)
+            && let Err(rollback) = self.switch_marketplace_ref(&prior.tag).await
+        {
+            bail!("{error:#}; marketplace rollback also failed: {rollback:#}");
+        }
+        result
+    }
+
     async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
         Ok(self
             .request_handle
@@ -623,7 +621,9 @@ impl DcgManager {
             .await?)
     }
 
-    fn managed_marketplace(&self) -> std::result::Result<Option<ManagedMarketplace>, RepairReason> {
+    fn managed_marketplace(
+        &self,
+    ) -> std::result::Result<Option<(PathBuf, DcgTarget)>, RepairReason> {
         let home = &self.local_codex_home;
         let contents = match std::fs::read_to_string(home.join("config.toml")) {
             Ok(contents) => contents,
@@ -641,17 +641,8 @@ impl DcgManager {
         };
         #[cfg(test)]
         if let Some(target) = &self.local_marketplace_target {
-            if marketplace.get("source_type").and_then(toml::Value::as_str) != Some("local")
-                || marketplace.get("source").and_then(toml::Value::as_str)
-                    != Some(self.marketplace_source.as_str())
-                || marketplace.get("ref").is_some()
-            {
-                return Err(RepairReason::MarketplacePinMismatch);
-            }
-            return Ok(Some(ManagedMarketplace {
-                root: dunce::simplified(Path::new(&self.marketplace_source)).to_path_buf(),
-                target: target.clone(),
-            }));
+            let root = dunce::simplified(Path::new(&self.marketplace_source)).to_path_buf();
+            return Ok(Some((root, target.clone())));
         }
         let target = marketplace
             .get("ref")
@@ -664,10 +655,10 @@ impl DcgManager {
         {
             return Err(RepairReason::MarketplacePinMismatch);
         }
-        Ok(Some(ManagedMarketplace {
-            root: marketplace_install_root(home).join(MARKETPLACE_NAME),
+        Ok(Some((
+            marketplace_install_root(home).join(MARKETPLACE_NAME),
             target,
-        }))
+        )))
     }
 
     async fn resolve_latest_target(&self) -> Result<DcgTarget> {
@@ -675,7 +666,15 @@ impl DcgManager {
         if let Some(target) = &self.target_override {
             return Ok(target.clone());
         }
-        let mut target = self.fetch_latest_release().await?.into_target()?;
+        let release = self.fetch_latest_release().await?;
+        if release.draft
+            || release.prerelease
+            || release.published_at.as_deref().is_none_or(str::is_empty)
+        {
+            bail!("latest DCG release is not published and stable");
+        }
+        let mut target = DcgTarget::from_tag(&release.tag_name)
+            .context("latest DCG release tag does not match vX.Y.Z-codexpp.N")?;
         let mut command = Command::new("git");
         command
             .args(["ls-remote", self.marketplace_source.as_str()])
@@ -694,22 +693,22 @@ impl DcgManager {
             .map(|(sha, _)| sha.to_string())
             .filter(|sha| sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .context("resolved DCG release tag did not identify an immutable commit")?;
-        ensure!(
-            output.status.success(),
-            "failed to resolve the DCG release tag"
-        );
+        if !output.status.success() {
+            bail!("failed to resolve the DCG release tag");
+        }
         target.commit = Some(commit);
         Ok(target)
     }
 
     async fn fetch_latest_release(&self) -> Result<GitHubRelease> {
-        let response = create_client()
+        Ok(create_client()
             .get(&self.latest_release_api)
             .timeout(RELEASE_PROBE_TIMEOUT)
             .send()
             .await?
-            .error_for_status()?;
-        Ok(response.json().await?)
+            .error_for_status()?
+            .json()
+            .await?)
     }
 
     async fn reported_version(&self, binary: &Path) -> Option<String> {
@@ -756,34 +755,20 @@ impl DcgManager {
 impl DcgTarget {
     fn from_tag(tag: &str) -> Option<Self> {
         let version = tag.strip_prefix('v')?;
-        let (base, revision) = version.split_once("-codexpp.")?;
-        let mut base_parts = base.split('.');
-        let major = base_parts.next()?.parse().ok()?;
-        let minor = base_parts.next()?.parse().ok()?;
-        let patch = base_parts.next()?.parse().ok()?;
-        if base_parts.next().is_some()
-            || revision.is_empty()
-            || !revision.bytes().all(|b| b.is_ascii_digit())
-        {
-            return None;
-        }
-        let revision = revision.parse().ok()?;
+        let captures = regex_lite::Regex::new(r"^v(\d+)\.(\d+)\.(\d+)-codexpp\.(\d+)$")
+            .ok()?
+            .captures(tag)?;
         Some(Self {
             tag: tag.to_string(),
             version: version.to_string(),
-            precedence: [major, minor, patch, revision],
+            precedence: [
+                captures.get(1)?.as_str().parse().ok()?,
+                captures.get(2)?.as_str().parse().ok()?,
+                captures.get(3)?.as_str().parse().ok()?,
+                captures.get(4)?.as_str().parse().ok()?,
+            ],
             commit: None,
         })
-    }
-}
-
-impl GitHubRelease {
-    fn into_target(self) -> Result<DcgTarget> {
-        if self.draft || self.prerelease || self.published_at.as_deref().is_none_or(str::is_empty) {
-            bail!("latest DCG release is not published and stable");
-        }
-        DcgTarget::from_tag(&self.tag_name)
-            .context("latest DCG release tag does not match vX.Y.Z-codexpp.N")
     }
 }
 
