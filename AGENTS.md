@@ -59,6 +59,9 @@ add local requirements but must not weaken these rules.
   maintenance map, not a changelog.
 - Use merged PR numbers as durable history anchors. Include a short commit SHA only for a
   direct-to-main change that has no PR.
+- Link known overlapping upstream issues or PRs in the capability row as
+  `Upstream: openai/codex#NNNNN`; state narrower fork coverage so the fork fix can be retired when
+  upstream lands.
 - Record upstream-owned changes only when they are required seams for a fork capability.
 
 ## Keep validation bounded
