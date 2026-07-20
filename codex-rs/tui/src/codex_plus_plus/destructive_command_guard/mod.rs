@@ -621,7 +621,6 @@ impl DcgManager {
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
         _ = Result::map(self.mutation_lock(), |_| self.write_notice(installed));
     }
-
     fn write_notice(&self, installed: Option<&DcgTarget>) {
         let current = self.checkout();
         let installed = installed.filter(|t| matches!(current, Ok(Some((_, ref x))) if *x == **t));
@@ -632,17 +631,18 @@ impl DcgManager {
         }
         super::welcome::DCG_UPDATE_AVAILABLE.store(installed.is_some(), Ordering::Relaxed);
     }
-
     fn mutation_lock(&self) -> std::io::Result<std::fs::File> {
         let lock = std::fs::File::create(self.local_codex_home.join(".dcg-update.lock"))?;
         lock.try_lock_exclusive().map(|()| lock)
     }
-
     #[cfg(not(test))]
     pub(super) async fn restore_cached_update_available(&self) {
-        let lock = std::fs::File::create(self.local_codex_home.join(".dcg-update.lock"))
-            .and_then(|lock| lock.lock_exclusive().map(|()| lock));
-        let Ok(_lock) = lock else {
+        let path = self.local_codex_home.join(".dcg-update.lock");
+        let lock = tokio::task::spawn_blocking(move || {
+            std::fs::File::create(path).and_then(|lock| lock.lock_exclusive().map(|()| lock))
+        })
+        .await;
+        let Ok(Ok(_lock)) = lock else {
             return;
         };
         let local_status =
