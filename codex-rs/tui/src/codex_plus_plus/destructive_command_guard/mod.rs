@@ -137,7 +137,6 @@ impl DcgManager {
     pub(crate) async fn detect_status(&self) -> DcgStatus {
         self.status(/*probe_latest*/ true).await
     }
-
     async fn status(&self, probe_latest: bool) -> DcgStatus {
         if let Some(reason) = self.unsupported_reason() {
             return DcgStatus::Unsupported(reason);
@@ -553,7 +552,6 @@ impl DcgManager {
         }
         Ok(())
     }
-
     async fn switch_marketplace_ref(&self, tag: &str) -> Result<()> {
         if self.marketplace_source != MARKETPLACE_SOURCE {
             return Ok(());
@@ -615,7 +613,6 @@ impl DcgManager {
         }
         result
     }
-
     fn record_update_available(&self, installed: Option<&DcgTarget>) {
         _ = Result::map(self.mutation_lock(), |_| self.write_notice(installed));
     }
@@ -634,7 +631,17 @@ impl DcgManager {
         lock.try_lock_exclusive().map(|()| lock)
     }
     #[cfg(not(test))]
-    pub(super) async fn restore_cached_update_available(&self) {
+    pub(super) fn restore_cached_update_available(&self) {
+        let available = self.unsupported_reason().is_none()
+            && std::fs::read_to_string(self.binary_path().with_extension("update-available"))
+                .is_ok_and(|version| DcgTarget::from_tag(&format!("v{version}")).is_some());
+        super::welcome::DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
+    }
+    #[cfg(not(test))]
+    pub(super) async fn reconcile_and_detect(self) {
+        if self.unsupported_reason().is_some() {
+            return;
+        }
         let restore = async {
             let _lock = loop {
                 if let Ok(lock) = self.mutation_lock() {
@@ -651,14 +658,9 @@ impl DcgManager {
             let available = marker.is_ok_and(|cached| cached == version);
             super::welcome::DCG_UPDATE_AVAILABLE.store(available, Ordering::Relaxed);
         };
-        if tokio::time::timeout(VERSION_PROBE_TIMEOUT, restore)
-            .await
-            .is_err()
-        {
-            super::welcome::DCG_UPDATE_AVAILABLE.store(false, Ordering::Relaxed);
-        }
+        _ = tokio::time::timeout(VERSION_PROBE_TIMEOUT, restore).await;
+        self.detect_status().await;
     }
-
     async fn write_config_without_reload(&self, edit: ConfigEdit) -> Result<ConfigWriteResponse> {
         Ok(self
             .request_handle
@@ -711,7 +713,6 @@ impl DcgManager {
             target,
         )))
     }
-
     async fn resolve_latest_target(&self) -> Result<DcgTarget> {
         #[cfg(test)]
         if let Some(target) = &self.target_override {
@@ -790,7 +791,6 @@ impl DcgManager {
         Ok(())
     }
 }
-
 impl DcgTarget {
     fn from_tag(tag: &str) -> Option<Self> {
         let version = tag.strip_prefix('v')?;

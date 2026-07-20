@@ -72,7 +72,7 @@ pub(crate) async fn start_dcg_update_detection(
     config: &crate::legacy_core::config::Config,
 ) {
     if let Ok(manager) = DcgManager::new(app_server, config) {
-        manager.restore_cached_update_available().await;
-        tokio::spawn(async move { manager.detect_status().await });
+        manager.restore_cached_update_available();
+        tokio::spawn(manager.reconcile_and_detect());
     }
 }
