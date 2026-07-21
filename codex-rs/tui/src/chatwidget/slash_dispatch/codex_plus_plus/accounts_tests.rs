@@ -140,8 +140,8 @@ fn space_stages_and_escape_cancels_without_writing() {
     assert_matches!(rx.try_recv(), Err(_));
 }
 
-#[test]
-fn enter_surfaces_save_failure_snapshot() {
+#[tokio::test]
+async fn enter_surfaces_save_failure_snapshot() {
     let temp = tempfile::tempdir().expect("temp dir");
     let rows = vec![account_row(
         "acct_missing",
@@ -158,8 +158,8 @@ fn enter_surfaces_save_failure_snapshot() {
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
-    let cell = match rx.try_recv() {
-        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+    let cell = match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+        Ok(Some(AppEvent::InsertHistoryCell(cell))) => cell,
         _ => panic!("expected save result"),
     };
     insta::assert_snapshot!(

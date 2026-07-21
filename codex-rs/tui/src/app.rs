@@ -1041,7 +1041,11 @@ See the Codex keymap documentation for supported actions and examples."
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
         let weekly_window_scheduler = app_server.uses_embedded_app_server().then(|| {
-            crate::codex_plus_plus::WeeklyWindowScheduler::spawn(config.clone(), model.clone())
+            crate::codex_plus_plus::WeeklyWindowScheduler::spawn(
+                config.clone(),
+                model.clone(),
+                app_event_tx.clone(),
+            )
         });
         let mut app = Self {
             model_catalog,

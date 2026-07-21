@@ -863,8 +863,32 @@ async fn logout_clears_imported_accounts_that_startup_would_select() {
     save_root_test_auth(codex_home.path(), "account-a");
     let manager = test_auth_manager(codex_home.path()).await;
     assert_eq!(manager.active_account_id(), Some(first.id.clone()));
-
-    assert!(manager.logout().await.expect("logout"));
+    let reset_lease = store
+        .acquire_reset_mutation_lease(&second.id)
+        .expect("acquire reset lease");
+    let logout_manager = Arc::clone(&manager);
+    let logout = tokio::spawn(async move { logout_manager.logout().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while store.list().expect("list accounts")[0].enabled {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("account disabled");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        store
+            .try_acquire_reset_mutation_lease(&first.id)
+            .expect("inspect reset lease")
+            .is_none()
+    );
+    assert!(store.account_home(&first.id).join("auth.json").is_file());
+    drop(reset_lease);
+    tokio::time::timeout(std::time::Duration::from_secs(5), logout)
+        .await
+        .expect("logout completed")
+        .expect("logout task")
+        .expect("logout");
 
     assert_eq!(manager.active_account_id(), None);
     assert!(manager.auth_cached().is_none());

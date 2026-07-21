@@ -236,7 +236,7 @@ impl App {
         true
     }
 
-    pub(super) async fn refresh_in_memory_config_from_disk(&mut self) -> Result<()> {
+    pub(crate) async fn refresh_in_memory_config_from_disk(&mut self) -> Result<()> {
         let mut config = self
             .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;

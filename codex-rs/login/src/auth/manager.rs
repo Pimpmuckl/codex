@@ -3015,13 +3015,14 @@ impl AuthManager {
             .await
             .map_err(|_| std::io::Error::other("auth refresh lock is closed"))?;
         let auth_locks = self.acquire_managed_auth_refresh_locks().await?;
+        let (auth_locks, disabled) = self.quiesce_managed_account_resets(auth_locks).await?;
         let removed = self.logout_all_managed_auth(&auth_locks)?;
         // Always reload to clear any cached auth (even if file absent).
         self.clear_external_auth();
         self.clear_active_imported_account();
         self.reload_unlocked(Some(auth_locks.guard_for(&self.codex_home)?))
             .await;
-        Ok(removed)
+        Ok(disabled | removed)
     }
 
     pub async fn logout_with_revoke(&self) -> std::io::Result<bool> {
@@ -3030,7 +3031,8 @@ impl AuthManager {
             .acquire()
             .await
             .map_err(|_| std::io::Error::other("auth refresh lock is closed"))?;
-        let mut auth_locks = self.acquire_managed_auth_refresh_locks().await?;
+        let auth_locks = self.acquire_managed_auth_refresh_locks().await?;
+        let (mut auth_locks, disabled) = self.quiesce_managed_account_resets(auth_locks).await?;
         auth_locks.release_index_lock();
         self.revoke_managed_auth(&auth_locks).await;
         auth_locks.reacquire_index_lock().await?;
@@ -3040,7 +3042,7 @@ impl AuthManager {
         self.clear_active_imported_account();
         self.reload_unlocked(Some(auth_locks.guard_for(&self.codex_home)?))
             .await;
-        Ok(result)
+        Ok(disabled | result)
     }
 
     /// Returns the precise kind of credentials backing the current authentication.

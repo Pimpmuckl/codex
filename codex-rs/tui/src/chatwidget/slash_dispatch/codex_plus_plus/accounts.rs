@@ -134,17 +134,22 @@ fn accounts_settings_params(
                     }),
                 }),
                 actions: vec![Box::new(move |tx| {
-                    let cell = match persist_account_automation(
-                        &AccountStore::new(codex_home.clone()),
-                        &choices_on_save,
-                    ) {
-                        Ok(()) => crate::history_cell::new_info_event(
-                            "Account automation settings updated.".to_string(),
-                            /*hint*/ None,
-                        ),
-                        Err(()) => crate::history_cell::new_error_event(save_error_message()),
-                    };
-                    tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                    let codex_home = codex_home.clone();
+                    let choices = Arc::clone(&choices_on_save);
+                    let tx = tx.clone();
+                    let _task = tokio::task::spawn_blocking(move || {
+                        let cell = match persist_account_automation(
+                            &AccountStore::new(codex_home),
+                            &choices,
+                        ) {
+                            Ok(()) => crate::history_cell::new_info_event(
+                                "Account automation settings updated.".to_string(),
+                                /*hint*/ None,
+                            ),
+                            Err(()) => crate::history_cell::new_error_event(save_error_message()),
+                        };
+                        tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
+                    });
                 })],
                 dismiss_on_select: true,
                 ..Default::default()
@@ -201,24 +206,22 @@ fn persist_account_automation(
     store: &AccountStore,
     choices: &[Arc<AccountAutomationChoice>],
 ) -> Result<(), ()> {
-    for choice in choices {
+    let updates = choices.iter().filter_map(|choice| {
         let automation_enabled = choice.automation_enabled.load(Ordering::Relaxed);
-        if automation_enabled == choice.initial_automation_enabled {
-            continue;
+        (automation_enabled != choice.initial_automation_enabled)
+            .then_some((&choice.id, automation_enabled))
+    });
+    match store.set_automation_enabled_batch(updates) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            warn!("an account disappeared while saving automation settings");
+            Err(())
         }
-        match store.set_automation_enabled(&choice.id, automation_enabled) {
-            Ok(true) => {}
-            Ok(false) => {
-                warn!(account_id = %choice.id, "account disappeared while saving automation settings");
-                return Err(());
-            }
-            Err(err) => {
-                warn!(account_id = %choice.id, error = %err, "failed to save account automation setting");
-                return Err(());
-            }
+        Err(err) => {
+            warn!(error = %err, "failed to save account automation settings");
+            Err(())
         }
     }
-    Ok(())
 }
 
 fn save_error_message() -> String {

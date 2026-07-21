@@ -44,6 +44,8 @@ impl ChatWidget {
         let params = codex_plus_plus_settings_params(
             self.config.automatic_account_selection,
             self.config.weekly_usage_window_auto_start,
+            crate::codex_plus_plus::auto_redeem_resets_settings(&self.config.config_layer_stack)
+                .is_some(),
             self.config.model_capacity_retry_mode,
             crate::codex_plus_plus::user_message_inbox_enabled(&self.config.config_layer_stack),
             self.weekly_start_supported,
@@ -65,6 +67,16 @@ impl ChatWidget {
         self.config.weekly_usage_window_auto_start = weekly;
         self.config.model_capacity_retry_mode = capacity;
         self.add_info_message(persistence_success_message(), /*hint*/ None);
+    }
+
+    pub(crate) fn sync_codex_plus_plus_settings_config(
+        &mut self,
+        config: &crate::legacy_core::config::Config,
+    ) {
+        self.config.automatic_account_selection = config.automatic_account_selection;
+        self.config.weekly_usage_window_auto_start = config.weekly_usage_window_auto_start;
+        self.config.model_capacity_retry_mode = config.model_capacity_retry_mode;
+        self.config.config_layer_stack = config.config_layer_stack.clone();
     }
 
     pub(crate) fn codex_plus_plus_settings_persistence_failed(&mut self, err: String) {
@@ -92,6 +104,7 @@ impl ChatWidget {
 struct SettingsSelection {
     automatic: Arc<AtomicBool>,
     weekly: Arc<AtomicBool>,
+    auto_redeem: Arc<AtomicBool>,
     capacity_indefinite: Arc<AtomicBool>,
     user_message_inbox: Arc<AtomicBool>,
 }
@@ -109,6 +122,7 @@ fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
 fn codex_plus_plus_settings_params(
     current_automatic: AutomaticAccountSelection,
     current_weekly: WeeklyUsageWindowAutoStart,
+    current_auto_redeem: bool,
     current_capacity: ModelCapacityRetryMode,
     current_user_message_inbox: bool,
     weekly_supported: bool,
@@ -118,6 +132,7 @@ fn codex_plus_plus_settings_params(
     let selection = SettingsSelection {
         automatic: Arc::new(AtomicBool::new(current_automatic == AutomaticOn)),
         weekly: Arc::new(AtomicBool::new(current_weekly == WeeklyOn)),
+        auto_redeem: Arc::new(AtomicBool::new(current_auto_redeem)),
         capacity_indefinite: Arc::new(AtomicBool::new(current_capacity == CapacityIndefinite)),
         user_message_inbox: Arc::new(AtomicBool::new(current_user_message_inbox)),
     };
@@ -139,6 +154,13 @@ fn codex_plus_plus_settings_params(
             "Start unused weekly windows",
             "Keep imported accounts ready to use.",
             Arc::clone(&selection.weekly),
+            selection.clone(),
+            true,
+        ));
+        items.push(settings_item(
+            "Auto-redeem usage resets (Experimental)",
+            "Use earned resets before expiry or a distant weekly reset.",
+            Arc::clone(&selection.auto_redeem),
             selection.clone(),
             true,
         ));
@@ -196,6 +218,8 @@ fn settings_item(
                         WeeklyOff
                     }
                 }),
+                auto_redeem_resets: save_weekly
+                    .then(|| selection.auto_redeem.load(Ordering::Relaxed)),
                 model_capacity_retry_mode: if selection.capacity_indefinite.load(Ordering::Relaxed)
                 {
                     CapacityIndefinite

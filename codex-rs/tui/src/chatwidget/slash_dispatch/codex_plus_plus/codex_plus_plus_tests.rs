@@ -29,6 +29,7 @@ fn settings_view(
             codex_plus_plus_settings_params(
                 automatic,
                 weekly,
+                /*current_auto_redeem*/ false,
                 capacity,
                 /*current_user_message_inbox*/ false,
                 weekly_supported,
@@ -96,6 +97,7 @@ fn unsupported_settings_save_only_the_visible_settings() {
         Ok(AppEvent::PersistCodexPlusPlusSettings {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: None,
+            auto_redeem_resets: None,
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
             user_message_inbox: UserMessageInbox::Disabled,
         })
@@ -119,6 +121,7 @@ fn weekly_setting_saves_full_selection() {
         Ok(AppEvent::PersistCodexPlusPlusSettings {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Disabled),
+            auto_redeem_resets: Some(false),
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
             user_message_inbox: UserMessageInbox::Disabled,
         })
@@ -135,6 +138,7 @@ fn capacity_setting_saves_indefinite_mode() {
 
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
@@ -145,6 +149,7 @@ fn capacity_setting_saves_indefinite_mode() {
         Ok(AppEvent::PersistCodexPlusPlusSettings {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Enabled),
+            auto_redeem_resets: Some(false),
             model_capacity_retry_mode: ModelCapacityRetryMode::Indefinite,
             user_message_inbox: UserMessageInbox::Enabled,
         })

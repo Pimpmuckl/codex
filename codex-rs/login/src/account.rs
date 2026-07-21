@@ -113,6 +113,19 @@ impl AccountStore {
         root_store_mode: AuthCredentialsStoreMode,
         root_keyring_backend_kind: AuthKeyringBackendKind,
     ) -> std::io::Result<AccountProfile> {
+        let _topology_lease = self.acquire_account_topology_lease()?;
+        let source_account_id = {
+            let root_refresh_guard = AuthRefreshGuard::acquire(&self.codex_home)?;
+            let root_auth = load_auth_dot_json_with_guard(
+                &self.codex_home,
+                root_store_mode,
+                root_keyring_backend_kind,
+                &root_refresh_guard,
+            )?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not logged in"))?;
+            account_id_for_auth(&root_auth)?
+        };
+        let _reset_lease = self.acquire_reset_mutation_lease(&source_account_id)?;
         let root_refresh_guard = AuthRefreshGuard::acquire(&self.codex_home)?;
         let root_auth = load_auth_dot_json_with_guard(
             &self.codex_home,
@@ -121,10 +134,14 @@ impl AccountStore {
             &root_refresh_guard,
         )?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not logged in"))?;
+        if account_id_for_auth(&root_auth)? != source_account_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "current account changed while preparing import; retry",
+            ));
+        }
         let mut auth = root_auth.clone();
         let imported_from_root_marker = is_root_account_marker(&auth);
-        let source_account_id = account_id_for_auth(&auth)?;
-        let _reset_lease = self.acquire_reset_mutation_lease(&source_account_id)?;
         let account_home = self.account_home(&source_account_id);
         let account_refresh_guard = AuthRefreshGuard::acquire(&account_home)?;
         if imported_from_root_marker {

@@ -180,7 +180,7 @@ fn is_unauthorized(err: &anyhow::Error) -> bool {
     })
 }
 
-fn login_required(err: &anyhow::Error) -> bool {
+pub(crate) fn login_required(err: &anyhow::Error) -> bool {
     err.chain().any(|source| {
         source
             .downcast_ref::<RefreshTokenFailedError>()

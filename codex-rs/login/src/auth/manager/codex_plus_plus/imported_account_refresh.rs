@@ -58,6 +58,8 @@ pub(in crate::auth::manager) struct ManagedAuthRefreshLocks {
     index_readable: bool,
     index_guard: Option<AccountLease>,
     refresh_guards: Vec<AuthRefreshGuard>,
+    topology_lease: Option<AccountLease>,
+    _reset_leases: Vec<crate::ResetMutationLease>,
 }
 
 impl ManagedAuthRefreshLocks {
@@ -125,6 +127,18 @@ impl AuthManager {
             .map_err(std::io::Error::other)?
     }
 
+    async fn reacquire_managed_auth_refresh_locks(
+        &self,
+        topology_lease: AccountLease,
+    ) -> std::io::Result<ManagedAuthRefreshLocks> {
+        let codex_home = self.codex_home.clone();
+        tokio::task::spawn_blocking(move || {
+            acquire_managed_auth_refresh_locks_with_topology(&codex_home, topology_lease)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
     pub(in crate::auth::manager) async fn revoke_managed_auth(
         &self,
         locks: &ManagedAuthRefreshLocks,
@@ -190,6 +204,44 @@ impl AuthManager {
                 tracing::warn!("failed to revoke auth tokens during logout: {err}");
             }
         }
+    }
+
+    pub(in crate::auth::manager) async fn quiesce_managed_account_resets(
+        &self,
+        mut auth_locks: ManagedAuthRefreshLocks,
+    ) -> std::io::Result<(ManagedAuthRefreshLocks, bool)> {
+        let account_homes = auth_locks.account_homes.clone();
+        let expected_account_homes = account_homes.clone();
+        let disabled = if auth_locks.index_readable {
+            auth_locks.account_store.disable_all_unlocked()?
+        } else {
+            false
+        };
+        let topology_lease = auth_locks
+            .topology_lease
+            .take()
+            .ok_or_else(|| std::io::Error::other("account topology lease is missing"))?;
+        let account_store = auth_locks.account_store.clone();
+        drop(auth_locks);
+        let reset_leases = tokio::task::spawn_blocking(move || {
+            account_homes
+                .iter()
+                .map(|account_home| account_store.wait_for_reset_mutation_home_idle(account_home))
+                .collect::<std::io::Result<Vec<_>>>()
+        })
+        .await
+        .map_err(std::io::Error::other)??;
+        let mut auth_locks = self
+            .reacquire_managed_auth_refresh_locks(topology_lease)
+            .await?;
+        if auth_locks.account_homes != expected_account_homes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "account set changed while preparing logout; retry",
+            ));
+        }
+        auth_locks._reset_leases = reset_leases;
+        Ok((auth_locks, disabled))
     }
 
     pub(in crate::auth::manager) async fn recover_terminal_imported_refresh(
@@ -268,7 +320,8 @@ impl AuthManager {
         &self,
         auth_locks: &ManagedAuthRefreshLocks,
     ) -> std::io::Result<bool> {
-        let mut removed = logout_all_stores_with_guard(
+        let mut removed = auth_locks.disable_all()?;
+        removed |= logout_all_stores_with_guard(
             &self.codex_home,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
@@ -282,7 +335,6 @@ impl AuthManager {
                 auth_locks.guard_for(account_home)?,
             )?;
         }
-        removed |= auth_locks.disable_all()?;
         Ok(removed)
     }
 
@@ -322,6 +374,15 @@ fn acquire_refresh_file_lock(auth_home: &Path) -> std::io::Result<AuthRefreshGua
 fn acquire_managed_auth_refresh_locks(
     codex_home: &Path,
 ) -> std::io::Result<ManagedAuthRefreshLocks> {
+    let topology_lease =
+        AccountStore::new(codex_home.to_path_buf()).acquire_account_topology_lease()?;
+    acquire_managed_auth_refresh_locks_with_topology(codex_home, topology_lease)
+}
+
+fn acquire_managed_auth_refresh_locks_with_topology(
+    codex_home: &Path,
+    topology_lease: AccountLease,
+) -> std::io::Result<ManagedAuthRefreshLocks> {
     loop {
         let account_store = AccountStore::new(codex_home.to_path_buf());
         let (account_homes, index_readable) = file_account_homes(&account_store)?;
@@ -342,6 +403,8 @@ fn acquire_managed_auth_refresh_locks(
                 index_readable,
                 index_guard: Some(index_guard),
                 refresh_guards,
+                topology_lease: Some(topology_lease),
+                _reset_leases: Vec::new(),
             });
         }
     }

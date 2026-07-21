@@ -1,0 +1,6 @@
+---
+source: tui/src/codex_plus_plus/auto_redeem_resets_tests.rs
+assertion_line: 142
+expression: text
+---
+• Codex++ auto-redeemed a usage reset for Primary.
