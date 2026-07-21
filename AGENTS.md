@@ -69,6 +69,9 @@ add local requirements but must not weaken these rules.
 - Serialize heavyweight Rust validation. Keep Cargo targets inside their worktree, default Cargo
   builds and Rust test harnesses to four threads, and select `--lib` or one exact `--test` target
   for focused tests.
+- Prefer non-mutating lint checks such as `just clippy`, scoped to the narrowest crate and target.
+  During upstream integrations, do not run `just fix`: it may rewrite upstream-owned code. Fix
+  only verified fork-owned or required seam findings.
 - Ask before validation that could materially load the workstation. Prefer narrow local evidence
   and the existing upstream CI workflows; do not add fork-specific test workflows, shared target
   caches, or target plumbing.
