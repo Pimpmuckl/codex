@@ -1,4 +1,5 @@
 use super::*;
+use codex_login::AccountStore;
 
 const RATE_LIMIT_RESET_REQUEST_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 const RATE_LIMIT_RESET_DETAILS_REQUEST_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
@@ -53,7 +54,31 @@ impl AccountRequestProcessor {
             return Err(invalid_request("creditId must not be empty"));
         }
 
+        let active_account_id = self.auth_manager.active_account_id();
+        let _reset_lease = if let Some(account_id) = active_account_id.as_ref() {
+            let store = AccountStore::new(self.config.codex_home.to_path_buf());
+            let account_id = account_id.clone();
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    store.acquire_reset_mutation_lease(&account_id)
+                })
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to join rate limit reset lease task: {err}"))
+                })?
+                .map_err(|err| {
+                    internal_error(format!("failed to acquire rate limit reset lease: {err}"))
+                })?,
+            )
+        } else {
+            None
+        };
         let client = self.rate_limit_reset_backend_client().await?;
+        if self.auth_manager.active_account_id() != active_account_id {
+            return Err(internal_error(
+                "active imported account changed while preparing rate limit reset",
+            ));
+        }
         let request_timeout = RATE_LIMIT_RESET_REQUEST_TIMEOUT;
         #[cfg(debug_assertions)]
         let request_timeout = std::env::var(RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR)

@@ -14,6 +14,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AccountStore;
+use codex_login::AuthKeyringBackendKind;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -270,6 +272,46 @@ async fn consume_timeout_releases_account_auth_queue() -> Result<()> {
         mcp.read_stream_until_response_message(RequestId::Integer(account_id)),
     )
     .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn imported_account_consume_waits_for_shared_reset_lease() -> Result<()> {
+    let (codex_home, server) = chatgpt_test_context().await?;
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let account = store.import_current(
+        /*label*/ None,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let reset_lease = store.acquire_reset_mutation_lease(&account.id)?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "code": "reset", "windows_reset": 2 })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut mcp = initialized_app_server(codex_home.path()).await?;
+    let request_id = send_consume_reset_credit(&mut mcp, "request-locked").await?;
+    assert!(
+        timeout(
+            std::time::Duration::from_millis(/*millis*/ 100),
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await
+        .is_err()
+    );
+    drop(reset_lease);
+    assert_eq!(
+        read_response::<ConsumeAccountRateLimitResetCreditResponse>(&mut mcp, request_id).await?,
+        ConsumeAccountRateLimitResetCreditResponse {
+            outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+        }
+    );
     Ok(())
 }
 
