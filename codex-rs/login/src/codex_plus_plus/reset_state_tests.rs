@@ -157,6 +157,14 @@ async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
     };
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     drop(held);
+    let error = match store
+        .acquire_reset_mutation_lease_for_auth(&auth, Instant::now())
+        .await
+    {
+        Ok(_) => panic!("expected expired deadline"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(
         store
             .acquire_reset_mutation_lease_for_auth(&auth, Instant::now() + Duration::from_secs(1),)

@@ -80,6 +80,9 @@ impl AccountRequestProcessor {
                     internal_error(format!("failed to acquire rate limit reset lease: {err}"))
                 }
             })?;
+        if Instant::now() >= request_deadline {
+            return Err(internal_error("rate limit reset consume timed out"));
+        }
         let response = tokio::time::timeout(
             request_deadline.saturating_duration_since(Instant::now()),
             async {

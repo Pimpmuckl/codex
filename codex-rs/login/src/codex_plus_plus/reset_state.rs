@@ -96,15 +96,19 @@ impl AccountStore {
             return Ok(None);
         }
         loop {
+            if Instant::now() >= deadline {
+                return Err(reset_lease_timeout());
+            }
             if let Some(lease) = self.try_acquire_reset_mutation_lease(&account_id)? {
-                return Ok(Some(lease));
+                if Instant::now() < deadline {
+                    return Ok(Some(lease));
+                }
+                drop(lease);
+                return Err(reset_lease_timeout());
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "rate limit reset lease acquisition timed out",
-                ));
+                return Err(reset_lease_timeout());
             }
             tokio::time::sleep((deadline - now).min(RESET_LEASE_POLL_INTERVAL)).await;
         }
@@ -267,6 +271,13 @@ fn write_state(path: &Path, state: &PersistedState) -> io::Result<()> {
 
 fn invalid_state(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn reset_lease_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "rate limit reset lease acquisition timed out",
+    )
 }
 
 #[cfg(test)]
