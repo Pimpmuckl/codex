@@ -1,6 +1,4 @@
 use super::*;
-use crate::token_data::IdTokenInfo;
-use crate::token_data::TokenData;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -117,18 +115,12 @@ fn bad_or_newer_state_fails_closed_without_replacement() {
     }
 }
 
-#[test]
-fn imported_account_lookup_uses_the_exact_token_identity() {
+#[tokio::test]
+async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
     let (home, store, _account_id) = test_store();
-    let tokens = TokenData {
-        id_token: IdTokenInfo {
-            chatgpt_account_id: Some("workspace-a".into()),
-            ..IdTokenInfo::default()
-        },
-        access_token: "access".into(),
-        refresh_token: "refresh".into(),
-        account_id: Some("workspace-a".into()),
-    };
+    let auth =
+        CodexAuth::from_external_chatgpt_tokens("e30.e30.c2ln", "workspace-a", None).unwrap();
+    let tokens = auth.get_token_data().unwrap();
     let account_id = super::super::account_id_for_token_data(&tokens).unwrap();
     let account_home = home.path().join("accounts").join(account_id.as_str());
     std::fs::create_dir_all(&account_home).unwrap();
@@ -146,14 +138,30 @@ fn imported_account_lookup_uses_the_exact_token_identity() {
     )
     .unwrap();
 
-    assert_eq!(
-        store.imported_account_id_for_token_data(&tokens).unwrap(),
-        Some(account_id)
+    let held = store.acquire_reset_mutation_lease(&account_id).unwrap();
+    let other =
+        CodexAuth::from_external_chatgpt_tokens("e30.e30.c2ln", "workspace-b", None).unwrap();
+    assert!(
+        store
+            .acquire_reset_mutation_lease_for_auth(&other, Instant::now())
+            .await
+            .unwrap()
+            .is_none()
     );
-    let mut other = tokens;
-    other.account_id = Some("workspace-b".into());
-    assert_eq!(
-        store.imported_account_id_for_token_data(&other).unwrap(),
-        None
+    let error = match store
+        .acquire_reset_mutation_lease_for_auth(&auth, Instant::now() + Duration::from_millis(10))
+        .await
+    {
+        Ok(_) => panic!("expected lease timeout"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    drop(held);
+    assert!(
+        store
+            .acquire_reset_mutation_lease_for_auth(&auth, Instant::now() + Duration::from_secs(1),)
+            .await
+            .unwrap()
+            .is_some()
     );
 }

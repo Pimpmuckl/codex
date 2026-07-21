@@ -1,6 +1,7 @@
 use super::AccountId;
 use super::AccountStore;
 use super::replace_file;
+use crate::CodexAuth;
 use crate::account_lease::AccountLease;
 use rand::RngCore as _;
 use serde::Deserialize;
@@ -11,10 +12,13 @@ use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
 const STATE_FILE: &str = "rate-limit-reset-state.json";
 const LOCK_FILE: &str = "rate-limit-reset.lock";
 const MAX_STATE_BYTES: u64 = 4 * 1024;
+const RESET_LEASE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const STATE_VERSION: u8 = 1;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,6 +68,48 @@ impl PersistedState {
 }
 
 impl AccountStore {
+    pub async fn acquire_reset_mutation_lease_for_auth(
+        &self,
+        auth: &CodexAuth,
+        deadline: Instant,
+    ) -> io::Result<Option<ResetMutationLease>> {
+        let account_id = match auth {
+            CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
+                let tokens = auth.get_token_data()?;
+                match super::account_id_for_token_data(&tokens) {
+                    Ok(account_id) => account_id,
+                    Err(err) if err.kind() == io::ErrorKind::InvalidInput => return Ok(None),
+                    Err(err) => return Err(err),
+                }
+            }
+            CodexAuth::ApiKey(_)
+            | CodexAuth::Headers(_)
+            | CodexAuth::AgentIdentity(_)
+            | CodexAuth::PersonalAccessToken(_)
+            | CodexAuth::BedrockApiKey(_) => return Ok(None),
+        };
+        if !self
+            .file_account_profiles()?
+            .into_iter()
+            .any(|(profile, _)| profile.id == account_id)
+        {
+            return Ok(None);
+        }
+        loop {
+            if let Some(lease) = self.try_acquire_reset_mutation_lease(&account_id)? {
+                return Ok(Some(lease));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "rate limit reset lease acquisition timed out",
+                ));
+            }
+            tokio::time::sleep((deadline - now).min(RESET_LEASE_POLL_INTERVAL)).await;
+        }
+    }
+
     pub fn acquire_reset_mutation_lease(
         &self,
         account_id: &AccountId,

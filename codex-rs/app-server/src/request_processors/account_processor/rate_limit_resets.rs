@@ -1,5 +1,6 @@
 use super::*;
 use codex_login::AccountStore;
+use std::time::Instant;
 
 const RATE_LIMIT_RESET_REQUEST_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 const RATE_LIMIT_RESET_DETAILS_REQUEST_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
@@ -54,46 +55,6 @@ impl AccountRequestProcessor {
             return Err(invalid_request("creditId must not be empty"));
         }
 
-        let Some(auth) = self.auth_manager.auth().await else {
-            return Err(invalid_request(
-                "codex account authentication required for rate limit reset credits",
-            ));
-        };
-        let client = self.rate_limit_reset_backend_client(&auth)?;
-        let store = AccountStore::new(self.config.codex_home.to_path_buf());
-        let reset_account_id = match &auth {
-            CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
-                let tokens = auth.get_token_data().map_err(|err| {
-                    internal_error(format!("failed to read rate limit reset identity: {err}"))
-                })?;
-                store
-                    .imported_account_id_for_token_data(&tokens)
-                    .map_err(|err| {
-                        internal_error(format!("failed to resolve imported reset account: {err}"))
-                    })?
-            }
-            CodexAuth::ApiKey(_)
-            | CodexAuth::Headers(_)
-            | CodexAuth::AgentIdentity(_)
-            | CodexAuth::PersonalAccessToken(_)
-            | CodexAuth::BedrockApiKey(_) => None,
-        };
-        let _reset_lease = if let Some(account_id) = reset_account_id {
-            Some(
-                tokio::task::spawn_blocking(move || {
-                    store.acquire_reset_mutation_lease(&account_id)
-                })
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to join rate limit reset lease task: {err}"))
-                })?
-                .map_err(|err| {
-                    internal_error(format!("failed to acquire rate limit reset lease: {err}"))
-                })?,
-            )
-        } else {
-            None
-        };
         let request_timeout = RATE_LIMIT_RESET_REQUEST_TIMEOUT;
         #[cfg(debug_assertions)]
         let request_timeout = std::env::var(RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR)
@@ -101,20 +62,44 @@ impl AccountRequestProcessor {
             .and_then(|value| value.parse::<u64>().ok())
             .map(Duration::from_millis)
             .unwrap_or(request_timeout);
-        let response = tokio::time::timeout(request_timeout, async {
-            match params.credit_id.as_deref() {
-                Some(credit_id) => {
-                    client
-                        .consume_rate_limit_reset_credit_by_id(&params.idempotency_key, credit_id)
-                        .await
+        let request_deadline = Instant::now() + request_timeout;
+        let Some(auth) = self.auth_manager.auth().await else {
+            return Err(invalid_request(
+                "codex account authentication required for rate limit reset credits",
+            ));
+        };
+        let client = self.rate_limit_reset_backend_client(&auth)?;
+        let store = AccountStore::new(self.config.codex_home.to_path_buf());
+        let _reset_lease = store
+            .acquire_reset_mutation_lease_for_auth(&auth, request_deadline)
+            .await
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::TimedOut {
+                    internal_error("rate limit reset consume timed out")
+                } else {
+                    internal_error(format!("failed to acquire rate limit reset lease: {err}"))
                 }
-                None => {
-                    client
-                        .consume_rate_limit_reset_credit(&params.idempotency_key)
-                        .await
+            })?;
+        let response = tokio::time::timeout(
+            request_deadline.saturating_duration_since(Instant::now()),
+            async {
+                match params.credit_id.as_deref() {
+                    Some(credit_id) => {
+                        client
+                            .consume_rate_limit_reset_credit_by_id(
+                                &params.idempotency_key,
+                                credit_id,
+                            )
+                            .await
+                    }
+                    None => {
+                        client
+                            .consume_rate_limit_reset_credit(&params.idempotency_key)
+                            .await
+                    }
                 }
-            }
-        })
+            },
+        )
         .await
         .map_err(|_| internal_error("rate limit reset consume timed out"))?
         .map_err(|err| internal_error(format!("failed to consume rate limit reset: {err}")))?;

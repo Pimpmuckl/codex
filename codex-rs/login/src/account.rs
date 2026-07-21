@@ -429,18 +429,6 @@ impl AccountStore {
             .transpose()
     }
 
-    pub fn imported_account_id_for_token_data(
-        &self,
-        tokens: &TokenData,
-    ) -> std::io::Result<Option<AccountId>> {
-        let account_id = account_id_for_token_data(tokens)?;
-        Ok(self
-            .file_account_profiles()?
-            .into_iter()
-            .any(|(profile, _)| profile.id == account_id)
-            .then_some(account_id))
-    }
-
     pub fn account_in_use(&self, account_id: &AccountId) -> std::io::Result<bool> {
         Ok(self.try_acquire_lease(account_id)?.is_none())
     }
