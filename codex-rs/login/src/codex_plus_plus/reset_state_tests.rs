@@ -1,5 +1,8 @@
 use super::*;
+use crate::token_data::IdTokenInfo;
+use crate::token_data::TokenData;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use tempfile::TempDir;
 
 fn test_store() -> (TempDir, AccountStore, AccountId) {
@@ -112,4 +115,45 @@ fn bad_or_newer_state_fails_closed_without_replacement() {
         );
         assert_eq!(std::fs::read(&path).unwrap(), invalid);
     }
+}
+
+#[test]
+fn imported_account_lookup_uses_the_exact_token_identity() {
+    let (home, store, _account_id) = test_store();
+    let tokens = TokenData {
+        id_token: IdTokenInfo {
+            chatgpt_account_id: Some("workspace-a".into()),
+            ..IdTokenInfo::default()
+        },
+        access_token: "access".into(),
+        refresh_token: "refresh".into(),
+        account_id: Some("workspace-a".into()),
+    };
+    let account_id = super::super::account_id_for_token_data(&tokens).unwrap();
+    let account_home = home.path().join("accounts").join(account_id.as_str());
+    std::fs::create_dir_all(&account_home).unwrap();
+    std::fs::write(account_home.join("auth.json"), b"{}").unwrap();
+    std::fs::write(
+        home.path().join("accounts/index.json"),
+        serde_json::to_vec(&json!({
+            "accounts": [{
+                "id": account_id,
+                "label": "a@example.com",
+                "auth": { "scope": "file", "path": "unused" }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        store.imported_account_id_for_token_data(&tokens).unwrap(),
+        Some(account_id)
+    );
+    let mut other = tokens;
+    other.account_id = Some("workspace-b".into());
+    assert_eq!(
+        store.imported_account_id_for_token_data(&other).unwrap(),
+        None
+    );
 }

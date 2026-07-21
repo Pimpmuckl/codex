@@ -19,6 +19,7 @@ use crate::auth::load_auth_dot_json_with_guard;
 use crate::auth::save_auth_with_guard;
 use crate::auth::save_file_auth_if_unchanged;
 use crate::load_auth_dot_json;
+use crate::token_data::TokenData;
 
 #[path = "codex_plus_plus/account_bridge.rs"]
 mod account_bridge;
@@ -428,6 +429,18 @@ impl AccountStore {
             .transpose()
     }
 
+    pub fn imported_account_id_for_token_data(
+        &self,
+        tokens: &TokenData,
+    ) -> std::io::Result<Option<AccountId>> {
+        let account_id = account_id_for_token_data(tokens)?;
+        Ok(self
+            .file_account_profiles()?
+            .into_iter()
+            .any(|(profile, _)| profile.id == account_id)
+            .then_some(account_id))
+    }
+
     pub fn account_in_use(&self, account_id: &AccountId) -> std::io::Result<bool> {
         Ok(self.try_acquire_lease(account_id)?.is_none())
     }
@@ -602,6 +615,10 @@ pub(crate) fn account_id_for_auth(auth: &AuthDotJson) -> std::io::Result<Account
         )
     })?;
 
+    account_id_for_token_data(tokens)
+}
+
+fn account_id_for_token_data(tokens: &TokenData) -> std::io::Result<AccountId> {
     let identity = tokens
         .account_id
         .as_deref()

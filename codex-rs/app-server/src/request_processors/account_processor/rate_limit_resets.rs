@@ -54,10 +54,31 @@ impl AccountRequestProcessor {
             return Err(invalid_request("creditId must not be empty"));
         }
 
-        let active_account_id = self.auth_manager.active_account_id();
-        let _reset_lease = if let Some(account_id) = active_account_id.as_ref() {
-            let store = AccountStore::new(self.config.codex_home.to_path_buf());
-            let account_id = account_id.clone();
+        let Some(auth) = self.auth_manager.auth().await else {
+            return Err(invalid_request(
+                "codex account authentication required for rate limit reset credits",
+            ));
+        };
+        let client = self.rate_limit_reset_backend_client(&auth)?;
+        let store = AccountStore::new(self.config.codex_home.to_path_buf());
+        let reset_account_id = match &auth {
+            CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
+                let tokens = auth.get_token_data().map_err(|err| {
+                    internal_error(format!("failed to read rate limit reset identity: {err}"))
+                })?;
+                store
+                    .imported_account_id_for_token_data(&tokens)
+                    .map_err(|err| {
+                        internal_error(format!("failed to resolve imported reset account: {err}"))
+                    })?
+            }
+            CodexAuth::ApiKey(_)
+            | CodexAuth::Headers(_)
+            | CodexAuth::AgentIdentity(_)
+            | CodexAuth::PersonalAccessToken(_)
+            | CodexAuth::BedrockApiKey(_) => None,
+        };
+        let _reset_lease = if let Some(account_id) = reset_account_id {
             Some(
                 tokio::task::spawn_blocking(move || {
                     store.acquire_reset_mutation_lease(&account_id)
@@ -73,12 +94,6 @@ impl AccountRequestProcessor {
         } else {
             None
         };
-        let client = self.rate_limit_reset_backend_client().await?;
-        if self.auth_manager.active_account_id() != active_account_id {
-            return Err(internal_error(
-                "active imported account changed while preparing rate limit reset",
-            ));
-        }
         let request_timeout = RATE_LIMIT_RESET_REQUEST_TIMEOUT;
         #[cfg(debug_assertions)]
         let request_timeout = std::env::var(RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR)
@@ -122,19 +137,17 @@ impl AccountRequestProcessor {
         ))
     }
 
-    async fn rate_limit_reset_backend_client(&self) -> Result<BackendClient, JSONRPCErrorError> {
-        let Some(auth) = self.auth_manager.auth().await else {
-            return Err(invalid_request(
-                "codex account authentication required for rate limit reset credits",
-            ));
-        };
+    fn rate_limit_reset_backend_client(
+        &self,
+        auth: &CodexAuth,
+    ) -> Result<BackendClient, JSONRPCErrorError> {
         if !auth.uses_codex_backend() {
             return Err(invalid_request(
                 "chatgpt authentication required for rate limit reset credits",
             ));
         }
 
-        BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
+        BackendClient::from_auth(self.config.chatgpt_base_url.clone(), auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))
     }
 }
