@@ -118,7 +118,20 @@ impl AccountStore {
             if Instant::now() >= deadline {
                 return Err(reset_lease_timeout());
             }
-            if let Some(lease) = self.try_acquire_reset_mutation_lease(&account_id)? {
+            let store = self.clone();
+            let account_id = account_id.clone();
+            let lease = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                tokio::task::spawn_blocking(move || {
+                    store.try_acquire_reset_mutation_lease(&account_id)
+                }),
+            )
+            .await
+            .map_err(|_| reset_lease_timeout())?
+            .map_err(|err| {
+                io::Error::other(format!("failed to join reset lease lookup: {err}"))
+            })??;
+            if let Some(lease) = lease {
                 if Instant::now() < deadline {
                     return Ok(Some(lease));
                 }
