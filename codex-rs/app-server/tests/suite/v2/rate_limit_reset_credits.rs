@@ -135,6 +135,7 @@ async fn chatgpt_auth_without_local_identity_can_still_consume() -> Result<()> {
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .and(header("authorization", "Bearer chatgpt-token"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(json!({ "code": "reset", "windows_reset": 2 })),
