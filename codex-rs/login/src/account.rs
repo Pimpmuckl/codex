@@ -633,13 +633,21 @@ fn account_id_for_token_data(tokens: &TokenData) -> std::io::Result<AccountId> {
             )
         })?;
 
+    Ok(account_id_for_stable_identity(identity.0, &identity.1))
+}
+
+pub(super) fn account_id_for_workspace(account_id: &str) -> AccountId {
+    account_id_for_stable_identity("account", account_id)
+}
+
+fn account_id_for_stable_identity(kind: &str, value: &str) -> AccountId {
     let mut hasher = Sha256::new();
-    hasher.update(identity.0.as_bytes());
+    hasher.update(kind.as_bytes());
     hasher.update(b":");
-    hasher.update(identity.1.as_bytes());
+    hasher.update(value.as_bytes());
     let digest = hasher.finalize();
     let hex = format!("{digest:x}");
-    Ok(AccountId(format!("acct_{}", &hex[..16])))
+    AccountId(format!("acct_{}", &hex[..16]))
 }
 
 fn is_managed_chatgpt_auth(auth: &AuthDotJson) -> bool {

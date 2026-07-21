@@ -63,7 +63,13 @@ impl AccountRequestProcessor {
             .map(Duration::from_millis)
             .unwrap_or(request_timeout);
         let request_deadline = Instant::now() + request_timeout;
-        let Some(auth) = self.auth_manager.auth().await else {
+        let Some(auth) = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(request_deadline),
+            self.auth_manager.auth(),
+        )
+        .await
+        .map_err(|_| internal_error("rate limit reset consume timed out"))?
+        else {
             return Err(invalid_request(
                 "codex account authentication required for rate limit reset credits",
             ));

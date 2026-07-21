@@ -82,11 +82,13 @@ impl AccountStore {
                     Err(err) => return Err(err),
                 }
             }
-            CodexAuth::ApiKey(_)
-            | CodexAuth::Headers(_)
-            | CodexAuth::AgentIdentity(_)
-            | CodexAuth::PersonalAccessToken(_)
-            | CodexAuth::BedrockApiKey(_) => return Ok(None),
+            CodexAuth::AgentIdentity(auth) => super::account_id_for_workspace(auth.account_id()),
+            CodexAuth::PersonalAccessToken(auth) => {
+                super::account_id_for_workspace(auth.account_id())
+            }
+            CodexAuth::ApiKey(_) | CodexAuth::Headers(_) | CodexAuth::BedrockApiKey(_) => {
+                return Ok(None);
+            }
         };
         if !self
             .file_account_profiles()?
