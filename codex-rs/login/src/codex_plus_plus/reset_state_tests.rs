@@ -9,6 +9,15 @@ fn test_store() -> (TempDir, AccountStore, AccountId) {
     (home, store, AccountId("acct_test".into()))
 }
 
+fn external_auth(workspace_id: &str) -> CodexAuth {
+    CodexAuth::from_external_chatgpt_tokens(
+        "e30.e30.c2ln",
+        workspace_id,
+        /*chatgpt_plan_type*/ None,
+    )
+    .unwrap()
+}
+
 fn redeeming(phase: &ResetAttemptPhase) -> (&str, &str) {
     let ResetAttemptPhase::Redeeming {
         credit_id,
@@ -51,7 +60,6 @@ fn ambiguous_attempt_replays_and_definite_noop_gets_a_fresh_uuid() {
     assert_eq!(first_credit, "credit-a");
     assert_eq!(first_request.len(), 36);
     drop(lease);
-
     let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     assert_eq!(lease.load_or_begin("credit-b").unwrap(), first);
     assert!(!lease.clear_redeeming("wrong-request").unwrap());
@@ -66,8 +74,12 @@ fn confirmed_redemption_recovers_weekly_activation_and_completion() {
     let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     let attempt = lease.load_or_begin("credit-a").unwrap();
     let request_id = redeeming(&attempt).1.to_string();
-    assert!(!lease.confirm_redeemed("wrong-request", 100).unwrap());
-    assert!(lease.confirm_redeemed(&request_id, 100).unwrap());
+    let completed_at = 100;
+    let confirmed = lease
+        .confirm_redeemed("wrong-request", completed_at)
+        .unwrap();
+    assert!(!confirmed);
+    assert!(lease.confirm_redeemed(&request_id, completed_at).unwrap());
     let expected = ResetState {
         phase: Some(ResetAttemptPhase::ActivatingWeekly),
         completion: Some(ResetCompletion {
@@ -77,7 +89,6 @@ fn confirmed_redemption_recovers_weekly_activation_and_completion() {
     };
     assert_eq!(lease.state().unwrap(), expected);
     drop(lease);
-
     let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     assert_eq!(lease.state().unwrap(), expected);
     assert!(lease.finish_weekly_activation().unwrap());
@@ -96,7 +107,6 @@ fn bad_or_newer_state_fails_closed_without_replacement() {
     let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     let path = home.path().join("accounts/acct_test").join(STATE_FILE);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-
     for invalid in [
         b"{broken".to_vec(),
         br#"{"version":2,"phase":null,"completion":null}"#.to_vec(),
@@ -118,8 +128,7 @@ fn bad_or_newer_state_fails_closed_without_replacement() {
 #[tokio::test]
 async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
     let (home, store, _account_id) = test_store();
-    let auth =
-        CodexAuth::from_external_chatgpt_tokens("e30.e30.c2ln", "workspace-a", None).unwrap();
+    let auth = external_auth("workspace-a");
     let tokens = auth.get_token_data().unwrap();
     let account_id = super::super::account_id_for_token_data(&tokens).unwrap();
     let account_home = home.path().join("accounts").join(account_id.as_str());
@@ -137,13 +146,11 @@ async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
         .unwrap(),
     )
     .unwrap();
-
     let held = store.acquire_reset_mutation_lease(&account_id).unwrap();
-    let other =
-        CodexAuth::from_external_chatgpt_tokens("e30.e30.c2ln", "workspace-b", None).unwrap();
+    let other = external_auth("workspace-b");
     assert!(
         store
-            .acquire_reset_mutation_lease_for_auth(&other, Instant::now())
+            .acquire_reset_mutation_lease_for_auth(&other, Instant::now() + Duration::from_secs(1),)
             .await
             .unwrap()
             .is_none()

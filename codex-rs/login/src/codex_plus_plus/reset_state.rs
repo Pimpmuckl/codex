@@ -73,30 +73,47 @@ impl AccountStore {
         auth: &CodexAuth,
         deadline: Instant,
     ) -> io::Result<Option<ResetMutationLease>> {
-        let account_id = match auth {
-            CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
-                let tokens = auth.get_token_data()?;
-                match super::account_id_for_token_data(&tokens) {
-                    Ok(account_id) => account_id,
-                    Err(err) if err.kind() == io::ErrorKind::InvalidInput => return Ok(None),
-                    Err(err) => return Err(err),
-                }
-            }
-            CodexAuth::AgentIdentity(auth) => super::account_id_for_workspace(auth.account_id()),
-            CodexAuth::PersonalAccessToken(auth) => {
-                super::account_id_for_workspace(auth.account_id())
-            }
-            CodexAuth::ApiKey(_) | CodexAuth::Headers(_) | CodexAuth::BedrockApiKey(_) => {
-                return Ok(None);
-            }
-        };
-        if !self
-            .file_account_profiles()?
-            .into_iter()
-            .any(|(profile, _)| profile.id == account_id)
-        {
+        let store = self.clone();
+        let auth = auth.clone();
+        let account_id = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            tokio::task::spawn_blocking(move || {
+                let account_id = match &auth {
+                    CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
+                        let tokens = auth.get_token_data()?;
+                        match super::account_id_for_token_data(&tokens) {
+                            Ok(account_id) => account_id,
+                            Err(err) if err.kind() == io::ErrorKind::InvalidInput => {
+                                return Ok(None);
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+                    CodexAuth::AgentIdentity(auth) => {
+                        super::account_id_for_workspace(auth.account_id())
+                    }
+                    CodexAuth::PersonalAccessToken(auth) => {
+                        super::account_id_for_workspace(auth.account_id())
+                    }
+                    CodexAuth::ApiKey(_) | CodexAuth::Headers(_) | CodexAuth::BedrockApiKey(_) => {
+                        return Ok(None);
+                    }
+                };
+                Ok(store
+                    .file_account_profiles()?
+                    .into_iter()
+                    .any(|(profile, _)| profile.id == account_id)
+                    .then_some(account_id))
+            }),
+        )
+        .await
+        .map_err(|_| reset_lease_timeout())?
+        .map_err(|err| {
+            io::Error::other(format!("failed to join reset identity lookup: {err}"))
+        })??;
+        let Some(account_id) = account_id else {
             return Ok(None);
-        }
+        };
         loop {
             if Instant::now() >= deadline {
                 return Err(reset_lease_timeout());

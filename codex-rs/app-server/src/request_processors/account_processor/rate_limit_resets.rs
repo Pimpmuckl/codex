@@ -63,12 +63,15 @@ impl AccountRequestProcessor {
             .map(Duration::from_millis)
             .unwrap_or(request_timeout);
         let request_deadline = Instant::now() + request_timeout;
-        let Some(auth) = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(request_deadline),
-            self.auth_manager.auth(),
-        )
-        .await
-        .map_err(|_| internal_error("rate limit reset consume timed out"))?
+        let auth_manager = Arc::clone(&self.auth_manager);
+        let auth_task = tokio::spawn(async move { auth_manager.auth().await });
+        let Some(auth) =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(request_deadline), auth_task)
+                .await
+                .map_err(|_| internal_error("rate limit reset consume timed out"))?
+                .map_err(|err| {
+                    internal_error(format!("failed to join rate limit reset auth task: {err}"))
+                })?
         else {
             return Err(invalid_request(
                 "codex account authentication required for rate limit reset credits",
