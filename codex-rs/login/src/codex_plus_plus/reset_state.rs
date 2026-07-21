@@ -135,7 +135,13 @@ impl AccountStore {
         &self,
         account_id: &AccountId,
     ) -> io::Result<Option<ResetMutationLease>> {
-        let account_home = self.account_home(account_id);
+        self.try_acquire_reset_mutation_lease_for_home(&self.account_home(account_id))
+    }
+
+    pub(crate) fn try_acquire_reset_mutation_lease_for_home(
+        &self,
+        account_home: &Path,
+    ) -> io::Result<Option<ResetMutationLease>> {
         AccountLease::try_acquire(&account_home.join(LOCK_FILE)).map(|lease| {
             lease.map(|_lease| ResetMutationLease {
                 state_path: account_home.join(STATE_FILE),

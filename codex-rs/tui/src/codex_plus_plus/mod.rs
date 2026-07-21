@@ -2,6 +2,7 @@
 
 mod account_identity_freshness;
 mod account_policy;
+mod auto_redeem_resets;
 pub(crate) mod destructive_command_guard;
 #[cfg(any(not(debug_assertions), test))]
 mod lag_warning;
@@ -16,6 +17,7 @@ pub(crate) use account_identity_freshness::AccountIdentityFreshness;
 pub(crate) use account_identity_freshness::MAY_BE_STALE_NOTE as ACCOUNT_IDENTITY_MAY_BE_STALE_NOTE;
 pub(crate) use account_policy::persist_settings;
 use anyhow::Result;
+pub(crate) use auto_redeem_resets::settings as auto_redeem_resets_settings;
 use destructive_command_guard::DcgChange;
 use destructive_command_guard::DcgManager;
 use destructive_command_guard::RepairReason;

@@ -13,7 +13,10 @@ async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     let task_drained = Arc::clone(&drained);
     let release = Arc::new(tokio::sync::Notify::new());
     let task_release = Arc::clone(&release);
-    let (state, receiver) = watch::channel(true);
+    let (state, receiver) = watch::channel(SchedulerSettings {
+        weekly: true,
+        auto_redeem: None,
+    });
     let scheduler = WeeklyWindowScheduler {
         state,
         statuses: Arc::new(Mutex::new(HashMap::new())),
@@ -40,8 +43,8 @@ async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     assert_eq!(scans.load(Ordering::Relaxed), 2);
 
     let active_scan = scheduler.state.subscribe();
-    scheduler.set_enabled(false);
-    scheduler.set_enabled(true);
+    scheduler.set_settings(/*weekly*/ false, /*auto_redeem*/ None);
+    scheduler.set_settings(/*weekly*/ false, Some(AutoRedeemResets::default()));
     assert!(active_scan.has_changed().unwrap());
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
@@ -54,6 +57,25 @@ async fn schedule_scans_on_time_and_observes_disable_until_dropped() {
     tokio::time::advance(SCAN_INTERVAL).await;
     tokio::task::yield_now().await;
     assert_eq!(scans.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn scheduler_automation_is_enabled_by_either_setting() {
+    assert!(!SchedulerSettings::default().enabled());
+    assert!(
+        SchedulerSettings {
+            weekly: true,
+            auto_redeem: None,
+        }
+        .enabled()
+    );
+    assert!(
+        SchedulerSettings {
+            weekly: false,
+            auto_redeem: Some(AutoRedeemResets::default()),
+        }
+        .enabled()
+    );
 }
 
 #[test]

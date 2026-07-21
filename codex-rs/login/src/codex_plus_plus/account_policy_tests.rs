@@ -4,6 +4,8 @@ use crate::account::tests::import_test_account;
 use crate::account::tests::test_auth_manager;
 use codex_config::types::AuthCredentialsStoreMode;
 use pretty_assertions::assert_eq;
+use std::sync::mpsc;
+use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]
@@ -37,6 +39,41 @@ fn legacy_defaults_and_reimport_preserves_automation_policy() {
         )
         .expect("reimport account");
     assert!(!reimported.automation_enabled);
+}
+
+#[test]
+fn disabling_waits_for_an_active_reset_mutation() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    let lease = store.acquire_reset_mutation_lease(&first.id).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let worker_store = store.clone();
+    let worker_ids = [first.id, second.id];
+    let worker =
+        std::thread::spawn(move || {
+            tx.send(worker_store.set_automation_enabled_batch(
+                worker_ids.iter().map(|account_id| (account_id, false)),
+            ))
+            .unwrap();
+        });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while store.list().unwrap()[0].automation_enabled {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        store
+            .list()
+            .unwrap()
+            .iter()
+            .all(|profile| !profile.automation_enabled)
+    );
+    assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+    drop(lease);
+    assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap());
+    worker.join().unwrap();
 }
 
 #[tokio::test]

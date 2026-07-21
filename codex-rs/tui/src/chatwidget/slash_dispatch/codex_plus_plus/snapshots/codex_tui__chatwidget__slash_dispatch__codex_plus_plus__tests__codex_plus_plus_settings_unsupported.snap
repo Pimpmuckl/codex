@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/codex_plus_plus_tests.rs
+assertion_line: 74
 expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWindowAutoStart::Disabled, ModelCapacityRetryMode::Indefinite,)"
 ---
 
@@ -15,4 +16,4 @@ expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWi
 
 
 
-  Press space to toggle; enter to save; esc to cancel
+  Press space to toggle; enter to save or manage; esc to cancel

@@ -334,6 +334,27 @@
         }
       ]
     },
+    "AutoRedeemResets": {
+      "additionalProperties": false,
+      "description": "Thresholds for automatic redemption of earned usage-reset credits.",
+      "properties": {
+        "before_expiry_minutes": {
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "weekly_exhausted_min_wait_hours": {
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "before_expiry_minutes",
+        "weekly_exhausted_min_wait_hours"
+      ],
+      "type": "object"
+    },
     "AutoReviewToml": {
       "properties": {
         "policy": {
@@ -4707,6 +4728,14 @@
       ],
       "default": null,
       "description": "Machine-local realtime audio device preferences used by realtime voice."
+    },
+    "auto_redeem_resets": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AutoRedeemResets"
+        }
+      ],
+      "description": "Automatic usage-reset redemption thresholds. Omission disables the feature."
     },
     "auto_review": {
       "allOf": [

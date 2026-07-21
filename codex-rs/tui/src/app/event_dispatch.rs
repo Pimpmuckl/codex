@@ -1822,6 +1822,7 @@ impl App {
             AppEvent::PersistCodexPlusPlusSettings {
                 automatic_account_selection,
                 weekly_usage_window_auto_start,
+                auto_redeem_resets,
                 model_capacity_retry_mode,
                 user_message_inbox,
             } => {
@@ -1830,6 +1831,7 @@ impl App {
                     app_server,
                     automatic_account_selection,
                     weekly_usage_window_auto_start,
+                    auto_redeem_resets,
                     Some(model_capacity_retry_mode),
                     user_message_inbox,
                 )

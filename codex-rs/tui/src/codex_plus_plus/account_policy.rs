@@ -2,16 +2,20 @@
 
 use crate::app::App;
 use crate::app_server_session::AppServerSession;
+use crate::legacy_core::config::Config;
+use codex_config::AutoRedeemResets;
 use codex_config::ModelCapacityRetryMode;
 use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
+use toml::Value as TomlValue;
 
 pub(crate) async fn persist_settings(
     app: &mut App,
     app_server: &AppServerSession,
     automatic_account_selection: AutomaticAccountSelection,
     weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
+    auto_redeem_resets: Option<bool>,
     model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
     user_message_inbox: UserMessageInbox,
 ) {
@@ -32,6 +36,22 @@ pub(crate) async fn persist_settings(
             }),
         ));
     }
+    let requested_auto_redeem = auto_redeem_resets.map(|enabled| {
+        enabled.then(|| {
+            crate::codex_plus_plus::auto_redeem_resets_settings(&app.config.config_layer_stack)
+                .unwrap_or_default()
+        })
+    });
+    if let Some(settings) = requested_auto_redeem {
+        writes.push(match settings {
+            Some(settings) => crate::config_update::replace_config_value(
+                "auto_redeem_resets",
+                serde_json::json!(settings),
+            ),
+            // Off removes the active user-layer table; inherited user settings remain authoritative.
+            None => crate::config_update::clear_config_value("auto_redeem_resets"),
+        });
+    }
     if let Some(capacity) = model_capacity_retry_mode {
         writes.push(crate::config_update::replace_config_value(
             "model_capacity_retry_mode",
@@ -48,13 +68,11 @@ pub(crate) async fn persist_settings(
             UserMessageInbox::Disabled => "disabled",
         }),
     ));
-    if let Err(err) =
-        crate::config_update::write_config_batch(app_server.request_handle(), writes).await
-    {
+    let write_error = crate::config_update::write_config_batch(app_server.request_handle(), writes)
+        .await
+        .err();
+    if let Some(err) = &write_error {
         tracing::error!(error = %err, "failed to persist Codex++ settings");
-        app.chat_widget
-            .codex_plus_plus_settings_persistence_failed(err.to_string());
-        return;
     }
 
     let cwd = app.config.cwd.display().to_string();
@@ -63,13 +81,29 @@ pub(crate) async fn persist_settings(
             Ok(response) => response,
             Err(err) => {
                 tracing::error!(error = %err, "failed to verify Codex++ settings");
-                if weekly_usage_window_auto_start == Some(WeeklyUsageWindowAutoStart::Disabled)
-                    && let Some(scheduler) = &app.weekly_window_scheduler
-                {
-                    scheduler.set_enabled(false);
+                let disable_weekly =
+                    weekly_usage_window_auto_start == Some(WeeklyUsageWindowAutoStart::Disabled);
+                if disable_weekly {
+                    app.config.weekly_usage_window_auto_start =
+                        WeeklyUsageWindowAutoStart::Disabled;
                 }
-                app.chat_widget
-                    .codex_plus_plus_settings_verification_failed(err.to_string());
+                if requested_auto_redeem == Some(None) {
+                    cache_auto_redeem_settings(&mut app.config, /*settings*/ None);
+                }
+                if disable_weekly || requested_auto_redeem == Some(None) {
+                    app.chat_widget
+                        .sync_codex_plus_plus_settings_config(&app.config);
+                    sync_scheduler(app);
+                }
+                if let Some(write_err) = write_error {
+                    app.chat_widget
+                        .codex_plus_plus_settings_persistence_failed(format!(
+                            "{write_err}; unable to reconcile effective settings: {err}"
+                        ));
+                } else {
+                    app.chat_widget
+                        .codex_plus_plus_settings_verification_failed(err.to_string());
+                }
                 return;
             }
         };
@@ -112,11 +146,36 @@ pub(crate) async fn persist_settings(
     app.config.automatic_account_selection = effective_automatic;
     app.config.weekly_usage_window_auto_start = effective_weekly;
     app.config.model_capacity_retry_mode = effective_capacity;
-    if let Some(scheduler) = &app.weekly_window_scheduler {
-        scheduler.set_enabled(effective_weekly == WeeklyUsageWindowAutoStart::Enabled);
+    app.chat_widget
+        .sync_codex_plus_plus_settings_config(&app.config);
+    if let Err(err) = app.refresh_in_memory_config_from_disk().await {
+        tracing::error!(error = %err, "failed to refresh Codex++ settings");
+        let disable_weekly =
+            weekly_usage_window_auto_start == Some(WeeklyUsageWindowAutoStart::Disabled);
+        if disable_weekly {
+            app.config.weekly_usage_window_auto_start = WeeklyUsageWindowAutoStart::Disabled;
+        }
+        if requested_auto_redeem == Some(None) {
+            cache_auto_redeem_settings(&mut app.config, /*settings*/ None);
+        }
+        if disable_weekly || requested_auto_redeem == Some(None) {
+            app.chat_widget
+                .sync_codex_plus_plus_settings_config(&app.config);
+            sync_scheduler(app);
+        }
+        app.chat_widget
+            .codex_plus_plus_settings_verification_failed(err.to_string());
+        return;
     }
+    app.chat_widget
+        .sync_codex_plus_plus_settings_config(&app.config);
+    sync_scheduler(app);
+    let effective_auto_redeem =
+        crate::codex_plus_plus::auto_redeem_resets_settings(&app.config.config_layer_stack);
+    // Authoritative readback matching the request is success even if the write RPC was ambiguous.
     if effective_automatic == automatic_account_selection
         && weekly_usage_window_auto_start.is_none_or(|weekly| effective_weekly == weekly)
+        && auto_redeem_resets.is_none_or(|enabled| effective_auto_redeem.is_some() == enabled)
         && model_capacity_retry_mode.is_none_or(|capacity| effective_capacity == capacity)
         && effective_user_message_inbox == user_message_inbox
     {
@@ -133,4 +192,35 @@ pub(crate) async fn persist_settings(
                 effective_capacity,
             );
     }
+}
+
+fn sync_scheduler(app: &App) {
+    if let Some(scheduler) = &app.weekly_window_scheduler {
+        scheduler.set_weekly(
+            app.config.weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Enabled,
+        );
+    }
+}
+
+fn cache_auto_redeem_settings(config: &mut Config, settings: Option<AutoRedeemResets>) {
+    let config_toml = config.config_layer_stack.get_user_config_file().cloned();
+    let active_user_config = config
+        .config_layer_stack
+        .get_active_user_layer()
+        .map(|layer| layer.config.clone());
+    let (Some(config_toml), Some(TomlValue::Table(mut table))) = (config_toml, active_user_config)
+    else {
+        return;
+    };
+    match settings.and_then(|settings| TomlValue::try_from(settings).ok()) {
+        Some(settings) => {
+            table.insert("auto_redeem_resets".to_string(), settings);
+        }
+        None => {
+            table.remove("auto_redeem_resets");
+        }
+    }
+    config.config_layer_stack = config
+        .config_layer_stack
+        .with_user_config(&config_toml, TomlValue::Table(table));
 }
