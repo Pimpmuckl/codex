@@ -68,6 +68,7 @@ fn usage(used_percent: f64, resets_at: Option<i64>, reached: bool) -> RateLimits
             }),
             credits: None,
             individual_limit: None,
+            spend_control_reached: None,
             plan_type: None,
             rate_limit_reached_type: reached.then_some(RateLimitReachedType::RateLimitReached),
         }],

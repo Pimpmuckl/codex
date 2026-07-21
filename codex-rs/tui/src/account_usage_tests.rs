@@ -41,6 +41,7 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
             }),
             credits: None,
             individual_limit: None,
+            spend_control_reached: None,
             plan_type: None,
             rate_limit_reached_type: None,
         }],
@@ -75,6 +76,7 @@ fn maps_weekly_only_primary_window_to_weekly_picker_usage() {
         secondary: None,
         credits: None,
         individual_limit: None,
+        spend_control_reached: None,
         plan_type: None,
         rate_limit_reached_type: None,
     };
@@ -124,6 +126,7 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
             secondary: None,
             credits: None,
             individual_limit: None,
+            spend_control_reached: None,
             plan_type: None,
             rate_limit_reached_type: None,
         }],

@@ -78,23 +78,17 @@ fn recognizes_only_exact_durable_user_messages() {
 fn transcript_and_inbox_snapshots_cover_bounded_thread_state() {
     let mut populated = UserMessageInboxState::default();
     let transcript_cell = populated
-        .record(
-            user_message("user-message:first", "First paragraph\n\nSecond paragraph"),
-            /*user_turn_count*/ 1,
-        )
+        .record(user_message(
+            "user-message:first",
+            "First paragraph\n\nSecond paragraph",
+        ))
         .expect("new message");
     populated
-        .record(
-            user_message("user-message:second", "Second note"),
-            /*user_turn_count*/ 2,
-        )
+        .record(user_message("user-message:second", "Second note"))
         .expect("new message");
     assert!(
         populated
-            .record(
-                user_message("user-message:second", "duplicate"),
-                /*user_turn_count*/ 2
-            )
+            .record(user_message("user-message:second", "duplicate"))
             .is_none()
     );
 
@@ -133,10 +127,10 @@ fn transcript_and_inbox_snapshots_cover_bounded_thread_state() {
     let mut overflowed = UserMessageInboxState::default();
     for index in 0..=MAX_MESSAGES {
         overflowed
-            .record(
-                user_message(format!("user-message:{index}"), format!("Message {index}")),
-                /*user_turn_count*/ index,
-            )
+            .record(user_message(
+                format!("user-message:{index}"),
+                format!("Message {index}"),
+            ))
             .expect("unique message");
     }
     assert_eq!(overflowed.messages.len(), MAX_MESSAGES);
