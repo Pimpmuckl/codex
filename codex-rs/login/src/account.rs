@@ -124,6 +124,7 @@ impl AccountStore {
         let mut auth = root_auth.clone();
         let imported_from_root_marker = is_root_account_marker(&auth);
         let source_account_id = account_id_for_auth(&auth)?;
+        let _reset_lease = self.acquire_reset_mutation_lease(&source_account_id)?;
         let account_home = self.account_home(&source_account_id);
         let account_refresh_guard = AuthRefreshGuard::acquire(&account_home)?;
         if imported_from_root_marker {

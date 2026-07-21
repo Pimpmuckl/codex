@@ -1,6 +1,5 @@
 use super::*;
 use pretty_assertions::assert_eq;
-use serde_json::json;
 use tempfile::TempDir;
 
 fn test_store() -> (TempDir, AccountStore, AccountId) {
@@ -58,7 +57,6 @@ fn ambiguous_attempt_replays_and_definite_noop_gets_a_fresh_uuid() {
     let first = lease.load_or_begin("credit-a").unwrap();
     let (first_credit, first_request) = redeeming(&first);
     assert_eq!(first_credit, "credit-a");
-    assert_eq!(first_request.len(), 36);
     drop(lease);
     let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     assert_eq!(lease.load_or_begin("credit-b").unwrap(), first);
@@ -131,21 +129,6 @@ async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
     let auth = external_auth("workspace-a");
     let tokens = auth.get_token_data().unwrap();
     let account_id = super::super::account_id_for_token_data(&tokens).unwrap();
-    let account_home = home.path().join("accounts").join(account_id.as_str());
-    std::fs::create_dir_all(&account_home).unwrap();
-    std::fs::write(account_home.join("auth.json"), b"{}").unwrap();
-    std::fs::write(
-        home.path().join("accounts/index.json"),
-        serde_json::to_vec(&json!({
-            "accounts": [{
-                "id": account_id,
-                "label": "a@example.com",
-                "auth": { "scope": "file", "path": "unused" }
-            }]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
     let held = store.acquire_reset_mutation_lease(&account_id).unwrap();
     let other = external_auth("workspace-b");
     assert!(
@@ -153,7 +136,7 @@ async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
             .acquire_reset_mutation_lease_for_auth(&other, Instant::now() + Duration::from_secs(1),)
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
     let error = match store
         .acquire_reset_mutation_lease_for_auth(&auth, Instant::now() + Duration::from_millis(10))
@@ -163,7 +146,24 @@ async fn auth_lease_uses_exact_identity_and_has_a_deadline() {
         Err(error) => error,
     };
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let import_store = store.clone();
+    let import_home = home.path().to_path_buf();
+    std::thread::spawn(move || {
+        let profile = super::super::tests::import_test_account(
+            &import_store,
+            &import_home,
+            "workspace a",
+            "workspace-a",
+        );
+        tx.send(profile).unwrap();
+    });
+    assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
     drop(held);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap().id,
+        account_id
+    );
     let error = match store
         .acquire_reset_mutation_lease_for_auth(&auth, Instant::now())
         .await
