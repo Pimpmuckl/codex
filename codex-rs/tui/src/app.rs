@@ -1051,7 +1051,6 @@ See the Codex keymap documentation for supported actions and examples."
         let weekly_window_scheduler = app_server.uses_embedded_app_server().then(|| {
             crate::codex_plus_plus::WeeklyWindowScheduler::spawn(
                 config.clone(),
-                model.clone(),
                 app_event_tx.clone(),
             )
         });

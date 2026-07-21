@@ -31,7 +31,11 @@ pub enum WeeklyWindowError {
     Ambiguous,
     Transient,
     LoginRequired,
+    LocalSetup,
+    AuthenticationRecovery,
     Rejected,
+    UnsupportedConfiguration,
+    UnsupportedRouting,
     StateQuarantined,
 }
 
@@ -39,19 +43,23 @@ pub enum WeeklyWindowError {
 pub enum WeeklyWindowRetryableError {
     Transient,
     LoginRequired,
-    Rejected,
+    LocalSetup,
+    AuthenticationRecovery,
+    Rejected { status: Option<u16> },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WeeklyWindowAttemptOutcome {
     Completed { refreshed_usage: WeeklyWindowUsage },
     Retryable { error: WeeklyWindowRetryableError },
-    Ambiguous,
+    Ambiguous { status: Option<u16> },
+    Unsupported { error: WeeklyWindowError },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WeeklyWindowStatus {
     pub last_error: Option<WeeklyWindowError>,
+    pub last_http_status: Option<u16>,
     pub retry_not_before: Option<i64>,
     pub recovery_not_before: Option<i64>,
 }
@@ -103,6 +111,8 @@ struct State {
     retry_not_before: Option<i64>,
     recovery_not_before: Option<i64>,
     last_error: Option<WeeklyWindowError>,
+    #[serde(default)]
+    last_http_status: Option<u16>,
 }
 
 impl State {
@@ -159,7 +169,12 @@ impl AccountStore {
 
         if state.attempt_status == Some(AttemptStatus::Dispatching) {
             let dispatched_at = state.last_attempt_at;
-            close_attempt(&mut state, now, Some(WeeklyWindowError::Ambiguous));
+            close_attempt(
+                &mut state,
+                now,
+                Some(WeeklyWindowError::Ambiguous),
+                /*http_status*/ None,
+            );
             state.last_attempt_at = dispatched_at;
             observe_after_completion(&mut state, usage);
             write_state(&state_path, &state)?;
@@ -174,6 +189,7 @@ impl AccountStore {
             state.failure_count = 0;
             state.retry_not_before = None;
             state.last_error = None;
+            state.last_http_status = None;
         }
         state.attempt_identity = Some(identity);
         state.attempt_status = Some(AttemptStatus::Dispatching);
@@ -190,6 +206,7 @@ impl AccountStore {
         let status = match read_state(&self.account_home(account_id).join(STATE_FILE))? {
             StateRead::Ready(state) => WeeklyWindowStatus {
                 last_error: state.last_error,
+                last_http_status: state.last_http_status,
                 retry_not_before: state.retry_not_before,
                 recovery_not_before: state.recovery_not_before,
             },
@@ -207,7 +224,12 @@ impl WeeklyWindowAttempt {
     pub fn finish(mut self, outcome: WeeklyWindowAttemptOutcome, now: i64) -> io::Result<()> {
         match outcome {
             WeeklyWindowAttemptOutcome::Completed { refreshed_usage } => {
-                close_attempt(&mut self.state, now, /*error*/ None);
+                close_attempt(
+                    &mut self.state,
+                    now,
+                    /*error*/ None,
+                    /*http_status*/ None,
+                );
                 observe_after_completion(&mut self.state, refreshed_usage);
             }
             WeeklyWindowAttemptOutcome::Retryable { error } => {
@@ -222,14 +244,32 @@ impl WeeklyWindowAttempt {
                 self.state.attempt_status = Some(AttemptStatus::Retryable);
                 self.state.last_attempt_at = Some(now);
                 self.state.retry_not_before = Some(now.saturating_add(delay));
-                self.state.last_error = Some(match error {
-                    WeeklyWindowRetryableError::Transient => WeeklyWindowError::Transient,
-                    WeeklyWindowRetryableError::LoginRequired => WeeklyWindowError::LoginRequired,
-                    WeeklyWindowRetryableError::Rejected => WeeklyWindowError::Rejected,
-                });
+                let (error, status) = match error {
+                    WeeklyWindowRetryableError::Transient => (WeeklyWindowError::Transient, None),
+                    WeeklyWindowRetryableError::LoginRequired => {
+                        (WeeklyWindowError::LoginRequired, None)
+                    }
+                    WeeklyWindowRetryableError::LocalSetup => (WeeklyWindowError::LocalSetup, None),
+                    WeeklyWindowRetryableError::AuthenticationRecovery => {
+                        (WeeklyWindowError::AuthenticationRecovery, None)
+                    }
+                    WeeklyWindowRetryableError::Rejected { status } => {
+                        (WeeklyWindowError::Rejected, status)
+                    }
+                };
+                self.state.last_error = Some(error);
+                self.state.last_http_status = status;
             }
-            WeeklyWindowAttemptOutcome::Ambiguous => {
-                close_attempt(&mut self.state, now, Some(WeeklyWindowError::Ambiguous));
+            WeeklyWindowAttemptOutcome::Ambiguous { status } => {
+                close_attempt(
+                    &mut self.state,
+                    now,
+                    Some(WeeklyWindowError::Ambiguous),
+                    status,
+                );
+            }
+            WeeklyWindowAttemptOutcome::Unsupported { error } => {
+                close_attempt(&mut self.state, now, Some(error), /*http_status*/ None);
             }
         }
         write_state(&self.state_path, &self.state)
@@ -242,7 +282,7 @@ fn due_identity(state: &mut State, usage: WeeklyWindowUsage, now: i64) -> Option
     };
     if !unused {
         if state.attempt_status == Some(AttemptStatus::Retryable) {
-            close_attempt(state, now, /*error*/ None);
+            close_attempt(state, now, /*error*/ None, /*http_status*/ None);
         }
         state.last_observed_active = true;
         return None;
@@ -251,7 +291,7 @@ fn due_identity(state: &mut State, usage: WeeklyWindowUsage, now: i64) -> Option
 
     if state.attempt_status == Some(AttemptStatus::Retryable) {
         let Some(AttemptIdentity::ResetAt(attempt_reset_at)) = state.attempt_identity else {
-            close_attempt(state, now, /*error*/ None);
+            close_attempt(state, now, /*error*/ None, /*http_status*/ None);
             return None;
         };
         let latest_reset_at = state.last_observed_reset_at.unwrap_or(attempt_reset_at);
@@ -288,7 +328,12 @@ fn due_identity(state: &mut State, usage: WeeklyWindowUsage, now: i64) -> Option
     .then_some(identity)
 }
 
-fn close_attempt(state: &mut State, now: i64, error: Option<WeeklyWindowError>) {
+fn close_attempt(
+    state: &mut State,
+    now: i64,
+    error: Option<WeeklyWindowError>,
+    http_status: Option<u16>,
+) {
     if let Some(AttemptIdentity::ResetAt(resets_at)) = state.attempt_identity {
         state.last_observed_reset_at = Some(
             state
@@ -303,6 +348,7 @@ fn close_attempt(state: &mut State, now: i64, error: Option<WeeklyWindowError>) 
     state.retry_not_before = None;
     state.recovery_not_before = None;
     state.last_error = error;
+    state.last_http_status = http_status;
     state.last_observed_active = false;
 }
 

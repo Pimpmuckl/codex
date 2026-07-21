@@ -12,11 +12,10 @@ use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::WeeklyWindowAttemptDecision;
 use codex_login::WeeklyWindowAttemptOutcome;
+use codex_login::WeeklyWindowError;
 use codex_login::WeeklyWindowRetryableError;
 use codex_login::WeeklyWindowUsage;
 use codex_model_provider::WeeklyWindowPingOutcome;
-use codex_model_provider::WeeklyWindowPingRequest;
-use codex_model_provider::ping_weekly_window;
 use codex_model_provider::preflight_weekly_window_ping;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -59,7 +58,7 @@ pub(crate) struct WeeklyWindowScheduler {
 }
 
 impl WeeklyWindowScheduler {
-    pub(crate) fn spawn(config: Config, model: String, app_event_tx: AppEventSender) -> Self {
+    pub(crate) fn spawn(config: Config, app_event_tx: AppEventSender) -> Self {
         let initial = SchedulerSettings {
             weekly: config.weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Enabled,
             auto_redeem: auto_redeem_resets::settings(&config.config_layer_stack),
@@ -72,7 +71,6 @@ impl WeeklyWindowScheduler {
             move |scan_control| {
                 scan(
                     config.clone(),
-                    model.clone(),
                     scan_control,
                     Arc::clone(&task_statuses),
                     Arc::clone(&notices),
@@ -141,7 +139,6 @@ where
 
 async fn scan(
     config: Config,
-    model: String,
     mut control: watch::Receiver<SchedulerSettings>,
     status_sink: Arc<Mutex<HashMap<AccountId, WeeklyWindowStatus>>>,
     notices: Arc<Mutex<auto_redeem_resets::CompletionNotices>>,
@@ -209,7 +206,6 @@ async fn scan(
                     RESET_REDEMPTION_TIMEOUT,
                     auto_redeem_resets::process_account(
                         &config,
-                        &model,
                         &store,
                         account_id,
                         auto_redeem,
@@ -284,17 +280,31 @@ async fn scan(
                 continue;
             }
         };
-        let outcome = ping_weekly_window(WeeklyWindowPingRequest {
-            account_codex_home: account_home.clone(),
-            model: model.clone(),
-            model_provider_id: config.model_provider_id.clone(),
-            model_provider: config.model_provider.clone(),
-            chatgpt_base_url: config.chatgpt_base_url.clone(),
-            auth_route_config: config.auth_route_config(),
-            forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
-            http_client_factory: http_client_factory.clone(),
-        })
-        .await;
+        let reset_lease = match store.try_acquire_reset_mutation_lease(&account_id) {
+            Ok(lease) => lease,
+            Err(err) => {
+                tracing::warn!(%account_id, %err, "weekly-window scheduler could not acquire reset authority");
+                None
+            }
+        };
+        let Some(reset_lease) = reset_lease else {
+            if let Err(err) = attempt.finish(
+                WeeklyWindowAttemptOutcome::Retryable {
+                    error: WeeklyWindowRetryableError::Transient,
+                },
+                Utc::now().timestamp(),
+            ) {
+                tracing::warn!(%account_id, %err, "weekly-window scheduler could not defer activation");
+            }
+            record_status(
+                &mut statuses,
+                &account_id,
+                WeeklyWindowStatus::Retrying(remaining),
+            );
+            continue;
+        };
+        let outcome =
+            auto_redeem_resets::activate_weekly(&config, &store, &account_id, &reset_lease).await;
         let (refreshed_usage, refreshed_remaining) = if outcome
             == WeeklyWindowPingOutcome::Completed
         {
@@ -310,12 +320,11 @@ async fn scan(
         };
         let status = match outcome {
             WeeklyWindowPingOutcome::Completed => WeeklyWindowStatus::Started(refreshed_remaining),
-            WeeklyWindowPingOutcome::LoginRequired | WeeklyWindowPingOutcome::RecoveryRequired => {
-                WeeklyWindowStatus::SignInRequired
-            }
-            WeeklyWindowPingOutcome::DefiniteRejection | WeeklyWindowPingOutcome::Ambiguous => {
-                WeeklyWindowStatus::Retrying(remaining)
-            }
+            WeeklyWindowPingOutcome::LoginRequired
+            | WeeklyWindowPingOutcome::AuthenticationRecovery => WeeklyWindowStatus::SignInRequired,
+            WeeklyWindowPingOutcome::LocalSetup
+            | WeeklyWindowPingOutcome::Rejected { .. }
+            | WeeklyWindowPingOutcome::Ambiguous { .. } => WeeklyWindowStatus::Retrying(remaining),
             WeeklyWindowPingOutcome::UnsupportedConfiguration
             | WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowStatus::Failed,
         };
@@ -379,19 +388,29 @@ fn attempt_outcome(
         WeeklyWindowPingOutcome::Completed => {
             WeeklyWindowAttemptOutcome::Completed { refreshed_usage }
         }
-        WeeklyWindowPingOutcome::UnsupportedConfiguration
-        | WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowAttemptOutcome::Completed {
-            refreshed_usage: WeeklyWindowUsage::Missing,
+        WeeklyWindowPingOutcome::LocalSetup => WeeklyWindowAttemptOutcome::Retryable {
+            error: WeeklyWindowRetryableError::LocalSetup,
         },
-        WeeklyWindowPingOutcome::DefiniteRejection => WeeklyWindowAttemptOutcome::Retryable {
-            error: WeeklyWindowRetryableError::Rejected,
+        WeeklyWindowPingOutcome::Rejected { status } => WeeklyWindowAttemptOutcome::Retryable {
+            error: WeeklyWindowRetryableError::Rejected { status },
         },
-        WeeklyWindowPingOutcome::LoginRequired | WeeklyWindowPingOutcome::RecoveryRequired => {
-            WeeklyWindowAttemptOutcome::Retryable {
-                error: WeeklyWindowRetryableError::LoginRequired,
+        WeeklyWindowPingOutcome::LoginRequired => WeeklyWindowAttemptOutcome::Retryable {
+            error: WeeklyWindowRetryableError::LoginRequired,
+        },
+        WeeklyWindowPingOutcome::AuthenticationRecovery => WeeklyWindowAttemptOutcome::Retryable {
+            error: WeeklyWindowRetryableError::AuthenticationRecovery,
+        },
+        WeeklyWindowPingOutcome::Ambiguous { status } => {
+            WeeklyWindowAttemptOutcome::Ambiguous { status }
+        }
+        WeeklyWindowPingOutcome::UnsupportedConfiguration => {
+            WeeklyWindowAttemptOutcome::Unsupported {
+                error: WeeklyWindowError::UnsupportedConfiguration,
             }
         }
-        WeeklyWindowPingOutcome::Ambiguous => WeeklyWindowAttemptOutcome::Ambiguous,
+        WeeklyWindowPingOutcome::UnsupportedRouting => WeeklyWindowAttemptOutcome::Unsupported {
+            error: WeeklyWindowError::UnsupportedRouting,
+        },
     }
 }
 

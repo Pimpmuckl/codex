@@ -220,7 +220,6 @@ async fn redemption_flow_consumes_selected_credit_and_finishes_recovery() {
     .unwrap();
     let account = ResetAccount {
         config: &config,
-        model: "gpt-5",
         store: &store,
         id: &id,
         home: home.path().to_path_buf(),
