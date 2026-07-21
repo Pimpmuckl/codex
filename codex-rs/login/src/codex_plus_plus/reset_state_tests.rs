@@ -45,14 +45,14 @@ fn reset_mutation_lease_excludes_and_releases() {
 #[test]
 fn ambiguous_attempt_replays_and_definite_noop_gets_a_fresh_uuid() {
     let (_home, store, account_id) = test_store();
-    let lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
+    let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     let first = lease.load_or_begin("credit-a").unwrap();
     let (first_credit, first_request) = redeeming(&first);
     assert_eq!(first_credit, "credit-a");
     assert_eq!(first_request.len(), 36);
     drop(lease);
 
-    let lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
+    let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     assert_eq!(lease.load_or_begin("credit-b").unwrap(), first);
     assert!(!lease.clear_redeeming("wrong-request").unwrap());
     assert!(lease.clear_redeeming(first_request).unwrap());
@@ -63,7 +63,7 @@ fn ambiguous_attempt_replays_and_definite_noop_gets_a_fresh_uuid() {
 #[test]
 fn confirmed_redemption_recovers_weekly_activation_and_completion() {
     let (_home, store, account_id) = test_store();
-    let lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
+    let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     let attempt = lease.load_or_begin("credit-a").unwrap();
     let request_id = redeeming(&attempt).1.to_string();
     assert!(!lease.confirm_redeemed("wrong-request", 100).unwrap());
@@ -78,7 +78,7 @@ fn confirmed_redemption_recovers_weekly_activation_and_completion() {
     assert_eq!(lease.state().unwrap(), expected);
     drop(lease);
 
-    let lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
+    let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     assert_eq!(lease.state().unwrap(), expected);
     assert!(lease.finish_weekly_activation().unwrap());
     assert_eq!(
@@ -93,7 +93,7 @@ fn confirmed_redemption_recovers_weekly_activation_and_completion() {
 #[test]
 fn bad_or_newer_state_fails_closed_without_replacement() {
     let (home, store, account_id) = test_store();
-    let lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
+    let mut lease = store.acquire_reset_mutation_lease(&account_id).unwrap();
     let path = home.path().join("accounts/acct_test").join(STATE_FILE);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 

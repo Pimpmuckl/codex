@@ -148,7 +148,7 @@ impl ResetMutationLease {
         })
     }
 
-    pub fn load_or_begin(&self, credit_id: &str) -> io::Result<ResetAttemptPhase> {
+    pub fn load_or_begin(&mut self, credit_id: &str) -> io::Result<ResetAttemptPhase> {
         if credit_id.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -168,7 +168,11 @@ impl ResetMutationLease {
         Ok(phase)
     }
 
-    pub fn confirm_redeemed(&self, redeem_request_id: &str, completed_at: i64) -> io::Result<bool> {
+    pub fn confirm_redeemed(
+        &mut self,
+        redeem_request_id: &str,
+        completed_at: i64,
+    ) -> io::Result<bool> {
         let mut state = read_state(&self.state_path)?;
         let Some(id) = state.phase.as_ref().and_then(|phase| match phase {
             ResetAttemptPhase::Redeeming {
@@ -185,7 +189,7 @@ impl ResetMutationLease {
         Ok(true)
     }
 
-    pub fn clear_redeeming(&self, redeem_request_id: &str) -> io::Result<bool> {
+    pub fn clear_redeeming(&mut self, redeem_request_id: &str) -> io::Result<bool> {
         let mut state = read_state(&self.state_path)?;
         let matches = matches!(
             state.phase.as_ref(),
@@ -202,7 +206,7 @@ impl ResetMutationLease {
         Ok(true)
     }
 
-    pub fn finish_weekly_activation(&self) -> io::Result<bool> {
+    pub fn finish_weekly_activation(&mut self) -> io::Result<bool> {
         let mut state = read_state(&self.state_path)?;
         if state.phase != Some(ResetAttemptPhase::ActivatingWeekly) {
             return Ok(false);
