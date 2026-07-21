@@ -22,11 +22,15 @@ use codex_login::CodexAuth;
 use codex_login::default_client::build_reqwest_client;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_models_manager::manager::ModelsManager as _;
+use codex_models_manager::manager::OpenAiModelsManager;
+use codex_models_manager::manager::RefreshStrategy;
 use http::HeaderMap;
 use serde_json::json;
 use tokio::time::Instant;
 
 use crate::auth::auth_provider_from_auth_manager;
+use crate::models_endpoint::OpenAiModelsEndpoint;
 use crate::provider::provider_uses_first_party_auth_path;
 
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -44,7 +48,6 @@ impl HttpTransport for DeadlineTransport {
 
 pub struct WeeklyWindowPingRequest {
     pub account_codex_home: PathBuf,
-    pub model: String,
     pub model_provider_id: String,
     pub model_provider: ModelProviderInfo,
     pub chatgpt_base_url: String,
@@ -56,10 +59,11 @@ pub struct WeeklyWindowPingRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WeeklyWindowPingOutcome {
     Completed,
-    DefiniteRejection,
-    Ambiguous,
+    LocalSetup,
+    Rejected { status: Option<u16> },
+    Ambiguous { status: Option<u16> },
     LoginRequired,
-    RecoveryRequired,
+    AuthenticationRecovery,
     UnsupportedConfiguration,
     UnsupportedRouting,
 }
@@ -76,7 +80,7 @@ pub fn preflight_weekly_window_ping(
         || model_provider.base_url
             != ModelProviderInfo::create_openai_provider(/*base_url*/ None).base_url
     {
-        return Err(WeeklyWindowPingOutcome::DefiniteRejection);
+        return Err(WeeklyWindowPingOutcome::LocalSetup);
     }
     if chatgpt_base_url.trim_end_matches('/') != ChatGptEnvironment::default().chatgpt_base_url() {
         return Err(WeeklyWindowPingOutcome::UnsupportedConfiguration);
@@ -107,7 +111,7 @@ async fn ping_weekly_window_with_timeout(
     let deadline = Instant::now() + timeout;
     match tokio::time::timeout_at(deadline, ping_weekly_window_inner(request, deadline)).await {
         Ok(outcome) => outcome,
-        Err(_) => WeeklyWindowPingOutcome::Ambiguous,
+        Err(_) => WeeklyWindowPingOutcome::Ambiguous { status: None },
     }
 }
 
@@ -125,35 +129,57 @@ async fn ping_weekly_window_inner(
     {
         Ok(Some(manager)) => Arc::new(manager),
         Ok(None) => return WeeklyWindowPingOutcome::LoginRequired,
-        Err(_) => return WeeklyWindowPingOutcome::DefiniteRejection,
+        Err(_) => return WeeklyWindowPingOutcome::LocalSetup,
     };
     let Some(auth) = auth_manager.auth_cached() else {
         return WeeklyWindowPingOutcome::LoginRequired;
     };
+    let root = request.chatgpt_base_url.trim_end_matches('/');
+    let base_url = root.trim_end_matches("/codex");
+    let provider_info =
+        ModelProviderInfo::create_openai_provider(Some(format!("{base_url}/codex")));
+    let model_manager = OpenAiModelsManager::new_without_cache(
+        Arc::new(OpenAiModelsEndpoint::new(
+            provider_info,
+            Some(Arc::clone(&auth_manager)),
+        )),
+        Some(Arc::clone(&auth_manager)),
+    );
+    let model = model_manager
+        .get_default_model(
+            /*model*/ &None,
+            /*allow_provider_model_fallback*/ false,
+            RefreshStrategy::Online,
+            request.http_client_factory.clone(),
+        )
+        .await;
+    if model.is_empty() {
+        return WeeklyWindowPingOutcome::LocalSetup;
+    }
     let mut unauthorized_recovery = auth_manager.unauthorized_recovery();
     if let AttemptOutcome::Finished(outcome) =
-        send_once(&request, &auth_manager, &auth, deadline).await
+        send_once(&request, &auth_manager, &auth, &model, deadline).await
     {
         return outcome;
     }
     let Ok(reload) = unauthorized_recovery.next().await else {
-        return WeeklyWindowPingOutcome::RecoveryRequired;
+        return WeeklyWindowPingOutcome::AuthenticationRecovery;
     };
     if reload.auth_state_changed() != Some(true) {
-        return WeeklyWindowPingOutcome::RecoveryRequired;
+        return WeeklyWindowPingOutcome::AuthenticationRecovery;
     }
     let Some(reloaded_auth) = auth_manager.auth_cached() else {
-        return WeeklyWindowPingOutcome::RecoveryRequired;
+        return WeeklyWindowPingOutcome::AuthenticationRecovery;
     };
     if auth.get_account_id() != reloaded_auth.get_account_id()
         || auth.get_chatgpt_user_id() != reloaded_auth.get_chatgpt_user_id()
         || auth.is_workspace_account() != reloaded_auth.is_workspace_account()
     {
-        return WeeklyWindowPingOutcome::RecoveryRequired;
+        return WeeklyWindowPingOutcome::AuthenticationRecovery;
     }
-    match send_once(&request, &auth_manager, &auth, deadline).await {
+    match send_once(&request, &auth_manager, &reloaded_auth, &model, deadline).await {
         AttemptOutcome::Finished(outcome) => outcome,
-        AttemptOutcome::Unauthorized => WeeklyWindowPingOutcome::RecoveryRequired,
+        AttemptOutcome::Unauthorized => WeeklyWindowPingOutcome::AuthenticationRecovery,
     }
 }
 
@@ -166,6 +192,7 @@ async fn send_once(
     request: &WeeklyWindowPingRequest,
     auth_manager: &Arc<AuthManager>,
     expected_auth: &CodexAuth,
+    model: &str,
     deadline: Instant,
 ) -> AttemptOutcome {
     let root = request.chatgpt_base_url.trim_end_matches('/');
@@ -173,7 +200,7 @@ async fn send_once(
     let provider_info =
         ModelProviderInfo::create_openai_provider(Some(format!("{base_url}/codex")));
     let Ok(mut provider) = provider_info.to_api_provider(Some(expected_auth.auth_mode())) else {
-        return AttemptOutcome::Finished(WeeklyWindowPingOutcome::DefiniteRejection);
+        return AttemptOutcome::Finished(WeeklyWindowPingOutcome::LocalSetup);
     };
     provider.retry = RetryConfig {
         max_attempts: 0,
@@ -187,17 +214,16 @@ async fn send_once(
     let transport = DeadlineTransport(ReqwestTransport::new(client), deadline);
     let client = ResponsesClient::new(transport, provider, auth);
     let body = json!({
-        "model": request.model,
+        "model": model,
         "instructions": "",
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": "Reply OK."}]
+            "content": [{"type": "input_text", "text": "Reply ACK only."}]
         }],
         "store": false,
         "stream": true,
-        "include": [],
-        "max_output_tokens": 8
+        "include": []
     });
     let mut stream = match client
         .stream(
@@ -226,7 +252,7 @@ async fn send_once(
             Err(error) => return AttemptOutcome::Finished(classify_error(&error)),
         }
     }
-    AttemptOutcome::Finished(WeeklyWindowPingOutcome::Ambiguous)
+    AttemptOutcome::Finished(WeeklyWindowPingOutcome::Ambiguous { status: None })
 }
 
 fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
@@ -234,20 +260,26 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
         ApiError::Transport(TransportError::Http { status, .. }) | ApiError::Api { status, .. }
             if status.is_client_error() && *status != http::StatusCode::REQUEST_TIMEOUT =>
         {
-            WeeklyWindowPingOutcome::DefiniteRejection
+            WeeklyWindowPingOutcome::Rejected {
+                status: Some(status.as_u16()),
+            }
         }
         ApiError::QuotaExceeded
         | ApiError::UsageLimitReached { .. }
         | ApiError::UsageNotIncluded
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
-        | ApiError::CyberPolicy { .. } => WeeklyWindowPingOutcome::DefiniteRejection,
+        | ApiError::CyberPolicy { .. } => WeeklyWindowPingOutcome::Rejected { status: None },
+        ApiError::Transport(TransportError::Http { status, .. }) | ApiError::Api { status, .. } => {
+            WeeklyWindowPingOutcome::Ambiguous {
+                status: Some(status.as_u16()),
+            }
+        }
         ApiError::Transport(_)
-        | ApiError::Api { .. }
         | ApiError::Stream(_)
         | ApiError::Retryable { .. }
         | ApiError::ServerOverloaded
-        | ApiError::ContextWindowExceeded => WeeklyWindowPingOutcome::Ambiguous,
+        | ApiError::ContextWindowExceeded => WeeklyWindowPingOutcome::Ambiguous { status: None },
     }
 }
 

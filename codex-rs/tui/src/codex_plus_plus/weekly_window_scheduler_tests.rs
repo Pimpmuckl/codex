@@ -92,7 +92,7 @@ fn scheduler_status_is_bounded() {
 }
 
 #[test]
-fn completed_ping_records_active_usage_and_unsupported_routing_closes() {
+fn ping_outcomes_preserve_safe_failure_evidence() {
     use WeeklyWindowPingOutcome::*;
     use WeeklyWindowUsage::*;
     let assert_completed = |outcome, usage, refreshed_usage| {
@@ -107,6 +107,20 @@ fn completed_ping_records_active_usage_and_unsupported_routing_closes() {
     };
     assert_completed(Completed, usage(true), usage(true));
     assert_completed(Completed, Missing, Missing);
-    assert_completed(UnsupportedConfiguration, Missing, Missing);
-    assert_completed(UnsupportedRouting, Missing, Missing);
+    assert_eq!(
+        attempt_outcome(Rejected { status: Some(422) }, Missing),
+        WeeklyWindowAttemptOutcome::Retryable {
+            error: WeeklyWindowRetryableError::Rejected { status: Some(422) }
+        }
+    );
+    assert_eq!(
+        attempt_outcome(Ambiguous { status: Some(503) }, Missing),
+        WeeklyWindowAttemptOutcome::Ambiguous { status: Some(503) }
+    );
+    assert_eq!(
+        attempt_outcome(UnsupportedRouting, Missing),
+        WeeklyWindowAttemptOutcome::Unsupported {
+            error: WeeklyWindowError::UnsupportedRouting
+        }
+    );
 }

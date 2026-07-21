@@ -57,7 +57,6 @@ impl TestAccount {
     fn request(&self, server: &MockServer) -> WeeklyWindowPingRequest {
         WeeklyWindowPingRequest {
             account_codex_home: self.account_home.clone(),
-            model: "gpt-test".to_string(),
             model_provider_id: OPENAI_PROVIDER_ID.to_string(),
             model_provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             chatgpt_base_url: server.uri(),
@@ -109,12 +108,48 @@ fn completed_response() -> ResponseTemplate {
         )
 }
 
+async fn mount_models(server: &MockServer, slug: &str) {
+    let mut response = codex_models_manager::bundled_models_response().expect("bundled models");
+    response
+        .models
+        .retain(|model| model.visibility == codex_protocol::openai_models::ModelVisibility::List);
+    response.models.truncate(1);
+    response.models[0].slug = slug.to_string();
+    response.models[0].priority = 0;
+    Mock::given(method("GET"))
+        .and(path("/codex/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
+        .mount(server)
+        .await;
+}
+
+async fn activation_requests(server: &MockServer) -> Vec<Request> {
+    server
+        .received_requests()
+        .await
+        .expect("received requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/codex/responses")
+        .collect()
+}
+
 #[tokio::test]
 async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_providers() {
     let server = MockServer::start().await;
+    mount_models(&server, "account-default").await;
     Mock::given(method("POST"))
         .and(path("/codex/responses"))
-        .respond_with(completed_response())
+        .respond_with(|request: &Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON request");
+            if body.get("max_output_tokens").is_none()
+                && body["input"][0]["content"][0]["text"] == "Reply ACK only."
+            {
+                completed_response()
+            } else {
+                ResponseTemplate::new(400).set_body_string("secret backend rejection body")
+            }
+        })
         .mount(&server)
         .await;
     let account = TestAccount::new();
@@ -135,13 +170,13 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
         ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
         WeeklyWindowPingOutcome::Completed
     );
-    let requests = server.received_requests().await.expect("received requests");
+    let requests = activation_requests(&server).await;
     assert_eq!(requests.len(), 1);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&requests[0].body).expect("JSON body"),
-        json!({"model": "gpt-test", "instructions": "", "input": [{"type": "message",
-            "role": "user", "content": [{"type": "input_text", "text": "Reply OK."}]}],
-            "store": false, "stream": true, "include": [], "max_output_tokens": 8})
+        json!({"model": "account-default", "instructions": "", "input": [{"type": "message",
+            "role": "user", "content": [{"type": "input_text", "text": "Reply ACK only."}]}],
+            "store": false, "stream": true, "include": []})
     );
     assert_eq!(
         requests[0]
@@ -166,12 +201,12 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
     for request in [custom_request, override_request] {
         assert_eq!(
             ping_weekly_window(request).await,
-            WeeklyWindowPingOutcome::DefiniteRejection
+            WeeklyWindowPingOutcome::LocalSetup
         );
     }
     assert_eq!(
         ping_weekly_window_with_timeout(invalid_auth_request, PING_TIMEOUT).await,
-        WeeklyWindowPingOutcome::DefiniteRejection
+        WeeklyWindowPingOutcome::LocalSetup
     );
 
     server.reset().await;
@@ -205,6 +240,7 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
 #[tokio::test]
 async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
     let server = MockServer::start().await;
+    mount_models(&server, "account-default").await;
     let account = TestAccount::new();
     let account_home = account.account_home.clone();
     Mock::given(method("POST"))
@@ -226,7 +262,7 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
         ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
         WeeklyWindowPingOutcome::Completed
     );
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(activation_requests(&server).await.len(), 2);
 
     server.reset().await;
     write_auth(&account.account_home, "account-123", "one", "refresh-one");
@@ -247,21 +283,31 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
         .await;
     assert_eq!(
         ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
-        WeeklyWindowPingOutcome::RecoveryRequired
+        WeeklyWindowPingOutcome::AuthenticationRecovery
     );
     assert!(!AccountStore::new(account.root.clone()).list().unwrap()[0].login_required);
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(activation_requests(&server).await.len(), 1);
 }
 
 #[tokio::test]
 async fn ambiguous_outcomes_are_not_replayed_and_the_attempt_is_bounded() {
     assert_eq!(
         classify_error(&ApiError::UsageNotIncluded),
-        WeeklyWindowPingOutcome::DefiniteRejection
+        WeeklyWindowPingOutcome::Rejected { status: None }
     );
 
     let server = MockServer::start().await;
     let account = TestAccount::new();
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(422).set_body_string("secret backend rejection body"))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
+        WeeklyWindowPingOutcome::Rejected { status: Some(422) }
+    );
+
     for status in [500, 408] {
         server.reset().await;
         Mock::given(method("POST"))
@@ -271,9 +317,11 @@ async fn ambiguous_outcomes_are_not_replayed_and_the_attempt_is_bounded() {
             .await;
         assert_eq!(
             ping_weekly_window_with_timeout(account.request(&server), PING_TIMEOUT).await,
-            WeeklyWindowPingOutcome::Ambiguous
+            WeeklyWindowPingOutcome::Ambiguous {
+                status: Some(status),
+            }
         );
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(activation_requests(&server).await.len(), 1);
     }
 
     for response in [
@@ -294,7 +342,7 @@ async fn ambiguous_outcomes_are_not_replayed_and_the_attempt_is_bounded() {
         assert_eq!(
             ping_weekly_window_with_timeout(account.request(&server), Duration::from_millis(10))
                 .await,
-            WeeklyWindowPingOutcome::Ambiguous
+            WeeklyWindowPingOutcome::Ambiguous { status: None }
         );
     }
 }

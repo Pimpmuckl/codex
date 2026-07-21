@@ -46,7 +46,7 @@ fn assert_unavailable(store: &AccountStore, id: &AccountId, usage: WeeklyWindowU
 }
 
 fn finish_rejected(attempt: WeeklyWindowAttempt, _now: i64) {
-    let error = WeeklyWindowRetryableError::Rejected;
+    let error = WeeklyWindowRetryableError::Rejected { status: Some(400) };
     let outcome = WeeklyWindowAttemptOutcome::Retryable { error };
     attempt.finish(outcome, _now).unwrap();
 }
@@ -114,6 +114,10 @@ fn retry_backoff_reuses_identity_and_caps() {
             .unwrap()
             .retry_not_before
             .unwrap();
+        assert_eq!(
+            store.weekly_window_status(&id).unwrap().last_http_status,
+            Some(400)
+        );
         assert_eq!(
             retry_at - now,
             (300_i64 * (1_i64 << failure.min(MAX_FAILURE_COUNT))).min(6 * 60 * 60)
@@ -213,6 +217,7 @@ fn bad_state_is_quarantined_or_preserved_without_credentials() {
         store.weekly_window_status(&id).unwrap(),
         WeeklyWindowStatus {
             last_error: Some(WeeklyWindowError::StateQuarantined),
+            last_http_status: None,
             retry_not_before: None,
             recovery_not_before: None,
         }

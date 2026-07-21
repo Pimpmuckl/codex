@@ -48,7 +48,6 @@ impl FreshRedemption {
 }
 struct ResetAccount<'a> {
     config: &'a Config,
-    model: &'a str,
     store: &'a AccountStore,
     id: &'a AccountId,
     home: PathBuf,
@@ -63,7 +62,6 @@ pub(crate) fn settings(config: &ConfigLayerStack) -> Option<AutoRedeemResets> {
 }
 pub(super) async fn process_account(
     config: &Config,
-    model: &str,
     store: &AccountStore,
     account_id: &AccountId,
     settings: AutoRedeemResets,
@@ -73,6 +71,53 @@ pub(super) async fn process_account(
         return Ok(());
     };
     let phase = lease.state()?.phase;
+    let account = load_reset_account(config, store, account_id).await?;
+    match phase {
+        Some(ResetAttemptPhase::ActivatingWeekly) => account.recover(&mut lease).await,
+        Some(ResetAttemptPhase::Redeeming {
+            credit_id: id,
+            redeem_request_id: request_id,
+        }) => account.redeem(&mut lease, &id, &request_id).await,
+        None if !fresh_redemption.allowed() => Ok(()),
+        None => {
+            let usage = account.client.get_rate_limits_with_reset_credits().await?;
+            let credits = account.client.list_rate_limit_reset_credits().await?;
+            let now = Utc::now().timestamp();
+            let Some(credit_id) = select_credit(&credits, &usage, settings, now) else {
+                return Ok(());
+            };
+            let ResetAttemptPhase::Redeeming {
+                credit_id,
+                redeem_request_id,
+            } = lease.load_or_begin(&credit_id)?
+            else {
+                anyhow::bail!("fresh reset attempt unexpectedly entered weekly activation");
+            };
+            account
+                .redeem(&mut lease, &credit_id, &redeem_request_id)
+                .await
+        }
+    }
+}
+
+pub(super) async fn activate_weekly(
+    config: &Config,
+    store: &AccountStore,
+    account_id: &AccountId,
+    _lease: &ResetMutationLease,
+) -> WeeklyWindowPingOutcome {
+    match load_reset_account(config, store, account_id).await {
+        Ok(account) => account.activate_weekly().await,
+        Err(err) if account_usage::login_required(&err) => WeeklyWindowPingOutcome::LoginRequired,
+        Err(_) => WeeklyWindowPingOutcome::LocalSetup,
+    }
+}
+
+async fn load_reset_account<'a>(
+    config: &'a Config,
+    store: &'a AccountStore,
+    account_id: &'a AccountId,
+) -> Result<ResetAccount<'a>> {
     let account_home = current_account_home(store, account_id)?;
     let auth = match refresh_auth_from_storage(
         &account_home,
@@ -103,40 +148,13 @@ pub(super) async fn process_account(
         matches_profile(account_id, &auth),
         "imported account identity no longer matches its profile"
     );
-    let account = ResetAccount {
+    Ok(ResetAccount {
         config,
-        model,
         store,
         id: account_id,
         home: account_home,
         client: BackendClient::from_auth(&config.chatgpt_base_url, &auth)?,
-    };
-    match phase {
-        Some(ResetAttemptPhase::ActivatingWeekly) => account.recover(&mut lease).await,
-        Some(ResetAttemptPhase::Redeeming {
-            credit_id: id,
-            redeem_request_id: request_id,
-        }) => account.redeem(&mut lease, &id, &request_id).await,
-        None if !fresh_redemption.allowed() => Ok(()),
-        None => {
-            let usage = account.client.get_rate_limits_with_reset_credits().await?;
-            let credits = account.client.list_rate_limit_reset_credits().await?;
-            let now = Utc::now().timestamp();
-            let Some(credit_id) = select_credit(&credits, &usage, settings, now) else {
-                return Ok(());
-            };
-            let ResetAttemptPhase::Redeeming {
-                credit_id,
-                redeem_request_id,
-            } = lease.load_or_begin(&credit_id)?
-            else {
-                anyhow::bail!("fresh reset attempt unexpectedly entered weekly activation");
-            };
-            account
-                .redeem(&mut lease, &credit_id, &redeem_request_id)
-                .await
-        }
-    }
+    })
 }
 fn current_account_home(store: &AccountStore, account_id: &AccountId) -> Result<PathBuf> {
     ensure!(
@@ -237,9 +255,16 @@ impl ResetAccount<'_> {
             Some(_) => return Ok(()),
             None => return Ok(()),
         }
-        let outcome = ping_weekly_window(WeeklyWindowPingRequest {
+        let outcome = self.activate_weekly().await;
+        if outcome == WeeklyWindowPingOutcome::Completed {
+            lease.finish_weekly_activation()?;
+        }
+        Ok(())
+    }
+
+    async fn activate_weekly(&self) -> WeeklyWindowPingOutcome {
+        ping_weekly_window(WeeklyWindowPingRequest {
             account_codex_home: self.home.clone(),
-            model: self.model.to_string(),
             model_provider_id: self.config.model_provider_id.clone(),
             model_provider: self.config.model_provider.clone(),
             chatgpt_base_url: self.config.chatgpt_base_url.clone(),
@@ -247,11 +272,7 @@ impl ResetAccount<'_> {
             forced_chatgpt_workspace_id: self.config.forced_chatgpt_workspace_id.clone(),
             http_client_factory: self.config.http_client_factory(),
         })
-        .await;
-        if outcome == WeeklyWindowPingOutcome::Completed {
-            lease.finish_weekly_activation()?;
-        }
-        Ok(())
+        .await
     }
 }
 fn select_credit(
