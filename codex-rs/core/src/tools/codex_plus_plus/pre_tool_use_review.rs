@@ -1,5 +1,4 @@
 use crate::guardian::GuardianApprovalRequest;
-use crate::guardian::guardian_rejection_message;
 use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::review_approval_request;
@@ -18,7 +17,7 @@ pub(crate) fn review<'a>(
         let decision = review_approval_request(
             &invocation.session,
             &invocation.turn,
-            review_id.clone(),
+            review_id,
             GuardianApprovalRequest::PreToolUse {
                 id: invocation.call_id.clone(),
                 tool_name: payload.tool_name.name().to_string(),
@@ -35,9 +34,7 @@ pub(crate) fn review<'a>(
             | ReviewDecision::ApprovedForSession
             | ReviewDecision::ApprovedExecpolicyAmendment { .. }
             | ReviewDecision::NetworkPolicyAmendment { .. } => Ok(()),
-            ReviewDecision::Denied => {
-                Err(guardian_rejection_message(&invocation.session, &review_id).await)
-            }
+            ReviewDecision::Denied { rejection } => Err(rejection),
             ReviewDecision::TimedOut => Err(guardian_timeout_message()),
             ReviewDecision::Abort => Err(
                 "Automatic approval review was cancelled. The tool call was blocked.".to_string(),

@@ -532,11 +532,6 @@ pub struct PermissionMessages {
     pub read_only: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
-pub struct AutoReviewMessages {
-    pub policy: Option<String>,
-}
-
 impl ModelMessages {
     fn has_personality_placeholder(&self) -> bool {
         self.instructions_template

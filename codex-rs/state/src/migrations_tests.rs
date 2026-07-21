@@ -1,13 +1,16 @@
 use codex_utils_absolute_path::test_support::PathExt;
+use sqlx::AssertSqlSafe;
 use sqlx::Connection;
 use sqlx::Row;
 use sqlx::SqlSafeStr;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+use sqlx::sqlite::SqlitePoolOptions;
 use std::borrow::Cow;
 
 use super::STATE_MIGRATOR;
 use super::repair_legacy_recency_migration_version;
+use super::runtime_migrator_for_pool;
 use crate::state_db_path;
 
 fn migrator_through(version: i64) -> Migrator {
@@ -26,6 +29,102 @@ fn migrator_through(version: i64) -> Migrator {
         create_schemas: STATE_MIGRATOR.create_schemas.clone(),
         no_tx: STATE_MIGRATOR.no_tx,
     }
+}
+
+#[tokio::test]
+async fn new_migrations_use_the_released_platform_checksum() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    let current_migrator = migrator_through(/*version*/ 1);
+    let current = &current_migrator.migrations[0];
+    let lf_sql = current
+        .sql
+        .as_str()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let expected_sql = if cfg!(windows) {
+        lf_sql.replace('\n', "\r\n")
+    } else {
+        lf_sql
+    };
+    let expected_migration = Migration::new(
+        current.version,
+        current.description.clone(),
+        current.migration_type,
+        AssertSqlSafe(expected_sql).into_sql_str(),
+        current.no_tx,
+    );
+
+    runtime_migrator_for_pool(&pool, &current_migrator)
+        .await
+        .expect("runtime migrator should load")
+        .run(&pool)
+        .await
+        .expect("migration should apply");
+
+    let applied =
+        sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("applied migration should load");
+    assert_eq!(
+        applied,
+        (
+            expected_migration.version,
+            expected_migration.checksum.to_vec()
+        )
+    );
+}
+
+#[tokio::test]
+async fn accepts_windows_package_checksums_without_rewriting_them() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    let current_migrator = migrator_through(/*version*/ 1);
+    let current = &current_migrator.migrations[0];
+    let crlf_sql = current
+        .sql
+        .as_str()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    let crlf_migrator = Migrator::with_migrations(vec![Migration::new(
+        current.version,
+        current.description.clone(),
+        current.migration_type,
+        AssertSqlSafe(crlf_sql).into_sql_str(),
+        current.no_tx,
+    )]);
+    crlf_migrator
+        .run(&pool)
+        .await
+        .expect("CRLF migration should apply");
+
+    runtime_migrator_for_pool(&pool, &current_migrator)
+        .await
+        .expect("CRLF checksum should be accepted")
+        .run(&pool)
+        .await
+        .expect("compatible migration should validate");
+
+    let applied =
+        sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("applied migration should load");
+    assert_eq!(
+        applied,
+        (
+            crlf_migrator.migrations[0].version,
+            crlf_migrator.migrations[0].checksum.to_vec(),
+        )
+    );
 }
 
 #[tokio::test]

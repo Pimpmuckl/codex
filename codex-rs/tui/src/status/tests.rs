@@ -1713,6 +1713,7 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
         /*runtime_model_provider_base_url*/ None,
         /*remote_connection*/ None,
         /*account_display*/ None,
+        /*account_identity_may_be_stale*/ false,
         /*token_info*/ None,
         &usage,
         &None,

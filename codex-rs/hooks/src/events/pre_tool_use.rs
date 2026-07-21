@@ -50,6 +50,7 @@ pub struct PreToolUseOutcome {
 struct PreToolUseHandlerData {
     should_block: bool,
     block_reason: Option<String>,
+    review_reason: Option<String>,
     additional_contexts_for_model: Vec<AdditionalContext>,
     updated_input: Option<Value>,
 }
@@ -611,6 +612,7 @@ mod tests {
             PreToolUseHandlerData {
                 should_block: true,
                 block_reason: Some("do not run that".to_string()),
+                review_reason: None,
                 additional_contexts_for_model: vec![AdditionalContext {
                     text: "remember this".to_string(),
                     limit: Default::default(),
@@ -762,6 +764,7 @@ mod tests {
             PreToolUseHandlerData {
                 should_block: true,
                 block_reason: Some("do not run that".to_string()),
+                review_reason: None,
                 additional_contexts_for_model: vec![AdditionalContext {
                     text: "nope".to_string(),
                     limit: AdditionalContextLimit::from_config(Some(13)),

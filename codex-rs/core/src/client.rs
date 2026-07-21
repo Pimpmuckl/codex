@@ -71,6 +71,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
+use codex_login::auth::ImportedAccountSwitchOutcome;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::build_default_reqwest_client_for_route;
 use codex_otel::SessionTelemetry;

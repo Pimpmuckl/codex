@@ -7,6 +7,10 @@ use super::resize_reflow::trailing_run_start;
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_server_session::ForkGoalContinuation;
+use crate::codex_plus_plus::apply_dcg_action;
+use crate::codex_plus_plus::destructive_command_guard::DcgManager;
+use crate::codex_plus_plus::destructive_command_guard::DcgStatus;
+use crate::codex_plus_plus::destructive_command_guard::RepairReason;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
 #[cfg(target_os = "windows")]

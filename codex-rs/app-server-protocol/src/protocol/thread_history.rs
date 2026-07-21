@@ -1886,6 +1886,39 @@ mod tests {
     }
 
     #[test]
+    fn materialized_history_keeps_one_inbox_message_without_assistant_response_items() {
+        let agent_message = |id: &str, text: &str| {
+            CoreTurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
+                id: id.into(),
+                content: vec![codex_protocol::items::AgentMessageContent::Text {
+                    text: text.into(),
+                }],
+                phase: Some(CoreMessagePhase::Commentary),
+                memory_citation: None,
+            })
+        };
+        let mut builder = ThreadHistoryBuilder::new();
+        let turn_id = builder.ensure_turn().id.clone();
+        builder
+            .handle_materialized_item_lifecycle(&turn_id, &agent_message("assistant", "ordinary"));
+        let note = "[Message for you]\nCheck deployment.";
+        builder.handle_materialized_item_lifecycle(
+            &turn_id,
+            &agent_message("user-message:call-1", note),
+        );
+        builder.handle_agent_message(note.into(), Some(CoreMessagePhase::Commentary), None);
+        assert_eq!(
+            builder.active_turn_snapshot().expect("active turn").items,
+            vec![ThreadItem::AgentMessage {
+                id: "user-message:call-1".into(),
+                text: note.into(),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+            }]
+        );
+    }
+
+    #[test]
     fn rebuilds_user_message_attachments_from_legacy_events() {
         let local_image_path = PathBuf::from("/tmp/local.png");
         let local_audio_path = PathBuf::from("/tmp/local.wav");

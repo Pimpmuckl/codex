@@ -54,6 +54,7 @@ async fn start_recording_app_server(
         /*log_db*/ None,
         state_db,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*initial_account_id*/ None,
     )
     .await?;
     let codex_home = config.codex_home.display().to_string();
