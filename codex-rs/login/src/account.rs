@@ -19,11 +19,14 @@ use crate::auth::load_auth_dot_json_with_guard;
 use crate::auth::save_auth_with_guard;
 use crate::auth::save_file_auth_if_unchanged;
 use crate::load_auth_dot_json;
+use crate::token_data::TokenData;
 
 #[path = "codex_plus_plus/account_bridge.rs"]
 mod account_bridge;
 #[path = "codex_plus_plus/account_policy.rs"]
 pub(crate) mod account_policy;
+#[path = "codex_plus_plus/reset_state.rs"]
+pub(crate) mod reset_state;
 #[path = "codex_plus_plus/weekly_window_state.rs"]
 pub(crate) mod weekly_window_state;
 
@@ -121,6 +124,7 @@ impl AccountStore {
         let mut auth = root_auth.clone();
         let imported_from_root_marker = is_root_account_marker(&auth);
         let source_account_id = account_id_for_auth(&auth)?;
+        let _reset_lease = self.acquire_reset_mutation_lease(&source_account_id)?;
         let account_home = self.account_home(&source_account_id);
         let account_refresh_guard = AuthRefreshGuard::acquire(&account_home)?;
         if imported_from_root_marker {
@@ -600,6 +604,10 @@ pub(crate) fn account_id_for_auth(auth: &AuthDotJson) -> std::io::Result<Account
         )
     })?;
 
+    account_id_for_token_data(tokens)
+}
+
+fn account_id_for_token_data(tokens: &TokenData) -> std::io::Result<AccountId> {
     let identity = tokens
         .account_id
         .as_deref()
@@ -626,13 +634,21 @@ pub(crate) fn account_id_for_auth(auth: &AuthDotJson) -> std::io::Result<Account
             )
         })?;
 
+    Ok(account_id_for_stable_identity(identity.0, &identity.1))
+}
+
+pub(super) fn account_id_for_workspace(account_id: &str) -> AccountId {
+    account_id_for_stable_identity("account", account_id)
+}
+
+fn account_id_for_stable_identity(kind: &str, value: &str) -> AccountId {
     let mut hasher = Sha256::new();
-    hasher.update(identity.0.as_bytes());
+    hasher.update(kind.as_bytes());
     hasher.update(b":");
-    hasher.update(identity.1.as_bytes());
+    hasher.update(value.as_bytes());
     let digest = hasher.finalize();
     let hex = format!("{digest:x}");
-    Ok(AccountId(format!("acct_{}", &hex[..16])))
+    AccountId(format!("acct_{}", &hex[..16]))
 }
 
 fn is_managed_chatgpt_auth(auth: &AuthDotJson) -> bool {

@@ -14,6 +14,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AccountStore;
+use codex_login::AuthKeyringBackendKind;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -118,6 +120,37 @@ async fn consume_account_rate_limit_reset_credit_maps_backend_outcomes() -> Resu
             }
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn chatgpt_auth_without_local_identity_can_still_consume() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-token"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let server = MockServer::start().await;
+    write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .and(header("authorization", "Bearer chatgpt-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "code": "reset", "windows_reset": 2 })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut mcp = initialized_app_server(codex_home.path()).await?;
+    assert_eq!(
+        consume_reset_credit(&mut mcp, "request-no-local-identity").await?,
+        ConsumeAccountRateLimitResetCreditResponse {
+            outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+        }
+    );
     Ok(())
 }
 
@@ -270,6 +303,91 @@ async fn consume_timeout_releases_account_auth_queue() -> Result<()> {
         mcp.read_stream_until_response_message(RequestId::Integer(account_id)),
     )
     .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn reset_lease_contention_times_out_without_blocking_server() -> Result<()> {
+    let (codex_home, _server) = chatgpt_test_context().await?;
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let account = store.import_current(
+        /*label*/ None,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let _reset_lease = store.acquire_reset_mutation_lease(&account.id)?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[
+            ("OPENAI_API_KEY", None),
+            (RATE_LIMIT_RESET_REQUEST_TIMEOUT_ENV_VAR, Some("100")),
+        ])
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let consume_id = send_consume_reset_credit(&mut mcp, "request-lock-timeout").await?;
+    let account_id = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+        })
+        .await?;
+
+    let consume_error: JSONRPCError = timeout(
+        SERVER_TIMEOUT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(consume_id)),
+    )
+    .await??;
+    assert_eq!(consume_error.error.code, INTERNAL_ERROR_CODE);
+    assert_eq!(
+        consume_error.error.message,
+        "rate limit reset consume timed out"
+    );
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(account_id)),
+    )
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn imported_account_consume_waits_for_shared_reset_lease() -> Result<()> {
+    let (codex_home, server) = chatgpt_test_context().await?;
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let account = store.import_current(
+        /*label*/ None,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let reset_lease = store.acquire_reset_mutation_lease(&account.id)?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "code": "reset", "windows_reset": 2 })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut mcp = initialized_app_server(codex_home.path()).await?;
+    let request_id = send_consume_reset_credit(&mut mcp, "request-locked").await?;
+    assert!(
+        timeout(
+            std::time::Duration::from_millis(/*millis*/ 100),
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await
+        .is_err()
+    );
+    drop(reset_lease);
+    assert_eq!(
+        read_response::<ConsumeAccountRateLimitResetCreditResponse>(&mut mcp, request_id).await?,
+        ConsumeAccountRateLimitResetCreditResponse {
+            outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+        }
+    );
     Ok(())
 }
 
