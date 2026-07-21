@@ -4,23 +4,23 @@
 
 # Codex++
 
-Codex++ is a lean fork of upstream [OpenAI Codex](https://github.com/openai/codex), focused on multi-account workflows, safer hook-driven automation, and Windows reliability.
+Codex++ is a lean fork of upstream [OpenAI Codex](https://github.com/openai/codex), focused on multi-account workflows, safer automation, and reliability improvements for long-running sessions.
 
 ## Changes vs Upstream
 
 - Multi-account support
   - Add ChatGPT accounts with `codex account add`.
-  - Automatically fail over with no interruption when the active account reaches a usage limit.
+  - Chooses a suitable account on startup based on remaining usage and whether another Codex++ session is already using it. Or chose an account yourself!
+  - Automatically switches accounts without interruption when the active account reaches a usage limit.
   - Use `/accounts` to enable or disable accounts and their automation.
-  - Auto-chooses an account on startup, respecting five-hour and weekly usage windows.
-  - Avoids accounts already in use by another Codex++ process.
-  - Automatically starts usage weekly limits when configured.
-- Hook-requested review under `--yolo`
-  - Supports `permissionDecision: "ask"` from `PreToolUse` hooks even when Codex runs with `--yolo`.
-  - For example, a destructive-command guard can request a Guardian auto-review instead of only allowing or denying the command itself.
-- Windows reliability fixes
-  - Includes fixes for TUI focus, input, and process behavior on Windows.
-  - Provides a subprocess-visible shim so tools such as Review Suite reliably launch Codex++ rather than another Codex installation (and can auto-use the multi-account features)
+  - Can automatically start unused weekly usage windows and redeem banked usage resets shortly before expiry or when weekly usage is exhausted.
+- Quality of life
+  - Automatically waits and retries when a model is temporarily full.
+  - An experimental inbox lets the main agent leave durable messages, with unread markers for background threads.
+  - Fixes TUI focus and input problems, plus crashes in long-running threads.
+- Safer automation under `--yolo`
+  - Hooks can send risky actions to Guardian for an automatic review instead of only allowing or blocking them.
+  - Install and update Destructive Command Guard through `/codexplusplus`.
 
 Codex++ otherwise stays close to upstream. It uses the normal `$CODEX_HOME` for configuration, sessions, plugins, and state, while imported account credentials live under `$CODEX_HOME/accounts`.
 
