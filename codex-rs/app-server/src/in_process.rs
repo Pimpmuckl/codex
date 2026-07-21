@@ -714,7 +714,8 @@ async fn start_uninitialized(
                                     .await;
                             }
                         }
-                        OutgoingMessage::AppServerNotification(notification) => {
+                        OutgoingMessage::AppServerNotification(envelope) => {
+                            let notification = envelope.notification;
                             if server_notification_requires_delivery(&notification) {
                                 if event_tx
                                     .send(InProcessServerEvent::ServerNotification(notification))
