@@ -10,7 +10,6 @@ use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 use windows_sys::Win32::Foundation::CloseHandle;
@@ -235,9 +234,10 @@ fn recovery_does_not_wait_for_a_competing_reader() -> Result<()> {
             false
         }
     });
-    let started = Instant::now();
-    assert!(poll_once(&mut stream).is_pending());
-    assert!(started.elapsed() < Duration::from_millis(100));
+    let (recovery_done_tx, recovery_done_rx) = mpsc::channel();
+    let recovery_poll = thread::spawn(move || recovery_done_tx.send(poll_once(&mut stream)));
+    let recovery_result = recovery_done_rx.recv_timeout(Duration::from_millis(100));
+    let recovery_completed_in_time = recovery_result.is_ok();
 
     let mut reader_completed = (0..100).any(|_| {
         unsafe { CancelSynchronousIo(reader_thread) };
@@ -256,7 +256,22 @@ fn recovery_does_not_wait_for_a_competing_reader() -> Result<()> {
     competing_reader
         .join()
         .expect("competing console reader panicked");
+    let recovery_result = match recovery_result {
+        Ok(result) => result,
+        Err(_) => {
+            write_records(handle, &[key_record(0, '\u{e002}')])?;
+            recovery_done_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("recovery poll did not stop after cleanup input")
+        }
+    };
+    recovery_poll
+        .join()
+        .expect("recovery poll thread panicked")
+        .expect("recovery poll result receiver dropped");
     assert!(read_is_pending);
+    assert!(recovery_completed_in_time);
+    assert!(recovery_result.is_pending());
     unsafe { FlushConsoleInputBuffer(handle) };
     Ok(())
 }
