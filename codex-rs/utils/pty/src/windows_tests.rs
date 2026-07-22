@@ -1,14 +1,25 @@
 use super::collect_output_until_exit;
+use super::collect_split_output;
 use super::combine_spawned_output;
 use super::find_python;
 use super::wait_for_output_contains;
+use crate::SpawnedProcess;
 use crate::TerminalSize;
+use crate::spawn_pipe_process;
+use crate::spawn_pipe_process_no_stdin;
 use crate::spawn_pty_process;
 use std::collections::HashMap;
+use std::io::Read;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
+use std::process::Stdio;
 
 const READY_MARKER: &str = "__CODEX_CHILD_READY__";
 const VALUE_MARKER: &str = "__CODEX_CHILD_VALUE__";
+const CONSOLE_TEST_ROLE_ENV: &str = "CODEX_PTY_CONSOLE_TEST_ROLE";
+const CONSOLE_TEST_STDIN_ENV: &str = "CODEX_PTY_CONSOLE_TEST_STDIN";
+const CONSOLE_TEST_NAME: &str =
+    "tests::windows_tests::pipe_processes_do_not_inherit_parent_console";
 
 struct WindowsShell {
     name: &'static str,
@@ -155,5 +166,125 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
         "PowerShell did not resume after Ctrl-C: {:?}",
         String::from_utf8_lossy(&output)
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pipe_processes_do_not_inherit_parent_console() -> anyhow::Result<()> {
+    match std::env::var(CONSOLE_TEST_ROLE_ENV).as_deref() {
+        Ok("probe") => {
+            let console_access = (
+                std::fs::File::open("CONIN$").is_ok(),
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("CONOUT$")
+                    .is_ok(),
+            );
+            assert_eq!(
+                console_access,
+                (false, false),
+                "pipe child retained access to the parent console"
+            );
+
+            let mut stdin = String::new();
+            std::io::stdin().read_to_string(&mut stdin)?;
+            assert_eq!(stdin, std::env::var(CONSOLE_TEST_STDIN_ENV)?);
+            println!("console-probe-stdout");
+            eprintln!("console-probe-stderr");
+        }
+        Ok("parent") => {
+            assert!(
+                std::fs::File::open("CONIN$").is_ok(),
+                "test parent did not receive its requested console"
+            );
+            for expected_stdin in ["pipe-stdin\n", ""] {
+                let program = std::env::current_exe()?.to_string_lossy().into_owned();
+                let args = vec![
+                    "--exact".to_string(),
+                    CONSOLE_TEST_NAME.to_string(),
+                    "--nocapture".to_string(),
+                ];
+                let mut env: HashMap<String, String> = std::env::vars().collect();
+                env.insert(CONSOLE_TEST_ROLE_ENV.to_string(), "probe".to_string());
+                env.insert(
+                    CONSOLE_TEST_STDIN_ENV.to_string(),
+                    expected_stdin.to_string(),
+                );
+                let spawned = if expected_stdin.is_empty() {
+                    spawn_pipe_process_no_stdin(
+                        &program,
+                        &args,
+                        Path::new("."),
+                        &env,
+                        /*arg0*/ &None,
+                        &[],
+                    )
+                    .await?
+                } else {
+                    spawn_pipe_process(
+                        &program,
+                        &args,
+                        Path::new("."),
+                        &env,
+                        /*arg0*/ &None,
+                        &[],
+                    )
+                    .await?
+                };
+                let SpawnedProcess {
+                    session,
+                    stdout_rx,
+                    stderr_rx,
+                    exit_rx,
+                } = spawned;
+                if !expected_stdin.is_empty() {
+                    let writer = session.writer_sender();
+                    writer.send(expected_stdin.as_bytes().to_vec()).await?;
+                    drop(writer);
+                    session.close_stdin();
+                }
+
+                let stdout_task = tokio::spawn(collect_split_output(stdout_rx));
+                let stderr_task = tokio::spawn(collect_split_output(stderr_rx));
+                let timeout = tokio::time::Duration::from_secs(10);
+                let code = tokio::time::timeout(timeout, exit_rx).await??;
+                let stdout = tokio::time::timeout(timeout, stdout_task).await??;
+                let stderr = tokio::time::timeout(timeout, stderr_task).await??;
+                assert_eq!(
+                    code,
+                    0,
+                    "console probe failed:\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                );
+                assert!(
+                    String::from_utf8_lossy(&stdout).contains("console-probe-stdout"),
+                    "missing captured stdout: {}",
+                    String::from_utf8_lossy(&stdout)
+                );
+                assert!(
+                    String::from_utf8_lossy(&stderr).contains("console-probe-stderr"),
+                    "missing captured stderr: {}",
+                    String::from_utf8_lossy(&stderr)
+                );
+            }
+        }
+        _ => {
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", CONSOLE_TEST_NAME, "--nocapture"])
+                .env(CONSOLE_TEST_ROLE_ENV, "parent")
+                .creation_flags(winapi::um::winbase::CREATE_NEW_CONSOLE)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()?;
+            assert!(
+                output.status.success(),
+                "console parent failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
     Ok(())
 }
