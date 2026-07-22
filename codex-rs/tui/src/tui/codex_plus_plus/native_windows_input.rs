@@ -38,7 +38,10 @@ impl Stream for OwnedEventStream {
                     Poll::Ready(_) => {
                         continue;
                     }
-                    Poll::Pending => return Poll::Pending,
+                    Poll::Pending => {
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
                 }
             }
             return result;

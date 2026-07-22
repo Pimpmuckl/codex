@@ -26,7 +26,9 @@ use windows_sys::Win32::System::Console::ReadConsoleInputW;
 use windows_sys::Win32::System::Console::WriteConsoleInputW;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::System::Threading::GetThreadIOPendingFlag;
 use windows_sys::Win32::System::Threading::OpenThread;
+use windows_sys::Win32::System::Threading::THREAD_QUERY_INFORMATION;
 use windows_sys::Win32::System::Threading::THREAD_TERMINATE;
 
 const VK_BACK: u16 = 0x08;
@@ -212,23 +214,49 @@ fn recovery_does_not_wait_for_a_competing_reader() -> Result<()> {
         reader_done_tx.send(()).unwrap();
     });
     let reader_thread_id = reader_ready_rx.recv().unwrap();
+    let reader_thread = unsafe {
+        OpenThread(
+            THREAD_QUERY_INFORMATION | THREAD_TERMINATE,
+            0,
+            reader_thread_id,
+        )
+    };
+    assert_ne!(reader_thread, 0);
+    let mut io_pending = 0;
+    let read_is_pending = (0..100).any(|_| {
+        assert_ne!(
+            unsafe { GetThreadIOPendingFlag(reader_thread, &mut io_pending) },
+            0
+        );
+        if io_pending != 0 {
+            true
+        } else {
+            thread::sleep(Duration::from_millis(10));
+            false
+        }
+    });
     let started = Instant::now();
     assert!(poll_once(&mut stream).is_pending());
     assert!(started.elapsed() < Duration::from_millis(100));
 
-    let reader_thread = unsafe { OpenThread(THREAD_TERMINATE, 0, reader_thread_id) };
-    assert_ne!(reader_thread, 0);
-    let reader_completed = (0..100).any(|_| {
+    let mut reader_completed = (0..100).any(|_| {
         unsafe { CancelSynchronousIo(reader_thread) };
         reader_done_rx
             .recv_timeout(Duration::from_millis(10))
             .is_ok()
     });
+    if !reader_completed {
+        write_records(handle, &[key_record(0, '\u{e001}')])?;
+        reader_completed = reader_done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+    }
     unsafe { CloseHandle(reader_thread) };
     assert!(reader_completed);
     competing_reader
         .join()
         .expect("competing console reader panicked");
+    assert!(read_is_pending);
     unsafe { FlushConsoleInputBuffer(handle) };
     Ok(())
 }
