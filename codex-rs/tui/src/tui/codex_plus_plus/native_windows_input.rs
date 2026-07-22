@@ -8,6 +8,8 @@ use tokio_stream::Stream;
 
 pub(in crate::tui) struct OwnedEventStream {
     inner: Option<crossterm::event::EventStream>,
+    #[cfg(windows)]
+    discarding_stale_events: bool,
 }
 
 impl Default for OwnedEventStream {
@@ -18,6 +20,8 @@ impl Default for OwnedEventStream {
         }
         Self {
             inner: Some(crossterm::event::EventStream::new()),
+            #[cfg(windows)]
+            discarding_stale_events: false,
         }
     }
 }
@@ -26,18 +30,51 @@ impl Stream for OwnedEventStream {
     type Item = std::io::Result<crossterm::event::Event>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        #[cfg(windows)]
+        let mut stale_event_budget = MAX_RECOVERY_DISCARDS_PER_POLL;
         loop {
-            #[cfg(windows)]
-            self.recover_runtime_drift();
-
             let result = Pin::new(
                 self.inner
                     .get_or_insert_with(crossterm::event::EventStream::new),
             )
             .poll_next(cx);
             #[cfg(windows)]
-            if result.is_ready() && self.recover_runtime_drift() {
-                continue;
+            if self.discarding_stale_events {
+                match &result {
+                    Poll::Ready(Some(Ok(_))) => {
+                        stale_event_budget -= 1;
+                        if stale_event_budget == 0 {
+                            cx.waker().wake_by_ref();
+                            return Poll::Pending;
+                        }
+                        continue;
+                    }
+                    Poll::Pending => {
+                        // Building the replacement stream synchronized with Crossterm's global
+                        // reader, so no event from the old stream can be published after this.
+                        self.discarding_stale_events = false;
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
+                        self.discarding_stale_events = false;
+                        return result;
+                    }
+                }
+            }
+            #[cfg(windows)]
+            if self.recover_runtime_drift() {
+                match &result {
+                    Poll::Ready(Some(Ok(_))) => {
+                        self.discarding_stale_events = true;
+                        stale_event_budget -= 1;
+                        continue;
+                    }
+                    Poll::Pending => {
+                        self.discarding_stale_events = true;
+                        continue;
+                    }
+                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return result,
+                }
             }
             return result;
         }
@@ -51,9 +88,6 @@ impl OwnedEventStream {
             Ok(true) => {
                 self.inner.take();
                 super::super::flush_terminal_input_buffer();
-                if let Err(err) = discard_crossterm_events() {
-                    tracing::warn!(error = %err, "failed to discard stale Windows terminal input");
-                }
                 self.inner = Some(crossterm::event::EventStream::new());
                 true
             }
@@ -81,24 +115,15 @@ use windows_sys::Win32::System::Console::GetConsoleMode;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::GetStdHandle;
 #[cfg(windows)]
-use windows_sys::Win32::System::Console::INPUT_RECORD;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::INPUT_RECORD_0;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::KEY_EVENT;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::KEY_EVENT_RECORD;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::KEY_EVENT_RECORD_0;
-#[cfg(windows)]
 use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::SetConsoleMode;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::WriteConsoleInputW;
 
 #[cfg(windows)]
 static ORIGINAL_VIRTUAL_TERMINAL_INPUT: OnceLock<bool> = OnceLock::new();
+
+#[cfg(windows)]
+const MAX_RECOVERY_DISCARDS_PER_POLL: usize = 32;
 
 #[cfg(windows)]
 pub(in crate::tui) fn ensure_native_windows_input_mode() -> Result<bool> {
@@ -133,47 +158,6 @@ pub(in crate::tui) fn restore_native_windows_input_mode() -> Result<()> {
         set_windows_console_input_mode(handle, restored_mode)?;
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn discard_crossterm_events() -> Result<()> {
-    const DRAIN_SENTINEL: char = '\u{e000}';
-
-    let Some((handle, _)) = windows_console_input_mode()? else {
-        return Ok(());
-    };
-    let sentinel = INPUT_RECORD {
-        EventType: KEY_EVENT as u16,
-        Event: INPUT_RECORD_0 {
-            KeyEvent: KEY_EVENT_RECORD {
-                bKeyDown: 1,
-                wRepeatCount: 1,
-                wVirtualKeyCode: 0,
-                wVirtualScanCode: 0,
-                uChar: KEY_EVENT_RECORD_0 {
-                    UnicodeChar: DRAIN_SENTINEL as u16,
-                },
-                dwControlKeyState: 0,
-            },
-        },
-    };
-    let mut written = 0;
-    if unsafe { WriteConsoleInputW(handle, &sentinel, 1, &mut written) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    if written != 1 {
-        return Err(std::io::Error::other("partial console input write"));
-    }
-
-    loop {
-        if matches!(
-            crossterm::event::read()?,
-            crossterm::event::Event::Key(event)
-                if event.code == crossterm::event::KeyCode::Char(DRAIN_SENTINEL)
-        ) {
-            return Ok(());
-        }
-    }
 }
 
 #[cfg(windows)]
