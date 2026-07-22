@@ -9,7 +9,7 @@ use tokio_stream::Stream;
 pub(in crate::tui) struct OwnedEventStream {
     inner: Option<crossterm::event::EventStream>,
     #[cfg(windows)]
-    recovery_drain: Option<RecoveryDrain>,
+    stale_escape_deadline: Option<Instant>,
 }
 
 impl Default for OwnedEventStream {
@@ -21,7 +21,7 @@ impl Default for OwnedEventStream {
         Self {
             inner: Some(crossterm::event::EventStream::new()),
             #[cfg(windows)]
-            recovery_drain: None,
+            stale_escape_deadline: None,
         }
     }
 }
@@ -36,11 +36,11 @@ impl Stream for OwnedEventStream {
 
             #[cfg(windows)]
             if self
-                .recovery_drain
+                .stale_escape_deadline
                 .as_ref()
-                .is_some_and(|drain| Instant::now() >= drain.deadline)
+                .is_some_and(|deadline| Instant::now() >= *deadline)
             {
-                self.recovery_drain = None;
+                self.stale_escape_deadline = None;
             }
 
             let result = Pin::new(
@@ -49,25 +49,16 @@ impl Stream for OwnedEventStream {
             )
             .poll_next(cx);
             #[cfg(windows)]
-            if let Some(drain) = self.recovery_drain.as_mut() {
+            if self.stale_escape_deadline.is_some() {
                 match &result {
-                    Poll::Ready(Some(Ok(event))) => {
-                        drain.remaining -= 1;
-                        if drain.remaining == 0
-                            || matches!(
-                                event,
-                                crossterm::event::Event::Key(event)
-                                    if event.code == crossterm::event::KeyCode::Char(
-                                        RECOVERY_DRAIN_SENTINEL
-                                    )
-                            )
-                        {
-                            self.recovery_drain = None;
-                        }
+                    Poll::Ready(Some(Ok(crossterm::event::Event::Key(event))))
+                        if event.code == crossterm::event::KeyCode::Esc =>
+                    {
+                        self.stale_escape_deadline = None;
                         continue;
                     }
-                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-                        self.recovery_drain = None;
+                    Poll::Ready(Some(_)) | Poll::Ready(None) => {
+                        self.stale_escape_deadline = None;
                     }
                     Poll::Pending => {}
                 }
@@ -88,33 +79,7 @@ impl OwnedEventStream {
             Ok(true) => {
                 self.inner.take();
                 super::super::flush_terminal_input_buffer();
-                let drain_result = (|| {
-                    let Some((handle, _)) = windows_console_input_mode()? else {
-                        return Ok(());
-                    };
-                    let mut sentinel: INPUT_RECORD = unsafe { std::mem::zeroed() };
-                    sentinel.EventType = KEY_EVENT as u16;
-                    sentinel.Event.KeyEvent.bKeyDown = 1;
-                    sentinel.Event.KeyEvent.wRepeatCount = 1;
-                    sentinel.Event.KeyEvent.uChar.UnicodeChar = RECOVERY_DRAIN_SENTINEL as u16;
-                    let mut written = 0;
-                    if unsafe { WriteConsoleInputW(handle, &sentinel, 1, &mut written) } == 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if written != 1 {
-                        return Err(std::io::Error::other("partial console input write"));
-                    }
-                    Ok(())
-                })();
-                if let Err(err) = drain_result {
-                    tracing::warn!(error = %err, "failed to mark stale Windows terminal input");
-                    self.recovery_drain = None;
-                } else {
-                    self.recovery_drain = Some(RecoveryDrain {
-                        deadline: Instant::now() + RECOVERY_DRAIN_TIMEOUT,
-                        remaining: RECOVERY_DRAIN_LIMIT,
-                    });
-                }
+                self.stale_escape_deadline = Some(Instant::now() + STALE_ESCAPE_TIMEOUT);
                 self.inner = Some(crossterm::event::EventStream::new());
                 true
             }
@@ -146,31 +111,15 @@ use windows_sys::Win32::System::Console::GetConsoleMode;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::GetStdHandle;
 #[cfg(windows)]
-use windows_sys::Win32::System::Console::INPUT_RECORD;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::KEY_EVENT;
-#[cfg(windows)]
 use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::SetConsoleMode;
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::WriteConsoleInputW;
 
 #[cfg(windows)]
 static ORIGINAL_VIRTUAL_TERMINAL_INPUT: OnceLock<bool> = OnceLock::new();
 
 #[cfg(windows)]
-const RECOVERY_DRAIN_SENTINEL: char = '\u{e000}';
-#[cfg(windows)]
-const RECOVERY_DRAIN_LIMIT: u8 = 32;
-#[cfg(windows)]
-const RECOVERY_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
-
-#[cfg(windows)]
-struct RecoveryDrain {
-    deadline: Instant,
-    remaining: u8,
-}
+const STALE_ESCAPE_TIMEOUT: Duration = Duration::from_millis(50);
 
 #[cfg(windows)]
 pub(in crate::tui) fn ensure_native_windows_input_mode() -> Result<bool> {

@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
+use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::System::Console::FlushConsoleInputBuffer;
 use windows_sys::Win32::System::Console::GetNumberOfConsoleInputEvents;
 use windows_sys::Win32::System::Console::INPUT_RECORD;
@@ -23,6 +24,10 @@ use windows_sys::Win32::System::Console::KEY_EVENT_RECORD_0;
 use windows_sys::Win32::System::Console::LEFT_CTRL_PRESSED;
 use windows_sys::Win32::System::Console::ReadConsoleInputW;
 use windows_sys::Win32::System::Console::WriteConsoleInputW;
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::System::Threading::OpenThread;
+use windows_sys::Win32::System::Threading::THREAD_TERMINATE;
 
 const VK_BACK: u16 = 0x08;
 const VK_TAB: u16 = 0x09;
@@ -183,7 +188,7 @@ async fn recovers_runtime_drift_and_keeps_native_keys_working() -> Result<()> {
 
 #[test]
 #[serial_test::serial]
-fn recovery_drain_does_not_wait_for_a_competing_reader() -> Result<()> {
+fn recovery_does_not_wait_for_a_competing_reader() -> Result<()> {
     let Some((handle, original_mode)) = windows_console_input_mode()? else {
         return Ok(());
     };
@@ -199,19 +204,21 @@ fn recovery_drain_does_not_wait_for_a_competing_reader() -> Result<()> {
     let competing_reader = thread::spawn(move || {
         let mut record = unsafe { std::mem::zeroed() };
         let mut read = 0;
-        reader_ready_tx.send(()).unwrap();
-        assert_ne!(
-            unsafe { ReadConsoleInputW(handle, &mut record, 1, &mut read) },
-            0
-        );
-        assert_eq!(read, 1);
+        reader_ready_tx
+            .send(unsafe { GetCurrentThreadId() })
+            .unwrap();
+        unsafe { ReadConsoleInputW(handle, &mut record, 1, &mut read) };
     });
-    reader_ready_rx.recv().unwrap();
+    let reader_thread_id = reader_ready_rx.recv().unwrap();
     thread::sleep(Duration::from_millis(25));
     let started = Instant::now();
     assert!(poll_once(&mut stream).is_pending());
     assert!(started.elapsed() < Duration::from_millis(100));
-    write_records(handle, &[key_record(0, '\u{e001}')])?;
+
+    let reader_thread = unsafe { OpenThread(THREAD_TERMINATE, 0, reader_thread_id) };
+    assert_ne!(reader_thread, 0);
+    assert_ne!(unsafe { CancelSynchronousIo(reader_thread) }, 0);
+    unsafe { CloseHandle(reader_thread) };
     competing_reader
         .join()
         .expect("competing console reader panicked");
