@@ -5,8 +5,10 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 use std::time::Duration;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
@@ -17,6 +19,8 @@ use windows_sys::Win32::System::Console::INPUT_RECORD_0;
 use windows_sys::Win32::System::Console::KEY_EVENT;
 use windows_sys::Win32::System::Console::KEY_EVENT_RECORD;
 use windows_sys::Win32::System::Console::KEY_EVENT_RECORD_0;
+use windows_sys::Win32::System::Console::LEFT_CTRL_PRESSED;
+use windows_sys::Win32::System::Console::ReadConsoleInputW;
 use windows_sys::Win32::System::Console::WriteConsoleInputW;
 
 const VK_BACK: u16 = 0x08;
@@ -49,6 +53,14 @@ impl Wake for NoopWake {
 }
 
 fn key_record(virtual_key_code: u16, ch: char) -> INPUT_RECORD {
+    key_record_with_control_state(virtual_key_code, ch, 0)
+}
+
+fn key_record_with_control_state(
+    virtual_key_code: u16,
+    ch: char,
+    control_key_state: u32,
+) -> INPUT_RECORD {
     INPUT_RECORD {
         EventType: KEY_EVENT as u16,
         Event: INPUT_RECORD_0 {
@@ -60,7 +72,7 @@ fn key_record(virtual_key_code: u16, ch: char) -> INPUT_RECORD {
                 uChar: KEY_EVENT_RECORD_0 {
                     UnicodeChar: ch as u16,
                 },
-                dwControlKeyState: 0,
+                dwControlKeyState: control_key_state,
             },
         },
     }
@@ -137,10 +149,17 @@ async fn recovers_runtime_drift_and_keeps_native_keys_working() -> Result<()> {
         (b'1'.into(), '1', KeyCode::Char('1')),
     ];
     let records = native_keys.map(|(virtual_key_code, ch, _)| key_record(virtual_key_code, ch));
+    let ctrl_c = key_record_with_control_state(b'C'.into(), '\u{3}', LEFT_CTRL_PRESSED);
     write_records(handle, &records)?;
+    write_records(handle, &[ctrl_c])?;
     let expected = native_keys
         .map(|(_, _, code)| Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
-        .to_vec();
+        .into_iter()
+        .chain([Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        ))])
+        .collect::<Vec<_>>();
     let actual = timeout(Duration::from_secs(2), async {
         let mut actual = Vec::with_capacity(expected.len());
         for _ in 0..expected.len() {
@@ -159,4 +178,41 @@ async fn recovers_runtime_drift_and_keeps_native_keys_working() -> Result<()> {
     assert_eq!(resumed_mode & ENABLE_VIRTUAL_TERMINAL_INPUT, 0);
     drop(resumed_stream);
     Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn discarding_stale_events_does_not_wait_for_a_competing_reader() -> Result<()> {
+    let Some((handle, _)) = windows_console_input_mode()? else {
+        return Ok(());
+    };
+    unsafe { FlushConsoleInputBuffer(handle) };
+
+    let (reader_ready_tx, reader_ready_rx) = mpsc::channel();
+    let competing_reader = thread::spawn(move || {
+        let mut record = unsafe { std::mem::zeroed() };
+        let mut read = 0;
+        reader_ready_tx.send(()).unwrap();
+        assert_ne!(
+            unsafe { ReadConsoleInputW(handle, &mut record, 1, &mut read) },
+            0
+        );
+        assert_eq!(read, 1);
+    });
+    reader_ready_rx.recv().unwrap();
+    thread::sleep(Duration::from_millis(25));
+    let (done_tx, done_rx) = mpsc::channel();
+    let drain = thread::spawn(move || done_tx.send(discard_crossterm_events()).unwrap());
+    let completed = done_rx.recv_timeout(Duration::from_millis(100));
+    let completed_in_time = completed.is_ok();
+
+    write_records(handle, &[key_record(0, '\u{e000}')])?;
+    let result = completed.unwrap_or_else(|_| done_rx.recv().unwrap());
+    drain.join().expect("stale event drain thread panicked");
+    competing_reader
+        .join()
+        .expect("competing console reader panicked");
+    unsafe { FlushConsoleInputBuffer(handle) };
+    assert!(completed_in_time);
+    result
 }
