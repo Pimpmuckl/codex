@@ -14,6 +14,8 @@ use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Stdio;
 
+use pretty_assertions::assert_eq;
+
 const READY_MARKER: &str = "__CODEX_CHILD_READY__";
 const VALUE_MARKER: &str = "__CODEX_CHILD_VALUE__";
 const CONSOLE_TEST_ROLE_ENV: &str = "CODEX_PTY_CONSOLE_TEST_ROLE";
