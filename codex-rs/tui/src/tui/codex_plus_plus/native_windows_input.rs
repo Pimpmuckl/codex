@@ -8,6 +8,8 @@ use tokio_stream::Stream;
 
 pub(in crate::tui) struct OwnedEventStream {
     inner: Option<crossterm::event::EventStream>,
+    #[cfg(windows)]
+    discarding_stale_events: bool,
 }
 
 impl Default for OwnedEventStream {
@@ -18,6 +20,8 @@ impl Default for OwnedEventStream {
         }
         Self {
             inner: Some(crossterm::event::EventStream::new()),
+            #[cfg(windows)]
+            discarding_stale_events: false,
         }
     }
 }
@@ -27,7 +31,7 @@ impl Stream for OwnedEventStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         #[cfg(windows)]
-        let mut stale_events_to_discard = 0;
+        let mut stale_event_budget = MAX_RECOVERY_DISCARDS_PER_POLL;
         loop {
             let result = Pin::new(
                 self.inner
@@ -35,29 +39,38 @@ impl Stream for OwnedEventStream {
             )
             .poll_next(cx);
             #[cfg(windows)]
-            if stale_events_to_discard > 0 {
+            if self.discarding_stale_events {
                 match &result {
                     Poll::Ready(Some(Ok(_))) => {
-                        stale_events_to_discard -= 1;
-                        if stale_events_to_discard == 0 {
+                        stale_event_budget -= 1;
+                        if stale_event_budget == 0 {
                             cx.waker().wake_by_ref();
                             return Poll::Pending;
                         }
                         continue;
                     }
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return result,
+                    Poll::Pending => {
+                        // Building the replacement stream synchronized with Crossterm's global
+                        // reader, so no event from the old stream can be published after this.
+                        self.discarding_stale_events = false;
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
+                        self.discarding_stale_events = false;
+                        return result;
+                    }
                 }
             }
             #[cfg(windows)]
             if self.recover_runtime_drift() {
                 match &result {
                     Poll::Ready(Some(Ok(_))) => {
-                        stale_events_to_discard = MAX_RECOVERY_DISCARDS - 1;
+                        self.discarding_stale_events = true;
+                        stale_event_budget -= 1;
                         continue;
                     }
                     Poll::Pending => {
-                        stale_events_to_discard = MAX_RECOVERY_DISCARDS;
+                        self.discarding_stale_events = true;
                         continue;
                     }
                     Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return result,
@@ -110,7 +123,7 @@ use windows_sys::Win32::System::Console::SetConsoleMode;
 static ORIGINAL_VIRTUAL_TERMINAL_INPUT: OnceLock<bool> = OnceLock::new();
 
 #[cfg(windows)]
-const MAX_RECOVERY_DISCARDS: usize = 32;
+const MAX_RECOVERY_DISCARDS_PER_POLL: usize = 32;
 
 #[cfg(windows)]
 pub(in crate::tui) fn ensure_native_windows_input_mode() -> Result<bool> {
