@@ -201,6 +201,7 @@ fn recovery_does_not_wait_for_a_competing_reader() -> Result<()> {
     set_windows_console_input_mode(handle, original_mode | ENABLE_VIRTUAL_TERMINAL_INPUT)?;
 
     let (reader_ready_tx, reader_ready_rx) = mpsc::channel();
+    let (reader_done_tx, reader_done_rx) = mpsc::channel();
     let competing_reader = thread::spawn(move || {
         let mut record = unsafe { std::mem::zeroed() };
         let mut read = 0;
@@ -208,17 +209,23 @@ fn recovery_does_not_wait_for_a_competing_reader() -> Result<()> {
             .send(unsafe { GetCurrentThreadId() })
             .unwrap();
         unsafe { ReadConsoleInputW(handle, &mut record, 1, &mut read) };
+        reader_done_tx.send(()).unwrap();
     });
     let reader_thread_id = reader_ready_rx.recv().unwrap();
-    thread::sleep(Duration::from_millis(25));
     let started = Instant::now();
     assert!(poll_once(&mut stream).is_pending());
     assert!(started.elapsed() < Duration::from_millis(100));
 
     let reader_thread = unsafe { OpenThread(THREAD_TERMINATE, 0, reader_thread_id) };
     assert_ne!(reader_thread, 0);
-    assert_ne!(unsafe { CancelSynchronousIo(reader_thread) }, 0);
+    let reader_completed = (0..100).any(|_| {
+        unsafe { CancelSynchronousIo(reader_thread) };
+        reader_done_rx
+            .recv_timeout(Duration::from_millis(10))
+            .is_ok()
+    });
     unsafe { CloseHandle(reader_thread) };
+    assert!(reader_completed);
     competing_reader
         .join()
         .expect("competing console reader panicked");

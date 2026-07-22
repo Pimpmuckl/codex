@@ -8,8 +8,6 @@ use tokio_stream::Stream;
 
 pub(in crate::tui) struct OwnedEventStream {
     inner: Option<crossterm::event::EventStream>,
-    #[cfg(windows)]
-    stale_escape_deadline: Option<Instant>,
 }
 
 impl Default for OwnedEventStream {
@@ -20,8 +18,6 @@ impl Default for OwnedEventStream {
         }
         Self {
             inner: Some(crossterm::event::EventStream::new()),
-            #[cfg(windows)]
-            stale_escape_deadline: None,
         }
     }
 }
@@ -31,41 +27,19 @@ impl Stream for OwnedEventStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            #[cfg(windows)]
-            self.recover_runtime_drift();
-
-            #[cfg(windows)]
-            if self
-                .stale_escape_deadline
-                .as_ref()
-                .is_some_and(|deadline| Instant::now() >= *deadline)
-            {
-                self.stale_escape_deadline = None;
-            }
-
             let result = Pin::new(
                 self.inner
                     .get_or_insert_with(crossterm::event::EventStream::new),
             )
             .poll_next(cx);
             #[cfg(windows)]
-            if self.stale_escape_deadline.is_some() {
+            if self.recover_runtime_drift() {
                 match &result {
-                    Poll::Ready(Some(Ok(crossterm::event::Event::Key(event))))
-                        if event.code == crossterm::event::KeyCode::Esc =>
-                    {
-                        self.stale_escape_deadline = None;
+                    Poll::Ready(_) => {
                         continue;
                     }
-                    Poll::Ready(Some(_)) | Poll::Ready(None) => {
-                        self.stale_escape_deadline = None;
-                    }
-                    Poll::Pending => {}
+                    Poll::Pending => return Poll::Pending,
                 }
-            }
-            #[cfg(windows)]
-            if result.is_ready() && self.recover_runtime_drift() {
-                continue;
             }
             return result;
         }
@@ -79,7 +53,6 @@ impl OwnedEventStream {
             Ok(true) => {
                 self.inner.take();
                 super::super::flush_terminal_input_buffer();
-                self.stale_escape_deadline = Some(Instant::now() + STALE_ESCAPE_TIMEOUT);
                 self.inner = Some(crossterm::event::EventStream::new());
                 true
             }
@@ -97,10 +70,6 @@ use std::io::Result;
 #[cfg(windows)]
 use std::sync::OnceLock;
 #[cfg(windows)]
-use std::time::Duration;
-#[cfg(windows)]
-use std::time::Instant;
-#[cfg(windows)]
 use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -117,9 +86,6 @@ use windows_sys::Win32::System::Console::SetConsoleMode;
 
 #[cfg(windows)]
 static ORIGINAL_VIRTUAL_TERMINAL_INPUT: OnceLock<bool> = OnceLock::new();
-
-#[cfg(windows)]
-const STALE_ESCAPE_TIMEOUT: Duration = Duration::from_millis(50);
 
 #[cfg(windows)]
 pub(in crate::tui) fn ensure_native_windows_input_mode() -> Result<bool> {
