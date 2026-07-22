@@ -10,6 +10,7 @@ use std::task::Wake;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 use windows_sys::Win32::System::Console::FlushConsoleInputBuffer;
@@ -182,11 +183,17 @@ async fn recovers_runtime_drift_and_keeps_native_keys_working() -> Result<()> {
 
 #[test]
 #[serial_test::serial]
-fn discarding_stale_events_does_not_wait_for_a_competing_reader() -> Result<()> {
-    let Some((handle, _)) = windows_console_input_mode()? else {
+fn recovery_drain_does_not_wait_for_a_competing_reader() -> Result<()> {
+    let Some((handle, original_mode)) = windows_console_input_mode()? else {
         return Ok(());
     };
+    let _restore = RestoreConsoleMode {
+        handle,
+        mode: original_mode,
+    };
     unsafe { FlushConsoleInputBuffer(handle) };
+    let mut stream = OwnedEventStream::default();
+    set_windows_console_input_mode(handle, original_mode | ENABLE_VIRTUAL_TERMINAL_INPUT)?;
 
     let (reader_ready_tx, reader_ready_rx) = mpsc::channel();
     let competing_reader = thread::spawn(move || {
@@ -201,18 +208,13 @@ fn discarding_stale_events_does_not_wait_for_a_competing_reader() -> Result<()> 
     });
     reader_ready_rx.recv().unwrap();
     thread::sleep(Duration::from_millis(25));
-    let (done_tx, done_rx) = mpsc::channel();
-    let drain = thread::spawn(move || done_tx.send(discard_crossterm_events()).unwrap());
-    let completed = done_rx.recv_timeout(Duration::from_millis(100));
-    let completed_in_time = completed.is_ok();
-
-    write_records(handle, &[key_record(0, '\u{e000}')])?;
-    let result = completed.unwrap_or_else(|_| done_rx.recv().unwrap());
-    drain.join().expect("stale event drain thread panicked");
+    let started = Instant::now();
+    assert!(poll_once(&mut stream).is_pending());
+    assert!(started.elapsed() < Duration::from_millis(100));
+    write_records(handle, &[key_record(0, '\u{e001}')])?;
     competing_reader
         .join()
         .expect("competing console reader panicked");
     unsafe { FlushConsoleInputBuffer(handle) };
-    assert!(completed_in_time);
-    result
+    Ok(())
 }
