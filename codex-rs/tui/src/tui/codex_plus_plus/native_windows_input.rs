@@ -26,6 +26,8 @@ impl Stream for OwnedEventStream {
     type Item = std::io::Result<crossterm::event::Event>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        #[cfg(windows)]
+        let mut stale_events_to_discard = 0;
         loop {
             let result = Pin::new(
                 self.inner
@@ -33,15 +35,32 @@ impl Stream for OwnedEventStream {
             )
             .poll_next(cx);
             #[cfg(windows)]
+            if stale_events_to_discard > 0 {
+                match &result {
+                    Poll::Ready(Some(Ok(_))) => {
+                        stale_events_to_discard -= 1;
+                        if stale_events_to_discard == 0 {
+                            cx.waker().wake_by_ref();
+                            return Poll::Pending;
+                        }
+                        continue;
+                    }
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return result,
+                }
+            }
+            #[cfg(windows)]
             if self.recover_runtime_drift() {
                 match &result {
-                    Poll::Ready(_) => {
+                    Poll::Ready(Some(Ok(_))) => {
+                        stale_events_to_discard = MAX_RECOVERY_DISCARDS - 1;
                         continue;
                     }
                     Poll::Pending => {
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
+                        stale_events_to_discard = MAX_RECOVERY_DISCARDS;
+                        continue;
                     }
+                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => return result,
                 }
             }
             return result;
@@ -89,6 +108,9 @@ use windows_sys::Win32::System::Console::SetConsoleMode;
 
 #[cfg(windows)]
 static ORIGINAL_VIRTUAL_TERMINAL_INPUT: OnceLock<bool> = OnceLock::new();
+
+#[cfg(windows)]
+const MAX_RECOVERY_DISCARDS: usize = 32;
 
 #[cfg(windows)]
 pub(in crate::tui) fn ensure_native_windows_input_mode() -> Result<bool> {
