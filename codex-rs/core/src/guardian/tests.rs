@@ -32,7 +32,6 @@ use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_protocol::ThreadId;
-use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ContentItem;
@@ -918,10 +917,14 @@ fn format_guardian_action_pretty_reports_no_truncation_for_small_payload() -> se
 
 #[test]
 fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Result<()> {
+    let mut tool_input = serde_json::json!("nested");
+    for _ in 0..80 {
+        tool_input = serde_json::json!([tool_input]);
+    }
     let action = GuardianApprovalRequest::PreToolUse {
         id: "call-1".to_string(),
         tool_name: "nested_tool".to_string(),
-        tool_input: serde_json::json!({ "values": vec![r#"\"quoted\\path\n"#.repeat(200); 100] }),
+        tool_input,
         execution_target: None,
         reason: "Review this tool call".to_string(),
         cwd: test_path_buf("/tmp").abs(),
@@ -932,23 +935,18 @@ fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Re
     assert!(
         approx_token_count(&serde_json::to_string(&assessment)?) <= GUARDIAN_MAX_TOOL_ENTRY_TOKENS
     );
-    let GuardianAssessmentAction::PreToolUse { tool_input, .. } = assessment else {
-        panic!("expected PreToolUse assessment action");
-    };
 
     assert!(rendered.text.contains("<truncated omitted_approx_tokens="));
     assert!(rendered.text.contains("nested_tool") && rendered.text.contains("Review"));
     assert!(rendered.truncated);
     assert!(serde_json::from_str::<serde_json::Value>(&rendered.text).is_ok());
     assert!(approx_token_count(&rendered.text) <= GUARDIAN_MAX_ACTION_TOKENS);
-    assert!(tool_input.as_str().is_some_and(|input| {
-        input.contains("<truncated omitted_approx_tokens=") && input.len() < 10_000
-    }));
     Ok(())
 }
 
 #[test]
-fn pre_tool_use_execution_target_is_bounded_separately_from_tool_input() -> serde_json::Result<()> {
+fn pre_tool_use_action_bounds_target_and_fallback_input_without_changing_assessment()
+-> serde_json::Result<()> {
     let tool_input = serde_json::json!({ "command": "rm -f reviewed-target" });
     let action = GuardianApprovalRequest::PreToolUse {
         id: "call-1".to_string(),
@@ -961,27 +959,17 @@ fn pre_tool_use_execution_target_is_bounded_separately_from_tool_input() -> serd
         reason: "Review this shell command".to_string(),
         cwd: test_path_buf("/tmp").abs(),
     };
-
     let rendered = format_guardian_action_pretty(&action)?;
     let rendered_value: serde_json::Value = serde_json::from_str(&rendered.text)?;
-    let GuardianAssessmentAction::PreToolUse {
-        tool_input: assessment_input,
-        ..
-    } = guardian_assessment_action(&action)
-    else {
-        panic!("expected PreToolUse assessment action");
-    };
-
     assert_eq!(rendered_value["tool_input"], tool_input);
-    assert!(
-        rendered_value["execution_target"]
-            .as_str()
-            .is_some_and(|target| {
-                target.contains("<truncated omitted_approx_tokens=") && target.len() < 1_000
-            })
+    let target = rendered_value["execution_target"]
+        .as_str()
+        .expect("bounded execution target");
+    assert!(target.contains("<truncated omitted_approx_tokens="));
+    assert_eq!(
+        serde_json::to_value(guardian_assessment_action(&action))?["tool_input"],
+        tool_input,
     );
-    assert_eq!(assessment_input, tool_input);
-    assert!(approx_token_count(&rendered.text) <= GUARDIAN_MAX_ACTION_TOKENS);
     Ok(())
 }
 

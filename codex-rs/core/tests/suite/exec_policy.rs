@@ -12,6 +12,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
 use core_test_support::TestTargetOs;
 use core_test_support::hooks::trust_discovered_hooks;
@@ -108,6 +109,10 @@ async fn submit_user_turn(
     let session_model = test.session_configured.model.clone();
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(permission_profile, test.config.cwd.as_path());
+    let environments = TurnEnvironmentSelections::new(
+        test.config.cwd.clone(),
+        vec![test.executor_environment().selection().clone()],
+    );
     test.codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
@@ -118,7 +123,7 @@ async fn submit_user_turn(
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(environments),
                 approval_policy: Some(approval_policy),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

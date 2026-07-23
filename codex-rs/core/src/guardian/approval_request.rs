@@ -286,6 +286,10 @@ fn bounded_guardian_assessment_input(value: &Value) -> Value {
     }
 }
 
+fn bounded_guardian_assessment_input_text(value: &Value) -> String {
+    guardian_truncate_text(&value.to_string(), GUARDIAN_MAX_ASSESSMENT_INPUT_TOKENS).0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FormattedGuardianAction {
     pub(crate) text: String,
@@ -615,8 +619,8 @@ pub(crate) fn format_guardian_action_pretty(
         serde_json::to_string_pretty(&serde_json::json!({
             "tool": value.get("tool"),
             "tool_name": value.get("tool_name").map(bounded_guardian_assessment_input),
-            "tool_input": value.get("tool_input").map(bounded_guardian_assessment_input),
-            "execution_target": value.get("execution_target").map(bounded_guardian_assessment_input),
+            "tool_input": value.get("tool_input").map(bounded_guardian_assessment_input_text),
+            "execution_target": value.get("execution_target").map(bounded_guardian_assessment_input_text),
             "reason": value.get("reason").map(bounded_guardian_assessment_input),
             "summary": summary,
         }))?
