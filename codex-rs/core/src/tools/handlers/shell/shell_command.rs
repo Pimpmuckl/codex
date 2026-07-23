@@ -197,6 +197,14 @@ impl ShellCommandHandler {
             ))
         })?;
         let cwd = resolve_workdir_base_path(&arguments, &environment_cwd)?;
+        #[allow(deprecated)]
+        let target_matches_review = !turn_environment.environment.is_remote() && cwd == turn.cwd;
+        let pre_tool_use_approval =
+            if pre_tool_use_approval == PreToolUseApprovalState::Granted && target_matches_review {
+                PreToolUseApprovalState::Granted
+            } else {
+                PreToolUseApprovalState::NotGranted
+            };
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),

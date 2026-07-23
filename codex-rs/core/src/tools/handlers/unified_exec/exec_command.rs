@@ -131,7 +131,6 @@ impl ExecCommandHandler {
 
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
         let mut context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
-        context.pre_tool_use_approval = pre_tool_use_approval;
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
         let Some(turn_environment) = resolve_tool_environment(
             &step_context.environments,
@@ -181,6 +180,15 @@ impl ExecCommandHandler {
                 )));
             }
         };
+        #[allow(deprecated)]
+        let target_matches_review =
+            !environment.is_remote() && native_cwd.as_ref() == Some(&turn.cwd);
+        context.pre_tool_use_approval =
+            if pre_tool_use_approval == PreToolUseApprovalState::Granted && target_matches_review {
+                PreToolUseApprovalState::Granted
+            } else {
+                PreToolUseApprovalState::NotGranted
+            };
         let mut args: ExecCommandArgs = match native_cwd.as_ref() {
             Some(native_cwd) => {
                 // The base path only resolves paths nested in the permissions config types.
