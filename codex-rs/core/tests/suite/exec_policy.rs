@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -37,6 +38,7 @@ use std::fs;
 use std::path::Path;
 
 const COMPLEX_FORCED_RM_COMMAND: &str = "for target in \"\"; do rm -rf \"$target\"; done";
+const REVIEWED_WORKDIR: &str = "reviewed-workdir";
 
 fn install_pre_tool_use_ask_hook(home: &Path) -> Result<()> {
     let script_path = home.join("pre_tool_use_ask.py");
@@ -58,9 +60,19 @@ print(json.dumps({"hookSpecificOutput":{"hookEventName":"PreToolUse","permission
     Ok(())
 }
 
-fn shell_tool_sse(response_id: &str, call_id: &str, tool_name: &str, command: &str) -> String {
+fn shell_tool_sse(
+    response_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    command: &str,
+    environment_id: &str,
+) -> String {
     let arguments = if tool_name == "exec_command" {
-        json!({ "cmd": command })
+        json!({
+            "cmd": command,
+            "workdir": REVIEWED_WORKDIR,
+            "environment_id": environment_id,
+        })
     } else {
         json!({ "command": command })
     };
@@ -157,7 +169,7 @@ fn assert_no_matched_rules_invariant(output_item: &Value) {
 
 async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
     tool_name: &str,
-    auto_environment: bool,
+    permission_profile: PermissionProfile,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -167,6 +179,7 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
     let approved_call_id = format!("pretooluse-ask-{tool_name}-approved");
     let denied_call_id = format!("pretooluse-ask-{tool_name}-denied");
     let unified_exec = tool_name == "exec_command";
+    let approved_executes = matches!(&permission_profile, PermissionProfile::Disabled);
     let server = start_mock_server().await;
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
@@ -183,13 +196,25 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
                     .expect("enable unified exec");
             }
         });
-    let test = if auto_environment {
+    let test = if unified_exec {
         builder.build_with_auto_env(&server).await?
     } else {
         builder.build(&server).await?
     };
     let selection = test.executor_environment().selection().clone();
-    let cwd = &selection.cwd;
+    let cwd = if unified_exec {
+        let cwd = selection.cwd.join(REVIEWED_WORKDIR)?;
+        test.fs()
+            .create_directory(
+                &cwd,
+                CreateDirectoryOptions { recursive: true },
+                /*sandbox*/ None,
+            )
+            .await?;
+        cwd
+    } else {
+        selection.cwd.clone()
+    };
     let approved_marker = cwd.join(APPROVED_MARKER)?;
     let denied_marker = cwd.join(DENIED_MARKER)?;
     let execution_log = cwd.join(EXECUTION_LOG)?;
@@ -211,6 +236,7 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
                 &approved_call_id,
                 tool_name,
                 &approved_command,
+                &selection.environment_id,
             ),
             guardian_review_sse("resp-approved-guardian", "allow"),
             shell_tool_sse(
@@ -218,6 +244,7 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
                 &denied_call_id,
                 tool_name,
                 &denied_command,
+                &selection.environment_id,
             ),
             guardian_review_sse("resp-denied-guardian", "deny"),
             sse(vec![
@@ -238,7 +265,7 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
         &test,
         "review the requested shell commands",
         AskForApproval::Never,
-        PermissionProfile::Disabled,
+        permission_profile,
         /*collaboration_mode*/ None,
     )
     .await?;
@@ -252,25 +279,28 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
         .iter()
         .find_map(|request| request.function_call_output_text(&approved_call_id))
         .expect("approved invocation output");
-    assert!(
-        test.fs()
-            .get_metadata(&approved_marker, /*sandbox*/ None)
-            .await
-            .is_err(),
-        "Guardian-approved dangerous command should execute: command={approved_command:?} marker={approved_marker} output={approved_output}"
-    );
     test.fs()
         .get_metadata(&denied_marker, /*sandbox*/ None)
         .await?;
-    let execution_log = test
-        .fs()
-        .read_file(&execution_log, /*sandbox*/ None)
-        .await?;
-    assert_eq!(
-        String::from_utf8(execution_log)?.trim(),
-        "executed",
-        "the approved invocation should execute exactly once and the denied invocation not at all"
-    );
+    if approved_executes {
+        assert!(
+            test.fs()
+                .get_metadata(&approved_marker, /*sandbox*/ None)
+                .await
+                .is_err(),
+            "Guardian-approved dangerous command should execute: command={approved_command:?} marker={approved_marker} output={approved_output}"
+        );
+        let execution_log = test
+            .fs()
+            .read_file(&execution_log, /*sandbox*/ None)
+            .await?;
+        assert_eq!(String::from_utf8(execution_log)?.trim(), "executed");
+    } else {
+        test.fs()
+            .get_metadata(&approved_marker, /*sandbox*/ None)
+            .await?;
+        assert!(approved_output.contains("rejected: blocked by policy"));
+    }
     let guardian_requests = requests
         .iter()
         .filter(|request| {
@@ -280,7 +310,7 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
     assert_eq!(guardian_requests.len(), 2);
     assert!(guardian_requests[0].body_contains_text(&approved_command));
     assert!(guardian_requests[0].body_contains_text(&selection.environment_id));
-    assert!(guardian_requests[0].body_contains_text(&selection.cwd.to_string()));
+    assert!(guardian_requests[0].body_contains_text(&cwd.to_string()));
     assert!(guardian_requests[1].body_contains_text(&denied_command));
     assert!(
         requests
@@ -294,12 +324,29 @@ async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> Result<()> {
-    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool("exec_command", true).await
+    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
+        "exec_command",
+        PermissionProfile::Disabled,
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_tool_use_ask_authorizes_only_reviewed_shell_command_under_yolo() -> Result<()> {
-    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool("shell_command", false).await
+    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
+        "shell_command",
+        PermissionProfile::Disabled,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_tool_use_ask_does_not_authorize_non_yolo_unified_exec() -> Result<()> {
+    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
+        "exec_command",
+        PermissionProfile::read_only(),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -495,28 +542,22 @@ async fn granular_complex_forced_rm_requests_approval_when_allowed() -> Result<(
 #[tokio::test]
 async fn unified_exec_disabled_windows_sandbox_rejects_managed_read_only_command() -> Result<()> {
     let server = start_mock_server().await;
-    let mut builder = test_codex()
-        .with_model("test-gpt-5.1-codex")
-        .with_pre_build_hook(|home| {
-            install_pre_tool_use_ask_hook(home).expect("install PreToolUse ask hook");
-        })
-        .with_config(|config| {
-            trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .disable(Feature::WindowsSandbox)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .disable(Feature::WindowsSandboxElevated)
-                .expect("test config should allow feature update");
-            config.set_windows_sandbox_enabled(false);
-            config.set_windows_elevated_sandbox_enabled(false);
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .disable(Feature::WindowsSandbox)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .disable(Feature::WindowsSandboxElevated)
+            .expect("test config should allow feature update");
+        config.set_windows_sandbox_enabled(false);
+        config.set_windows_elevated_sandbox_enabled(false);
+    });
     let test = builder.build(&server).await?;
     let call_id = "unified-exec-disabled-windows-sandbox-read-only";
     let args = json!({
@@ -524,20 +565,21 @@ async fn unified_exec_disabled_windows_sandbox_rejects_managed_read_only_command
         "yield_time_ms": 1_000,
     });
 
-    let responses = mount_sse_sequence(
+    mount_sse_once(
         &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-disabled-windows-sandbox-1"),
-                ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-                ev_completed("resp-disabled-windows-sandbox-1"),
-            ]),
-            guardian_review_sse("resp-disabled-windows-sandbox-guardian", "allow"),
-            sse(vec![
-                ev_assistant_message("msg-disabled-windows-sandbox-1", "done"),
-                ev_completed("resp-disabled-windows-sandbox-2"),
-            ]),
-        ],
+        sse(vec![
+            ev_response_created("resp-disabled-windows-sandbox-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-disabled-windows-sandbox-1"),
+        ]),
+    )
+    .await;
+    let results_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-disabled-windows-sandbox-1", "done"),
+            ev_completed("resp-disabled-windows-sandbox-2"),
+        ]),
     )
     .await;
 
@@ -555,12 +597,7 @@ async fn unified_exec_disabled_windows_sandbox_rejects_managed_read_only_command
     })
     .await;
 
-    let requests = responses.requests();
-    let output_item = requests
-        .iter()
-        .find(|request| request.function_call_output_text(call_id).is_some())
-        .expect("parent continuation request")
-        .function_call_output(call_id);
+    let output_item = results_mock.single_request().function_call_output(call_id);
     let output = output_item
         .get("output")
         .and_then(Value::as_str)
