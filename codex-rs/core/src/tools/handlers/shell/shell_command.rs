@@ -2,6 +2,7 @@ use codex_protocol::models::ShellCommandToolCallParams;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolName;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
@@ -272,18 +273,10 @@ impl CoreToolRuntime for ShellCommandHandler {
             return None;
         };
         let turn_environment = invocation.step_context.environments.primary()?;
-        let arguments: serde_json::Value =
-            crate::tools::handlers::parse_arguments(arguments).ok()?;
-        let cwd = arguments
-            .get("workdir")
-            .and_then(serde_json::Value::as_str)
-            .filter(|workdir| !workdir.is_empty())
-            .map_or_else(
-                || Some(turn_environment.cwd().clone()),
-                |workdir| turn_environment.cwd().join(workdir).ok(),
-            )?;
+        let environment_cwd = turn_environment.cwd().to_abs_path().ok()?;
+        let cwd = resolve_workdir_base_path(arguments, &environment_cwd).ok()?;
         let mut execution_target = turn_environment.selection();
-        execution_target.cwd = cwd;
+        execution_target.cwd = PathUri::from_abs_path(&cwd);
         Some(PreToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_input: serde_json::json!({ "command": command }),
