@@ -315,31 +315,19 @@ impl ExecPolicyManager {
         self.policy.load_full()
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_exec_approval_requirement_for_command(
         &self,
         req: ExecApprovalRequest<'_>,
     ) -> ExecApprovalRequirement {
-        self.create_exec_approval_requirement(req, PreToolUseApprovalState::NotGranted)
-            .await
+        self.create_exec_approval_requirement_with_pre_tool_use_approval(
+            req,
+            PreToolUseApprovalState::NotGranted,
+        )
+        .await
     }
 
     pub(crate) async fn create_exec_approval_requirement_with_pre_tool_use_approval(
-        &self,
-        req: ExecApprovalRequest<'_>,
-        pre_tool_use_approval: PreToolUseApprovalState,
-    ) -> ExecApprovalRequirement {
-        match pre_tool_use_approval {
-            PreToolUseApprovalState::NotGranted => {
-                self.create_exec_approval_requirement_for_command(req).await
-            }
-            PreToolUseApprovalState::Granted => {
-                self.create_exec_approval_requirement(req, pre_tool_use_approval)
-                    .await
-            }
-        }
-    }
-
-    async fn create_exec_approval_requirement(
         &self,
         req: ExecApprovalRequest<'_>,
         pre_tool_use_approval: PreToolUseApprovalState,
@@ -419,9 +407,7 @@ impl ExecPolicyManager {
                     && dangerous_command_match.is_some()
                     && !explicit_approval_requirement
                 {
-                    ExecApprovalRequirement::PreToolUseApproved {
-                        bypass_sandbox: false,
-                    }
+                    ExecApprovalRequirement::PreToolUseApproved
                 } else {
                     ExecApprovalRequirement::Forbidden {
                         reason: derive_forbidden_reason(
@@ -436,17 +422,13 @@ impl ExecPolicyManager {
                 let prompt_is_rule = evaluation.matched_rules.iter().any(|rule_match| {
                     is_policy_match(rule_match) && rule_match.decision() == Decision::Prompt
                 });
-                let prompt_rejection =
-                    prompt_is_rejected_by_policy(approval_policy, prompt_is_rule);
                 if pre_tool_use_approval == PreToolUseApprovalState::Granted
                     && literal_yolo
                     && !prompt_is_rule
                 {
-                    return ExecApprovalRequirement::PreToolUseApproved {
-                        bypass_sandbox: false,
-                    };
+                    return ExecApprovalRequirement::PreToolUseApproved;
                 }
-                match prompt_rejection {
+                match prompt_is_rejected_by_policy(approval_policy, prompt_is_rule) {
                     Some(reason) if prompt_is_rule => ExecApprovalRequirement::Forbidden {
                         reason: reason.to_string(),
                     },
@@ -474,10 +456,10 @@ impl ExecPolicyManager {
                     },
                 }
             }
-            Decision::Allow => {
+            Decision::Allow => ExecApprovalRequirement::Skip {
                 // Bypass sandbox only when every parsed command segment is
                 // explicitly allowed by execpolicy.
-                let bypass_sandbox = commands.iter().all(|command| {
+                bypass_sandbox: commands.iter().all(|command| {
                     exec_policy
                         .matches_for_command_with_options(
                             command,
@@ -488,22 +470,13 @@ impl ExecPolicyManager {
                         .any(|rule_match| {
                             is_policy_match(rule_match) && rule_match.decision() == Decision::Allow
                         })
-                });
-                if pre_tool_use_approval == PreToolUseApprovalState::Granted && literal_yolo {
-                    ExecApprovalRequirement::PreToolUseApproved { bypass_sandbox }
+                }),
+                proposed_execpolicy_amendment: if auto_amendment_allowed {
+                    try_derive_execpolicy_amendment_for_allow_rules(&evaluation.matched_rules)
                 } else {
-                    ExecApprovalRequirement::Skip {
-                        bypass_sandbox,
-                        proposed_execpolicy_amendment: if auto_amendment_allowed {
-                            try_derive_execpolicy_amendment_for_allow_rules(
-                                &evaluation.matched_rules,
-                            )
-                        } else {
-                            None
-                        },
-                    }
-                }
-            }
+                    None
+                },
+            },
         }
     }
 

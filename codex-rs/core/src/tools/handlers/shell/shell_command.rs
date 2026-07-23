@@ -197,14 +197,6 @@ impl ShellCommandHandler {
             ))
         })?;
         let cwd = resolve_workdir_base_path(&arguments, &environment_cwd)?;
-        #[allow(deprecated)]
-        let target_matches_review = !turn_environment.environment.is_remote() && cwd == turn.cwd;
-        let pre_tool_use_approval =
-            if pre_tool_use_approval == PreToolUseApprovalState::Granted && target_matches_review {
-                PreToolUseApprovalState::Granted
-            } else {
-                PreToolUseApprovalState::NotGranted
-            };
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
@@ -253,9 +245,17 @@ impl CoreToolRuntime for ShellCommandHandler {
     fn handle_after_pre_tool_use_approval(
         &self,
         invocation: ToolInvocation,
-        _approval: PreToolUseApproval,
+        approval: PreToolUseApproval,
     ) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(self.handle_call(invocation, PreToolUseApprovalState::Granted))
+        let execution_target = self
+            .pre_tool_use_payload(&invocation)
+            .and_then(|payload| payload.execution_target);
+        let approval = if approval.authorizes(&invocation, execution_target.as_ref()) {
+            PreToolUseApprovalState::Granted
+        } else {
+            PreToolUseApprovalState::NotGranted
+        };
+        Box::pin(self.handle_call(invocation, approval))
     }
 
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
@@ -267,9 +267,27 @@ impl CoreToolRuntime for ShellCommandHandler {
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
-        shell_command_payload_command(&invocation.payload).map(|command| PreToolUsePayload {
+        let command = shell_command_payload_command(&invocation.payload)?;
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return None;
+        };
+        let turn_environment = invocation.step_context.environments.primary()?;
+        let arguments: serde_json::Value =
+            crate::tools::handlers::parse_arguments(arguments).ok()?;
+        let cwd = arguments
+            .get("workdir")
+            .and_then(serde_json::Value::as_str)
+            .filter(|workdir| !workdir.is_empty())
+            .map_or_else(
+                || Some(turn_environment.cwd().clone()),
+                |workdir| turn_environment.cwd().join(workdir).ok(),
+            )?;
+        let mut execution_target = turn_environment.selection();
+        execution_target.cwd = cwd;
+        Some(PreToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_input: serde_json::json!({ "command": command }),
+            execution_target: Some(execution_target),
         })
     }
 

@@ -16,6 +16,7 @@ use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
 use crate::tools::codex_plus_plus::pre_tool_use_review;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApproval;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -121,6 +122,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         Some(PreToolUsePayload {
             tool_name: function_hook_tool_name(invocation),
             tool_input: function_hook_tool_input(arguments),
+            execution_target: None,
         })
     }
 
@@ -219,7 +221,7 @@ impl ToolOutput for PostToolUseFeedbackOutput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreToolUsePayload {
     /// Hook-facing tool name model.
     ///
@@ -231,6 +233,7 @@ pub(crate) struct PreToolUsePayload {
     /// Shell-like tools use `{ "command": ... }`; MCP tools use their resolved
     /// JSON arguments.
     pub(crate) tool_input: Value,
+    pub(crate) execution_target: Option<PreToolUseExecutionTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

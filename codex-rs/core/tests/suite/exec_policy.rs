@@ -173,7 +173,8 @@ async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> 
                 .expect("enable unified exec");
         });
     let test = builder.build_with_auto_env(&server).await?;
-    let cwd = &test.executor_environment().selection().cwd;
+    let selection = test.executor_environment().selection().clone();
+    let cwd = &selection.cwd;
     let approved_marker = cwd.join(APPROVED_MARKER)?;
     let denied_marker = cwd.join(DENIED_MARKER)?;
     let execution_log = cwd.join(EXECUTION_LOG)?;
@@ -253,6 +254,8 @@ async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> 
         .collect::<Vec<_>>();
     assert_eq!(guardian_requests.len(), 2);
     assert!(guardian_requests[0].body_contains_text(&approved_command));
+    assert!(guardian_requests[0].body_contains_text(&selection.environment_id));
+    assert!(guardian_requests[0].body_contains_text(&selection.cwd.to_string()));
     assert!(guardian_requests[1].body_contains_text(&denied_command));
     assert!(
         requests

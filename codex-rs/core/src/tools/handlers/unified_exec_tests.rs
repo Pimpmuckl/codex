@@ -240,12 +240,15 @@ async fn exec_command_pre_tool_use_payload_uses_raw_command() {
     };
     let (session, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let environment = step_context.environments.primary().unwrap();
+    let execution_target = environment.selection();
     let handler = ExecCommandHandler::default();
 
     assert_eq!(
         handler.pre_tool_use_payload(&ToolInvocation {
             session: session.into(),
-            step_context: StepContext::for_test(Arc::clone(&turn)),
+            step_context,
             turn,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
@@ -257,6 +260,7 @@ async fn exec_command_pre_tool_use_payload_uses_raw_command() {
         Some(crate::tools::registry::PreToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_input: serde_json::json!({ "command": "printf exec command" }),
+            execution_target: Some(execution_target),
         })
     );
 }

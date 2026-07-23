@@ -185,6 +185,7 @@ impl CoreToolRuntime for McpHandler {
         Some(PreToolUsePayload {
             tool_name: self.hook_tool_name(),
             tool_input: mcp_hook_tool_input(arguments),
+            execution_target: None,
         })
     }
 
@@ -366,6 +367,7 @@ mod tests {
                         "entityType": "person"
                     }]
                 }),
+                execution_target: None,
             })
         );
     }
@@ -395,6 +397,7 @@ mod tests {
             Some(PreToolUsePayload {
                 tool_name: HookToolName::new("mcp__foo__exec_command"),
                 tool_input: json!({ "message": "hello" }),
+                execution_target: None,
             })
         );
     }

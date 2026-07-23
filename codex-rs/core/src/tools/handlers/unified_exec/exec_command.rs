@@ -131,6 +131,7 @@ impl ExecCommandHandler {
 
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
         let mut context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
+        context.pre_tool_use_approval = pre_tool_use_approval;
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
         let Some(turn_environment) = resolve_tool_environment(
             &step_context.environments,
@@ -180,15 +181,6 @@ impl ExecCommandHandler {
                 )));
             }
         };
-        #[allow(deprecated)]
-        let target_matches_review =
-            !environment.is_remote() && native_cwd.as_ref() == Some(&turn.cwd);
-        context.pre_tool_use_approval =
-            if pre_tool_use_approval == PreToolUseApprovalState::Granted && target_matches_review {
-                PreToolUseApprovalState::Granted
-            } else {
-                PreToolUseApprovalState::NotGranted
-            };
         let mut args: ExecCommandArgs = match native_cwd.as_ref() {
             Some(native_cwd) => {
                 // The base path only resolves paths nested in the permissions config types.
@@ -416,9 +408,17 @@ impl CoreToolRuntime for ExecCommandHandler {
     fn handle_after_pre_tool_use_approval(
         &self,
         invocation: ToolInvocation,
-        _approval: PreToolUseApproval,
+        approval: PreToolUseApproval,
     ) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(self.handle_call(invocation, PreToolUseApprovalState::Granted))
+        let execution_target = self
+            .pre_tool_use_payload(&invocation)
+            .and_then(|payload| payload.execution_target);
+        let approval = if approval.authorizes(&invocation, execution_target.as_ref()) {
+            PreToolUseApprovalState::Granted
+        } else {
+            PreToolUseApprovalState::NotGranted
+        };
+        Box::pin(self.handle_call(invocation, approval))
     }
 
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
@@ -429,13 +429,29 @@ impl CoreToolRuntime for ExecCommandHandler {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
         };
-
-        parse_arguments::<ExecCommandArgs>(arguments)
-            .ok()
-            .map(|args| PreToolUsePayload {
-                tool_name: HookToolName::bash(),
-                tool_input: serde_json::json!({ "command": args.cmd }),
-            })
+        let args = parse_arguments::<ExecCommandArgs>(arguments).ok()?;
+        let environment_args: ExecCommandEnvironmentArgs = parse_arguments(arguments).ok()?;
+        let turn_environment = resolve_tool_environment(
+            &invocation.step_context.environments,
+            environment_args.environment_id.as_deref(),
+        )
+        .ok()
+        .flatten()?;
+        let cwd = environment_args
+            .workdir
+            .as_deref()
+            .filter(|workdir| !workdir.is_empty())
+            .map_or_else(
+                || Some(turn_environment.cwd().clone()),
+                |workdir| turn_environment.cwd().join(workdir).ok(),
+            )?;
+        let mut execution_target = turn_environment.selection();
+        execution_target.cwd = cwd;
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::bash(),
+            tool_input: serde_json::json!({ "command": args.cmd }),
+            execution_target: Some(execution_target),
+        })
     }
 
     fn with_updated_hook_input(
