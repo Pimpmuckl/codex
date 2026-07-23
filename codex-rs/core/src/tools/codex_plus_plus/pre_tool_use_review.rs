@@ -37,18 +37,12 @@ pub(crate) fn review<'a>(
 ) -> BoxFuture<'a, Result<PreToolUseApproval, String>> {
     Box::pin(async move {
         let review_id = new_guardian_review_id();
-        let tool_input = payload.execution_target.as_ref().map_or_else(
-            || payload.tool_input.clone(),
-            |target| {
-                json!({
-                    "hook_input": payload.tool_input,
-                    "execution_target": {
-                        "environment_id": target.environment_id,
-                        "cwd": target.cwd,
-                    },
-                })
-            },
-        );
+        let execution_target = payload.execution_target.as_ref().map(|target| {
+            json!({
+                "environment_id": target.environment_id,
+                "cwd": target.cwd,
+            })
+        });
         let decision = review_approval_request(
             &invocation.session,
             &invocation.turn,
@@ -56,7 +50,8 @@ pub(crate) fn review<'a>(
             GuardianApprovalRequest::PreToolUse {
                 id: invocation.call_id.clone(),
                 tool_name: payload.tool_name.name().to_string(),
-                tool_input,
+                tool_input: payload.tool_input.clone(),
+                execution_target,
                 reason,
                 #[allow(deprecated)]
                 cwd: invocation.turn.cwd.clone(),

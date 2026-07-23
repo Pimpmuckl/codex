@@ -57,14 +57,15 @@ print(json.dumps({"hookSpecificOutput":{"hookEventName":"PreToolUse","permission
     Ok(())
 }
 
-fn unified_exec_sse(response_id: &str, call_id: &str, command: &str) -> String {
+fn shell_tool_sse(response_id: &str, call_id: &str, tool_name: &str, command: &str) -> String {
+    let arguments = if tool_name == "exec_command" {
+        json!({ "cmd": command })
+    } else {
+        json!({ "command": command })
+    };
     sse(vec![
         ev_response_created(response_id),
-        ev_function_call(
-            call_id,
-            "exec_command",
-            &json!({ "cmd": command }).to_string(),
-        ),
+        ev_function_call(call_id, tool_name, &arguments.to_string()),
         ev_completed(response_id),
     ])
 }
@@ -149,15 +150,18 @@ fn assert_no_matched_rules_invariant(output_item: &Value) {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> Result<()> {
+async fn assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool(
+    tool_name: &str,
+    auto_environment: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     const APPROVED_MARKER: &str = "pretooluse-approved-marker";
     const DENIED_MARKER: &str = "pretooluse-denied-marker";
     const EXECUTION_LOG: &str = "pretooluse-executions";
-    let approved_call_id = "pretooluse-ask-unified-approved";
-    let denied_call_id = "pretooluse-ask-unified-denied";
+    let approved_call_id = format!("pretooluse-ask-{tool_name}-approved");
+    let denied_call_id = format!("pretooluse-ask-{tool_name}-denied");
+    let unified_exec = tool_name == "exec_command";
     let server = start_mock_server().await;
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
@@ -165,14 +169,20 @@ async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> 
         .with_pre_build_hook(|home| {
             install_pre_tool_use_ask_hook(home).expect("install PreToolUse ask hook");
         })
-        .with_config(|config| {
+        .with_config(move |config| {
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("enable unified exec");
+            if unified_exec {
+                config
+                    .features
+                    .enable(Feature::UnifiedExec)
+                    .expect("enable unified exec");
+            }
         });
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = if auto_environment {
+        builder.build_with_auto_env(&server).await?
+    } else {
+        builder.build(&server).await?
+    };
     let selection = test.executor_environment().selection().clone();
     let cwd = &selection.cwd;
     let approved_marker = cwd.join(APPROVED_MARKER)?;
@@ -191,9 +201,19 @@ async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> 
     let responses = mount_sse_sequence(
         &server,
         vec![
-            unified_exec_sse("resp-approved-tool", approved_call_id, &approved_command),
+            shell_tool_sse(
+                "resp-approved-tool",
+                &approved_call_id,
+                tool_name,
+                &approved_command,
+            ),
             guardian_review_sse("resp-approved-guardian", "allow"),
-            unified_exec_sse("resp-denied-tool", denied_call_id, &denied_command),
+            shell_tool_sse(
+                "resp-denied-tool",
+                &denied_call_id,
+                tool_name,
+                &denied_command,
+            ),
             guardian_review_sse("resp-denied-guardian", "deny"),
             sse(vec![
                 ev_response_created("resp-parent-done"),
@@ -225,7 +245,7 @@ async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> 
     let requests = responses.requests();
     let approved_output = requests
         .iter()
-        .find_map(|request| request.function_call_output_text(approved_call_id))
+        .find_map(|request| request.function_call_output_text(&approved_call_id))
         .expect("approved invocation output");
     assert!(
         test.fs()
@@ -260,11 +280,21 @@ async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> 
     assert!(
         requests
             .iter()
-            .any(|request| request.function_call_output_text(denied_call_id).is_some()),
+            .any(|request| request.function_call_output_text(&denied_call_id).is_some()),
         "the denied invocation should return a blocked tool result"
     );
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_tool_use_ask_authorizes_only_reviewed_unified_exec_under_yolo() -> Result<()> {
+    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool("exec_command", true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_tool_use_ask_authorizes_only_reviewed_shell_command_under_yolo() -> Result<()> {
+    assert_pre_tool_use_ask_authorizes_only_reviewed_shell_tool("shell_command", false).await
 }
 
 #[tokio::test]

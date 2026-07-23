@@ -922,6 +922,7 @@ fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Re
         id: "call-1".to_string(),
         tool_name: "nested_tool".to_string(),
         tool_input: serde_json::json!({ "values": vec![r#"\"quoted\\path\n"#.repeat(200); 100] }),
+        execution_target: None,
         reason: "Review this tool call".to_string(),
         cwd: test_path_buf("/tmp").abs(),
     };
@@ -943,6 +944,44 @@ fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Re
     assert!(tool_input.as_str().is_some_and(|input| {
         input.contains("<truncated omitted_approx_tokens=") && input.len() < 10_000
     }));
+    Ok(())
+}
+
+#[test]
+fn pre_tool_use_execution_target_is_bounded_separately_from_tool_input() -> serde_json::Result<()> {
+    let tool_input = serde_json::json!({ "command": "rm -f reviewed-target" });
+    let action = GuardianApprovalRequest::PreToolUse {
+        id: "call-1".to_string(),
+        tool_name: "Bash".to_string(),
+        tool_input: tool_input.clone(),
+        execution_target: Some(serde_json::json!({
+            "environment_id": "remote",
+            "cwd": format!("file:///{}", "long/".repeat(1_000)),
+        })),
+        reason: "Review this shell command".to_string(),
+        cwd: test_path_buf("/tmp").abs(),
+    };
+
+    let rendered = format_guardian_action_pretty(&action)?;
+    let rendered_value: serde_json::Value = serde_json::from_str(&rendered.text)?;
+    let GuardianAssessmentAction::PreToolUse {
+        tool_input: assessment_input,
+        ..
+    } = guardian_assessment_action(&action)
+    else {
+        panic!("expected PreToolUse assessment action");
+    };
+
+    assert_eq!(rendered_value["tool_input"], tool_input);
+    assert!(
+        rendered_value["execution_target"]
+            .as_str()
+            .is_some_and(|target| {
+                target.contains("<truncated omitted_approx_tokens=") && target.len() < 1_000
+            })
+    );
+    assert_eq!(assessment_input, tool_input);
+    assert!(approx_token_count(&rendered.text) <= GUARDIAN_MAX_ACTION_TOKENS);
     Ok(())
 }
 
@@ -1177,6 +1216,7 @@ fn guardian_request_target_item_id_handles_absent_and_future_items() {
         id: "tool-call-1".to_string(),
         tool_name: "custom_tool".to_string(),
         tool_input: serde_json::json!({"query": "report"}),
+        execution_target: None,
         reason: "Review report access".to_string(),
         cwd: test_path_buf("/repo").abs(),
     };
