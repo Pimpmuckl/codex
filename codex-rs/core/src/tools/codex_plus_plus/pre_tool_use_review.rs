@@ -7,11 +7,13 @@ use crate::tools::registry::PreToolUsePayload;
 use codex_protocol::protocol::ReviewDecision;
 use futures::future::BoxFuture;
 
+pub(crate) struct PreToolUseApproval;
+
 pub(crate) fn review<'a>(
     invocation: &'a ToolInvocation,
     payload: &'a PreToolUsePayload,
     reason: String,
-) -> BoxFuture<'a, Result<(), String>> {
+) -> BoxFuture<'a, Result<PreToolUseApproval, String>> {
     Box::pin(async move {
         let review_id = new_guardian_review_id();
         let decision = review_approval_request(
@@ -33,7 +35,7 @@ pub(crate) fn review<'a>(
             ReviewDecision::Approved
             | ReviewDecision::ApprovedForSession
             | ReviewDecision::ApprovedExecpolicyAmendment { .. }
-            | ReviewDecision::NetworkPolicyAmendment { .. } => Ok(()),
+            | ReviewDecision::NetworkPolicyAmendment { .. } => Ok(PreToolUseApproval),
             ReviewDecision::Denied { rejection } => Err(rejection),
             ReviewDecision::TimedOut => Err(guardian_timeout_message()),
             ReviewDecision::Abort => Err(

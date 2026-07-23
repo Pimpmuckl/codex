@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::exec::ExecParams;
 use crate::exec_policy::ExecApprovalRequest;
+use crate::exec_policy::PreToolUseApprovalState;
 use crate::function_tool::FunctionCallError;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
@@ -58,6 +59,7 @@ struct RunExecLikeArgs {
     tracker: crate::tools::context::SharedTurnDiffTracker,
     call_id: String,
     shell_runtime_backend: ShellRuntimeBackend,
+    pre_tool_use_approval: PreToolUseApprovalState,
 }
 
 async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, FunctionCallError> {
@@ -75,6 +77,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         tracker,
         call_id,
         shell_runtime_backend,
+        pre_tool_use_approval,
     } = args;
 
     let fs = turn_environment.environment.get_filesystem();
@@ -165,21 +168,25 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
     );
     emitter.begin(event_ctx).await;
 
+    let exec_approval_request = ExecApprovalRequest {
+        command: &exec_params.command,
+        approval_policy: turn.approval_policy.value(),
+        permission_profile: turn.permission_profile(),
+        windows_sandbox_level: turn.windows_sandbox_level,
+        sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
+            codex_protocol::models::SandboxPermissions::UseDefault
+        } else {
+            effective_additional_permissions.sandbox_permissions
+        },
+        prefix_rule,
+    };
     let exec_approval_requirement = session
         .services
         .exec_policy
-        .create_exec_approval_requirement_for_command(ExecApprovalRequest {
-            command: &exec_params.command,
-            approval_policy: turn.approval_policy.value(),
-            permission_profile: turn.permission_profile(),
-            windows_sandbox_level: turn.windows_sandbox_level,
-            sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
-                codex_protocol::models::SandboxPermissions::UseDefault
-            } else {
-                effective_additional_permissions.sandbox_permissions
-            },
-            prefix_rule,
-        })
+        .create_exec_approval_requirement_with_pre_tool_use_approval(
+            exec_approval_request,
+            pre_tool_use_approval,
+        )
         .await;
 
     let req = ShellRequest {

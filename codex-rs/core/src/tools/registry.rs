@@ -15,6 +15,7 @@ use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
 use crate::tools::codex_plus_plus::pre_tool_use_review;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApproval;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -61,6 +62,14 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     /// host returns an aborted tool response.
     fn waits_for_runtime_cancellation(&self) -> bool {
         false
+    }
+
+    fn handle_after_pre_tool_use_approval(
+        &self,
+        invocation: ToolInvocation,
+        _approval: PreToolUseApproval,
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        self.handle(invocation)
     }
 
     fn telemetry_tags<'a>(
@@ -282,6 +291,15 @@ impl ToolExecutor<ToolInvocation> for ExposureOverride {
 }
 
 impl CoreToolRuntime for ExposureOverride {
+    fn handle_after_pre_tool_use_approval(
+        &self,
+        invocation: ToolInvocation,
+        approval: PreToolUseApproval,
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        self.handler
+            .handle_after_pre_tool_use_approval(invocation, approval)
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         self.handler.matches_kind(payload)
     }
@@ -487,6 +505,7 @@ impl ToolRegistry {
 
         notify_tool_start(&invocation).await;
 
+        let mut pre_tool_use_approval = None;
         if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
             match run_pre_tool_use_hooks(
                 &invocation.session,
@@ -509,19 +528,21 @@ impl ToolRegistry {
                     return Err(err);
                 }
                 PreToolUseHookResult::Review { reason } => {
-                    if let Err(message) =
-                        pre_tool_use_review::review(&invocation, &pre_tool_use_payload, reason)
-                            .await
+                    match pre_tool_use_review::review(&invocation, &pre_tool_use_payload, reason)
+                        .await
                     {
-                        let err = FunctionCallError::RespondToModel(message);
-                        dispatch_trace.record_failed(&err);
-                        notify_tool_finish_if_unclaimed(
-                            &invocation,
-                            terminal_outcome_reached.as_deref(),
-                            ToolCallOutcome::Blocked,
-                        )
-                        .await;
-                        return Err(err);
+                        Ok(approval) => pre_tool_use_approval = Some(approval),
+                        Err(message) => {
+                            let err = FunctionCallError::RespondToModel(message);
+                            dispatch_trace.record_failed(&err);
+                            notify_tool_finish_if_unclaimed(
+                                &invocation,
+                                terminal_outcome_reached.as_deref(),
+                                ToolCallOutcome::Blocked,
+                            )
+                            .await;
+                            return Err(err);
+                        }
                     }
                 }
                 PreToolUseHookResult::Continue {
@@ -580,7 +601,13 @@ impl ToolRegistry {
                     let tool = tool.clone();
                     let response_cell = &response_cell;
                     async move {
-                        match handle_any_tool(tool.as_ref(), invocation_for_tool).await {
+                        match handle_any_tool(
+                            tool.as_ref(),
+                            invocation_for_tool,
+                            pre_tool_use_approval,
+                        )
+                        .await
+                        {
                             Ok(result) => {
                                 let preview = result.result.log_preview();
                                 let success = result.result.success_for_logging();
@@ -713,10 +740,17 @@ async fn notify_tool_finish_if_unclaimed(
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
+    pre_tool_use_approval: Option<PreToolUseApproval>,
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
-    let output = tool.handle(invocation.clone()).await?;
+    let output = match pre_tool_use_approval {
+        Some(approval) => {
+            tool.handle_after_pre_tool_use_approval(invocation.clone(), approval)
+                .await?
+        }
+        None => tool.handle(invocation.clone()).await?,
+    };
     if output.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {

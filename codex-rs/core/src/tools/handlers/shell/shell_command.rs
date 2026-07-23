@@ -7,11 +7,13 @@ use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_permission_profile_env;
+use crate::exec_policy::PreToolUseApprovalState;
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::shell::Shell;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApproval;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -154,7 +156,7 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(self.handle_call(invocation))
+        Box::pin(self.handle_call(invocation, PreToolUseApprovalState::NotGranted))
     }
 }
 
@@ -162,6 +164,7 @@ impl ShellCommandHandler {
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
+        pre_tool_use_approval: PreToolUseApprovalState,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
@@ -231,6 +234,7 @@ impl ShellCommandHandler {
             tracker,
             call_id,
             shell_runtime_backend: self.shell_runtime_backend(),
+            pre_tool_use_approval,
         })
         .await
         .map(boxed_tool_output)
@@ -238,6 +242,14 @@ impl ShellCommandHandler {
 }
 
 impl CoreToolRuntime for ShellCommandHandler {
+    fn handle_after_pre_tool_use_approval(
+        &self,
+        invocation: ToolInvocation,
+        _approval: PreToolUseApproval,
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation, PreToolUseApprovalState::Granted))
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

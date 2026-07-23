@@ -1,8 +1,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::exec_policy::PreToolUseApprovalState;
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApproval;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -98,7 +100,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(self.handle_call(invocation))
+        Box::pin(self.handle_call(invocation, PreToolUseApprovalState::NotGranted))
     }
 }
 
@@ -106,6 +108,7 @@ impl ExecCommandHandler {
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
+        pre_tool_use_approval: PreToolUseApprovalState,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
@@ -127,7 +130,8 @@ impl ExecCommandHandler {
         };
 
         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
-        let context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
+        let mut context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id.clone());
+        context.pre_tool_use_approval = pre_tool_use_approval;
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(&arguments)?;
         let Some(turn_environment) = resolve_tool_environment(
             &step_context.environments,
@@ -401,6 +405,14 @@ impl ExecCommandHandler {
 }
 
 impl CoreToolRuntime for ExecCommandHandler {
+    fn handle_after_pre_tool_use_approval(
+        &self,
+        invocation: ToolInvocation,
+        _approval: PreToolUseApproval,
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation, PreToolUseApprovalState::Granted))
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

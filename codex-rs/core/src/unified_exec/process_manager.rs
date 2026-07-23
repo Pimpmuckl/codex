@@ -1090,22 +1090,26 @@ impl UnifiedExecProcessManager {
         };
         let mut orchestrator = ToolOrchestrator::new();
         let mut runtime = UnifiedExecRuntime::new(self, request.shell_mode.clone());
+        let exec_approval_request = ExecApprovalRequest {
+            command: &request.command,
+            approval_policy: context.turn.approval_policy.value(),
+            permission_profile: context.turn.permission_profile(),
+            windows_sandbox_level: context.turn.windows_sandbox_level,
+            sandbox_permissions: if request.additional_permissions_preapproved {
+                crate::sandboxing::SandboxPermissions::UseDefault
+            } else {
+                request.sandbox_permissions
+            },
+            prefix_rule: request.prefix_rule.clone(),
+        };
         let exec_approval_requirement = context
             .session
             .services
             .exec_policy
-            .create_exec_approval_requirement_for_command(ExecApprovalRequest {
-                command: &request.command,
-                approval_policy: context.turn.approval_policy.value(),
-                permission_profile: context.turn.permission_profile(),
-                windows_sandbox_level: context.turn.windows_sandbox_level,
-                sandbox_permissions: if request.additional_permissions_preapproved {
-                    crate::sandboxing::SandboxPermissions::UseDefault
-                } else {
-                    request.sandbox_permissions
-                },
-                prefix_rule: request.prefix_rule.clone(),
-            })
+            .create_exec_approval_requirement_with_pre_tool_use_approval(
+                exec_approval_request,
+                context.pre_tool_use_approval,
+            )
             .await;
         let req = UnifiedExecToolRequest {
             command: request.command.clone(),

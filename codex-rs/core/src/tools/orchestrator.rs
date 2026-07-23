@@ -166,6 +166,9 @@ impl ToolOrchestrator {
             default_exec_approval_requirement(approval_policy, &file_system_sandbox_policy)
         });
         match &requirement {
+            ExecApprovalRequirement::PreToolUseApproved { .. } => {
+                already_approved = true;
+            }
             ExecApprovalRequirement::Skip { .. } => {
                 if strict_auto_review {
                     let approval_ctx = ApprovalCtx {

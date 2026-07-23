@@ -36,6 +36,7 @@ use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
 
+use crate::exec_policy::PreToolUseApprovalState;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -76,6 +77,7 @@ pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
     pub turn: Arc<TurnContext>,
     pub call_id: String,
+    pub pre_tool_use_approval: PreToolUseApprovalState,
 }
 
 impl UnifiedExecContext {
@@ -84,6 +86,7 @@ impl UnifiedExecContext {
             session,
             turn,
             call_id,
+            pre_tool_use_approval: PreToolUseApprovalState::NotGranted,
         }
     }
 }

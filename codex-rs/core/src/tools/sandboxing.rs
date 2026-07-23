@@ -154,6 +154,11 @@ impl PermissionRequestPayload {
 // Specifies what tool orchestrator should do with a given tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ExecApprovalRequirement {
+    /// The exact invocation already passed a hook-enforced Guardian review.
+    PreToolUseApproved {
+        /// Preserve the normal execpolicy sandbox choice for an allowed command.
+        bypass_sandbox: bool,
+    },
     /// No approval required for this tool call.
     Skip {
         /// The first attempt should skip sandboxing (e.g., when explicitly
@@ -258,6 +263,8 @@ pub(crate) fn sandbox_override_for_first_attempt(
         ExecApprovalRequirement::Skip {
             bypass_sandbox: true,
             ..
+        } | ExecApprovalRequirement::PreToolUseApproved {
+            bypass_sandbox: true
         }
     ) {
         return SandboxOverride::BypassSandboxFirstAttempt;
