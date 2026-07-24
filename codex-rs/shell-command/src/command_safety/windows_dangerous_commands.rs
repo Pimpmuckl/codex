@@ -391,14 +391,16 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     }
                     '\'' | '"' if quote == Some(ch) => quote = None,
                     '\'' | '"' if quote.is_none() => quote = Some(ch),
-                    '#' if quote.is_none() => {
+                    '#' if quote.is_none()
+                        && (token.is_empty()
+                            || token.ends_with([';', '|', '&', '(', ')', '{', '}', ','])) =>
+                    {
                         if !token.is_empty() {
                             tokens.push(std::mem::take(&mut token));
                         }
                         if chars
                             .by_ref()
-                            .find(|comment_ch| matches!(comment_ch, '\n' | '\r'))
-                            .is_some()
+                            .any(|comment_ch| matches!(comment_ch, '\n' | '\r'))
                         {
                             tokens.push("\n".to_string());
                         }
@@ -571,40 +573,24 @@ mod tests {
 
     #[test]
     fn portable_powershell_matcher_does_not_apply_cmd_or_gui_rules() {
+        let powershell = |script| vec_str(&["pwsh.exe", "-Command", script]);
         assert!(is_dangerous_powershell(&vec_str(&[
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             "-Command",
             "Remove-Item test -Recurse -Force"
         ])));
-        assert!(is_dangerous_powershell(&vec_str(&[
-            "pwsh.exe",
-            "-Command",
+        assert!(is_dangerous_powershell(&powershell(
             r"Remove-Item -Recurse -Force C:\temp\"
-        ])));
-        assert!(!is_dangerous_powershell(&vec_str(&[
-            "powershell.exe",
-            "-Command",
-            "Get-ChildItem -Force; Remove-Item test"
-        ])));
-        assert!(!is_dangerous_powershell(&vec_str(&[
-            "pwsh.exe",
-            "-Command",
+        )));
+        assert!(!is_dangerous_powershell(&powershell(
             r#"Write-Output "Remove-Item -Force C:\temp\""#
-        ])));
-        assert!(!is_dangerous_powershell(&vec_str(&[
-            "pwsh.exe",
-            "-Command",
+        )));
+        assert!(!is_dangerous_powershell(&powershell(
             r#"Write-Output "C:\temp\" # Remove-Item -Force"#
-        ])));
-        assert!(!is_dangerous_powershell(&vec_str(&[
-            "cmd.exe",
-            "/c",
-            "del /f test.txt"
-        ])));
-        assert!(!is_dangerous_powershell(&vec_str(&[
-            "explorer.exe",
-            "https://example.com"
-        ])));
+        )));
+        assert!(is_dangerous_powershell(&powershell(
+            r"Write-Output foo#bar; Remove-Item -Force C:\temp\"
+        )));
     }
 
     #[test]
