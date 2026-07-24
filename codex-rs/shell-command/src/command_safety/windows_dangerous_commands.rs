@@ -223,10 +223,7 @@ fn split_embedded_cmd_operators(token: &str) -> Vec<String> {
 fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
     if tokens.iter().any(|token| token.contains('\u{e000}')) {
         let mut scopes = vec![String::new()];
-        for ch in tokens
-            .iter()
-            .flat_map(|token| token.chars().chain(std::iter::once(',')))
-        {
+        for ch in tokens.join(",").chars() {
             match ch {
                 '\u{e000}' => scopes.push(String::new()),
                 '\u{e001}' if scopes.len() > 1 => {
@@ -392,11 +389,12 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut tokens = Vec::new();
         let mut token = String::new();
         let mut quote = None;
+        let mut expandable_scope_depth = None;
         let mut comment_boundary = true;
         let mut continuation_delimiters = Vec::new();
         let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
-            let parses_expression = quote.is_none() || continuation_delimiters.contains(&false);
+            let parses_expression = quote.is_none();
             match ch {
                 '`' if quote != Some('\'') => {
                     let Some(escaped) = chars.next() else {
@@ -411,7 +409,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         comment_boundary &= quote.is_some();
                     }
                 }
-                '\'' | '"' if quote == Some(ch) && !parses_expression => quote = None,
+                '\'' | '"' if quote == Some(ch) => quote = None,
                 '\'' | '"' if quote.is_none() => quote = Some(ch),
                 '<' if parses_expression && comment_boundary && chars.peek() == Some(&'#') => {
                     chars.next();
@@ -446,6 +444,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     if parses_expression || quote == Some('"') && ch == '(' && token.ends_with('$')
                     {
                         if "([".contains(ch) {
+                            if quote.take().is_some() {
+                                expandable_scope_depth = Some(continuation_delimiters.len());
+                            }
                             let continues_line = ch == '[' || !token.ends_with(['$', '@']);
                             continuation_delimiters.push(continues_line);
                             if !continues_line {
@@ -455,6 +456,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         {
                             token.push(ch);
                             token.push('\u{e001}');
+                            if expandable_scope_depth == Some(continuation_delimiters.len()) {
+                                (quote, expandable_scope_depth) = (Some('"'), None);
+                            }
                             continue;
                         }
                         comment_boundary = ";|&(){},".contains(ch);
@@ -640,6 +644,7 @@ mod tests {
             "Remove-Item (@('a'\n'b')) -Force",
             "Remove-Item ($(Get-ChildItem\nWrite-Output test)) -Force",
             "Remove-Item \"$(Get-ChildItem\nWrite-Output test)\" -Force",
+            "$(Remove-\"It\"em x -Force)",
         ] {
             assert!(is_dangerous_powershell(&powershell(script)), "{script}");
         }

@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_powershell_words_return_other_match_on_all_hosts() {
+    fn direct_powershell_words_return_other_match_on_windows() {
         let command = vec_str(&["Remove-Item", "test", "-Force"]);
 
         assert_eq!(
