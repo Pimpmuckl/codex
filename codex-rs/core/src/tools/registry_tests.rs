@@ -30,6 +30,38 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
 impl CoreToolRuntime for TestHandler {}
 
 #[tokio::test]
+async fn approval_receipt_requires_exact_call_payload_and_target() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let invocation = test_invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "call-1",
+        codex_tools::ToolName::plain("echo"),
+    );
+    let payload = invocation.payload.clone();
+    let target = PreToolUseExecutionTarget::from(
+        invocation
+            .step_context
+            .environments
+            .primary()
+            .unwrap()
+            .selection(),
+    );
+    let receipt = PreToolUseApprovalReceipt::for_reviewed(&invocation, Some(target.clone()));
+
+    assert!(receipt.authorizes("call-1", &payload, Some(&target)));
+    assert!(!receipt.authorizes("call-2", &payload, Some(&target)));
+    assert!(!receipt.authorizes(
+        "call-1",
+        &ToolPayload::Function {
+            arguments: r#"{"cmd":"echo changed"}"#.to_string(),
+        },
+        Some(&target),
+    ));
+    assert!(!receipt.authorizes("call-1", &payload, None));
+}
+
+#[tokio::test]
 async fn exact_review_receipt_routes_through_post_review_handler() -> anyhow::Result<()> {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let tool_name = codex_tools::ToolName::plain("echo");

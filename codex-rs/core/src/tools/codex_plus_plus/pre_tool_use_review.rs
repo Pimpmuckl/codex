@@ -100,31 +100,3 @@ pub(crate) fn review<'a>(
         }
     })
 }
-
-#[cfg(test)]
-#[test]
-fn approval_receipt_requires_exact_call_payload_and_target() {
-    let payload = ToolPayload::Function {
-        arguments: r#"{"cmd":"echo reviewed"}"#.to_string(),
-    };
-    let target = PreToolUseExecutionTarget {
-        environment_id: "remote".to_string(),
-        cwd: PathUri::parse("file:///srv/reviewed").unwrap(),
-    };
-    let receipt = PreToolUseApprovalReceipt {
-        call_id: "call-1".to_string(),
-        payload: payload.clone(),
-        execution_target: Some(target.clone()),
-    };
-
-    assert!(receipt.authorizes("call-1", &payload, Some(&target)));
-    assert!(!receipt.authorizes("call-2", &payload, Some(&target)));
-    assert!(!receipt.authorizes(
-        "call-1",
-        &ToolPayload::Function {
-            arguments: r#"{"cmd":"echo changed"}"#.to_string(),
-        },
-        Some(&target),
-    ));
-    assert!(!receipt.authorizes("call-1", &payload, None));
-}
