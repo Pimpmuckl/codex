@@ -227,7 +227,11 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
             match ch {
                 '\u{e000}' => scopes.push(String::new()),
                 '\u{e001}' if scopes.len() > 1 => {
-                    if has_force_delete_cmdlet(&[scopes.pop().expect("nested scope")]) {
+                    let scope = scopes.pop().expect("nested scope");
+                    let outer = scopes.last_mut().expect("outer scope");
+                    if outer.ends_with("&,$") || outer.ends_with("&$") {
+                        outer.push_str(&scope);
+                    } else if has_force_delete_cmdlet(&[scope]) {
                         return true;
                     }
                 }
@@ -349,10 +353,10 @@ fn looks_like_url(token: &str) -> bool {
 }
 
 fn executable_basename(exe: &str) -> Option<String> {
-    exe.rsplit(['/', '\\', ':'])
-        .next()
-        .filter(|basename| !basename.is_empty())
-        .map(str::to_ascii_lowercase)
+    let basename = exe.rsplit(['/', '\\']).next()?;
+    let drive = matches!(basename.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic());
+    let basename = &basename[usize::from(drive) * 2..];
+    (!basename.is_empty()).then(|| basename.to_ascii_lowercase())
 }
 
 fn is_powershell_executable(exe: &str) -> bool {
@@ -386,6 +390,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
     }
 
     let split_script = |script: &str| {
+        let script = script.replace(&['\u{e000}', '\u{e001}'][..], "?");
         let mut tokens = Vec::new();
         let mut token = String::new();
         let mut quote = None;
@@ -423,7 +428,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         tokens.push(std::mem::take(&mut token));
                     }
                     let _ = chars.by_ref().find(|ch| matches!(ch, '\n' | '\r'));
-                    if !continuation_delimiters.last().copied().unwrap_or(false) {
+                    if !continuation_delimiters.last().copied().unwrap_or(false)
+                        && !tokens.last().is_some_and(|token| token.ends_with(','))
+                    {
                         tokens.push("\n".to_string());
                     }
                 }
@@ -433,6 +440,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     }
                     if matches!(ch, '\r' | '\n')
                         && !continuation_delimiters.last().copied().unwrap_or(false)
+                        && !tokens.last().is_some_and(|token| token.ends_with(','))
                     {
                         tokens.push("\n".to_string());
                     }
@@ -624,18 +632,18 @@ mod tests {
     #[test]
     fn portable_powershell_matcher_does_not_apply_cmd_or_gui_rules() {
         let powershell = |script| vec_str(&["pwsh.exe", "-Command", script]);
+        let dangerous_script = "Remove-Item test -Recurse -Force";
         for exe in [
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             "C:pwsh.exe",
+            "/tmp/runner:pwsh.exe",
         ] {
-            assert!(is_dangerous_powershell(&vec_str(&[
-                exe,
-                "-Command",
-                "Remove-Item test -Recurse -Force",
-            ])));
+            let classified =
+                is_dangerous_powershell(&vec_str(&[exe, "-Command", dangerous_script]));
+            assert_eq!(classified, !exe.starts_with('/'));
         }
         for script in [
-            "Remove-Item ( # target\n'C:\\temp\\'\n) -Recurse -Force",
+            "Remove-Item \u{e000} ( # target\n'C:\\temp\\'\n) -Recurse -Force",
             r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##,
             "Write-Output '`'; Remove-Item test -Force",
             "Remove-Item test `\r\n-Force",
@@ -644,6 +652,8 @@ mod tests {
             "Remove-Item ($(Get-ChildItem\nWrite-Output test)) -Force",
             "Remove-Item \"$(Get-ChildItem\nWrite-Output test)\" -Force",
             "$(Remove-\"It\"em x -Force)",
+            "& $(Write-Output Remove-Item) C:\\tmp -Recurse -Force",
+            "Remove-Item 'a',\n'b' -Force",
         ] {
             assert!(is_dangerous_powershell(&powershell(script)), "{script}");
         }
