@@ -389,12 +389,11 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut tokens = Vec::new();
         let mut token = String::new();
         let mut quote = None;
-        let mut expandable_scope_depth = None;
+        let mut expandable_scope_depths = Vec::new();
         let mut comment_boundary = true;
         let mut continuation_delimiters = Vec::new();
         let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
-            let parses_expression = quote.is_none();
             match ch {
                 '`' if quote != Some('\'') => {
                     let Some(escaped) = chars.next() else {
@@ -411,16 +410,15 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 }
                 '\'' | '"' if quote == Some(ch) => quote = None,
                 '\'' | '"' if quote.is_none() => quote = Some(ch),
-                '<' if parses_expression && comment_boundary && chars.peek() == Some(&'#') => {
+                '<' if quote.is_none() && comment_boundary && chars.peek() == Some(&'#') => {
                     chars.next();
                     while chars
                         .next()
-                        .is_some_and(|ch| ch != '#' || chars.peek() != Some(&'>'))
+                        .is_some_and(|ch| ch != '#' || chars.next_if_eq(&'>').is_none())
                     {
                     }
-                    chars.next();
                 }
-                '#' if parses_expression && comment_boundary => {
+                '#' if quote.is_none() && comment_boundary => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
@@ -429,7 +427,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         tokens.push("\n".to_string());
                     }
                 }
-                _ if ch.is_whitespace() && parses_expression => {
+                _ if ch.is_whitespace() && quote.is_none() => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
@@ -441,11 +439,10 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     comment_boundary = true;
                 }
                 _ => {
-                    if parses_expression || quote == Some('"') && ch == '(' && token.ends_with('$')
-                    {
+                    if quote.is_none() || quote == Some('"') && ch == '(' && token.ends_with('$') {
                         if "([".contains(ch) {
                             if quote.take().is_some() {
-                                expandable_scope_depth = Some(continuation_delimiters.len());
+                                expandable_scope_depths.push(continuation_delimiters.len());
                             }
                             let continues_line = ch == '[' || !token.ends_with(['$', '@']);
                             continuation_delimiters.push(continues_line);
@@ -456,8 +453,10 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         {
                             token.push(ch);
                             token.push('\u{e001}');
-                            if expandable_scope_depth == Some(continuation_delimiters.len()) {
-                                (quote, expandable_scope_depth) = (Some('"'), None);
+                            let depth = continuation_delimiters.len();
+                            if expandable_scope_depths.last() == Some(&depth) {
+                                quote = Some('"');
+                                expandable_scope_depths.pop();
                             }
                             continue;
                         }
@@ -650,7 +649,7 @@ mod tests {
         }
         for script in [
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
-            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); Get-ChildItem $(Write-Output Remove-Item) -Force; Remove-Item $(Get-ChildItem -Force); if ($true) { Get-ChildItem -Force\nRemove-Item test }",
+            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); Get-ChildItem $(Write-Output Remove-Item) -Force; Remove-Item $(Get-ChildItem -Force); Write-Output \"$(Write-Output \"$(Get-Date)\") Remove-Item -Force\"; if ($true) { Get-ChildItem -Force\nRemove-Item test }",
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
