@@ -949,14 +949,14 @@ fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Re
 
 #[test]
 fn pre_tool_use_action_bounds_reviewed_execution_target() -> serde_json::Result<()> {
+    let nested_execution_target = (0..100).fold(serde_json::json!({}), |target, _| {
+        serde_json::json!([target])
+    });
     let action = GuardianApprovalRequest::PreToolUse {
         id: "call-1".to_string(),
         tool_name: "Bash".to_string(),
         tool_input: serde_json::json!({ "command": "rm -f reviewed-target" }),
-        execution_target: Some(serde_json::json!({
-            "environment_id": "remote",
-            "cwd": format!("file:///{}", "long/".repeat(1_000)),
-        })),
+        execution_target: Some(nested_execution_target),
         reason: "Review this shell command".to_string(),
         cwd: test_path_buf("/tmp").abs(),
     };
