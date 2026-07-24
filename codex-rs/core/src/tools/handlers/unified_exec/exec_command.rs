@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::PreToolUseApprovalStore;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApprovalReceipt;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolInvocation;
@@ -57,6 +59,7 @@ pub(crate) struct ExecCommandHandlerOptions {
 
 pub struct ExecCommandHandler {
     options: ExecCommandHandlerOptions,
+    pre_tool_use_approvals: PreToolUseApprovalStore,
 }
 
 impl Default for ExecCommandHandler {
@@ -68,13 +71,17 @@ impl Default for ExecCommandHandler {
                 include_environment_id: false,
                 include_shell_parameter: true,
             },
+            pre_tool_use_approvals: PreToolUseApprovalStore::default(),
         }
     }
 }
 
 impl ExecCommandHandler {
     pub(crate) fn new(options: ExecCommandHandlerOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            pre_tool_use_approvals: PreToolUseApprovalStore::default(),
+        }
     }
 }
 
@@ -108,6 +115,7 @@ impl ExecCommandHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let exact_pre_tool_use_approval = self.pre_tool_use_approvals.take(&invocation.call_id);
         let ToolInvocation {
             session,
             turn,
@@ -363,6 +371,7 @@ impl ExecCommandHandler {
                         .permissions_preapproved,
                     justification,
                     prefix_rule,
+                    exact_pre_tool_use_approval,
                 },
                 &context,
             )
@@ -404,6 +413,21 @@ impl ExecCommandHandler {
 impl CoreToolRuntime for ExecCommandHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn pre_tool_use_approval_matches(
+        &self,
+        invocation: &ToolInvocation,
+        receipt: &PreToolUseApprovalReceipt,
+    ) -> bool {
+        let execution_target = self
+            .pre_tool_use_payload(invocation)
+            .and_then(|payload| payload.execution_target);
+        self.pre_tool_use_approvals.record_if_authorized(
+            invocation,
+            receipt,
+            execution_target.as_ref(),
+        )
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
