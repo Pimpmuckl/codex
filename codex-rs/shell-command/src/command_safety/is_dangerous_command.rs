@@ -43,6 +43,7 @@ fn dangerous_command_match_with_depth(
 
     // PowerShell syntax is portable even when the selected executor is not
     // running on this host. Keep the broader CMD/GUI rules Windows-only below.
+    #[cfg(not(windows))]
     if windows_dangerous_commands::is_dangerous_powershell(command) {
         return Some(DangerousCommandMatch::Other);
     }
