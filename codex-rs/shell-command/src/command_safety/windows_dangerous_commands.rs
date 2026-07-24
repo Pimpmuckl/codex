@@ -379,7 +379,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut token = String::new();
         let mut quote = None;
         let mut comment_boundary = true;
-        let mut delimiter_depth = 0usize;
+        let mut continuation_delimiters = Vec::new();
         let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
             match ch {
@@ -414,7 +414,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     let _ = chars
                         .by_ref()
                         .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
-                    if delimiter_depth == 0 {
+                    if !continuation_delimiters.contains(&true) {
                         tokens.push("\n".to_string());
                     }
                 }
@@ -422,16 +422,18 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
-                    if matches!(ch, '\r' | '\n') && delimiter_depth == 0 {
+                    if matches!(ch, '\r' | '\n') && !continuation_delimiters.contains(&true) {
                         tokens.push("\n".to_string());
                     }
                     comment_boundary = true;
                 }
                 _ => {
                     if quote.is_none() {
-                        delimiter_depth += usize::from("([".contains(ch));
-                        delimiter_depth =
-                            delimiter_depth.saturating_sub(usize::from(")]".contains(ch)));
+                        if "([".contains(ch) {
+                            continuation_delimiters.push(ch == '[' || !token.ends_with('$'));
+                        } else if ")]".contains(ch) {
+                            continuation_delimiters.pop();
+                        }
                         comment_boundary = ";|&(){},".contains(ch);
                     }
                     token.push(ch);
@@ -614,14 +616,10 @@ mod tests {
         }
         for script in [
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
-            "if ($true) { Get-ChildItem -Force\nRemove-Item test }",
+            "$(Get-ChildItem -Force # note\nRemove-Item test); if ($true) { Get-ChildItem -Force\nRemove-Item test }",
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
-    }
-
-    #[test]
-    fn drive_relative_windows_executable_paths_are_recognized() {
         assert!(is_dangerous_powershell(&vec_str(&[
             "C:pwsh.exe",
             "-Command",
