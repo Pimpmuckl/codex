@@ -257,7 +257,7 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
             ))?),
             remote_cwd.clone(),
             vec![remote_cwd.clone()],
-            None,
+            /*shell*/ None,
         ))],
     };
     let turn = Arc::new(turn);

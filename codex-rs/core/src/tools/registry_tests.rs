@@ -39,7 +39,8 @@ async fn exact_review_receipt_routes_through_post_review_handler() -> anyhow::Re
         "call-reviewed",
         tool_name.clone(),
     );
-    let receipt = PreToolUseApprovalReceipt::for_reviewed(&invocation, None);
+    let receipt =
+        PreToolUseApprovalReceipt::for_reviewed(&invocation, /*execution_target*/ None);
     let result = handle_any_tool(&TestHandler { tool_name }, invocation, Some(receipt)).await?;
 
     assert_eq!(result.call_id, "call-reviewed");
