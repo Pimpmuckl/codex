@@ -74,6 +74,8 @@ const PERMISSION_REQUEST_HOOK_MATCHER: &str = "^Bash$";
 const PERMISSION_REQUEST_ALLOW_REASON: &str = "should not be used for allow";
 
 async fn submit_yolo_hook_review_turn(test: &TestCodex, prompt: &str) -> Result<()> {
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     test.codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
@@ -84,9 +86,14 @@ async fn submit_yolo_hook_review_turn(test: &TestCodex, prompt: &str) -> Result<
             responsesapi_client_metadata: None,
             additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
+                    test.config.cwd.clone(),
+                    vec![test.executor_environment().selection()],
+                )),
                 approval_policy: Some(AskForApproval::Never),
                 approvals_reviewer: Some(ApprovalsReviewer::User),
-                sandbox_policy: Some(SandboxPolicy::DangerFullAccess),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
                 ..Default::default()
             },
         })
@@ -3267,14 +3274,40 @@ impl BashRewriteSurface {
             BashRewriteSurface::ExecCommand => Ok(ev_function_call(
                 call_id,
                 "exec_command",
-                &serde_json::to_string(&serde_json::json!({ "cmd": command_text }))?,
+                &serde_json::to_string(
+                    &serde_json::json!({ "cmd": command_text, "login": false, "tty": false }),
+                )?,
             )),
             BashRewriteSurface::ShellCommand => Ok(ev_function_call(
                 call_id,
                 "shell_command",
-                &serde_json::to_string(&serde_json::json!({ "command": command_text }))?,
+                &serde_json::to_string(
+                    &serde_json::json!({ "command": command_text, "login": false }),
+                )?,
             )),
         }
+    }
+
+    fn tool_call_with_overrides(
+        self,
+        call_id: &str,
+        command_text: &str,
+        overrides: &Value,
+    ) -> Result<Value> {
+        let mut call = self.tool_call(call_id, command_text)?;
+        let mut args: Value = serde_json::from_str(
+            call["item"]["arguments"]
+                .as_str()
+                .expect("function call arguments should be a string"),
+        )?;
+        for (key, value) in overrides
+            .as_object()
+            .expect("argument overrides should be an object")
+        {
+            args[key] = value.clone();
+        }
+        call["item"]["arguments"] = serde_json::to_string(&args)?.into();
+        Ok(call)
     }
 
     fn original_command(self, marker: &Path) -> String {
@@ -3295,6 +3328,7 @@ impl BashRewriteSurface {
 
     fn configure(self, config: &mut Config) {
         trust_discovered_hooks(config);
+        config.permissions.allow_login_shell = true;
         if matches!(self, BashRewriteSurface::ExecCommand) {
             config.use_experimental_unified_exec_tool = true;
             config
@@ -4397,6 +4431,147 @@ async fn pre_tool_use_ask_reviews_generic_tool_under_yolo() -> Result<()> {
     );
 
     Ok(())
+}
+
+async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    core_test_support::skip_if_test_condition!(
+        Ok(()),
+        matches!(surface, BashRewriteSurface::ExecCommand)
+            && test_target_os() == TestTargetOs::Windows
+            && !cfg!(windows),
+        "a foreign Windows executor",
+        "portable PowerShell danger parsing is upstream/out of scope",
+    );
+
+    let slug = surface.slug();
+    let counter_name = format!("{slug}-guardian-counter");
+    let target_name = format!("{slug}-guardian-target");
+    let uses_windows_shell = match surface {
+        BashRewriteSurface::ExecCommand => test_target_os() == TestTargetOs::Windows,
+        BashRewriteSurface::ShellCommand => cfg!(windows),
+    };
+    let command = if uses_windows_shell {
+        format!(
+            "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
+             rm {target_name} -Recurse -Force"
+        )
+    } else {
+        format!("printf x >> {counter_name}; rm -rf {target_name}")
+    };
+    let server = start_mock_server().await;
+    let reason = "Review this exact dangerous command";
+    let mut builder = test_codex()
+        .with_pre_build_hook(move |home| {
+            write_pre_tool_use_hook(home, Some("^Bash$"), "ask", reason)
+                .expect("failed to write pre tool use hook fixture");
+        })
+        .with_config(move |config| surface.configure(config));
+    let test = match surface {
+        BashRewriteSurface::ShellCommand => builder.build(&server).await?,
+        BashRewriteSurface::ExecCommand => builder.build_with_auto_env(&server).await?,
+    };
+    let environment_info = test.executor_environment().environment().info().await?;
+    let custom_shell = environment_info.shell.path;
+    let mut cases = vec![
+        ("denied", "deny", serde_json::json!({})),
+        ("approved", "allow", serde_json::json!({})),
+    ];
+    match surface {
+        BashRewriteSurface::ExecCommand => cases.extend([
+            ("interactive", "allow", serde_json::json!({ "tty": true })),
+            ("login", "allow", serde_json::json!({ "login": true })),
+            (
+                "custom-shell",
+                "allow",
+                serde_json::json!({ "shell": custom_shell }),
+            ),
+        ]),
+        BashRewriteSurface::ShellCommand => {
+            cases.push(("login", "allow", serde_json::json!({ "login": true })))
+        }
+    }
+    let unreviewed_count = cases.len() - 2;
+    let mut sequence = Vec::new();
+    for (label, verdict, overrides) in &cases {
+        let tool_response_id = format!("resp-parent-{label}-tool");
+        let done_response_id = format!("resp-parent-{label}-done");
+        sequence.extend([
+            sse(vec![
+                ev_response_created(&tool_response_id),
+                surface.tool_call_with_overrides(label, &command, overrides)?,
+                ev_completed(&tool_response_id),
+            ]),
+            guardian_review_sse(
+                &format!("resp-guardian-{label}"),
+                verdict,
+                "Review the exact requested command.",
+            ),
+            sse(vec![
+                ev_response_created(&done_response_id),
+                ev_assistant_message(&format!("msg-parent-{label}-done"), label),
+                ev_completed(&done_response_id),
+            ]),
+        ]);
+    }
+    let responses = mount_sse_sequence(&server, sequence).await;
+    let cwd = test.executor_environment().selection().cwd;
+    let counter = cwd.join(&counter_name)?;
+    let target = cwd.join(&target_name)?;
+    test.fs()
+        .write_file(&counter, Vec::new(), /*sandbox*/ None)
+        .await?;
+    test.fs()
+        .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
+        .await?;
+
+    submit_yolo_hook_review_turn(&test, "deny the dangerous command").await?;
+
+    assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"");
+    assert_eq!(
+        test.fs().read_file(&target, /*sandbox*/ None).await?,
+        b"seed"
+    );
+
+    submit_yolo_hook_review_turn(&test, "approve the dangerous command").await?;
+
+    assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+    assert!(
+        test.fs()
+            .read_file(&target, /*sandbox*/ None)
+            .await
+            .is_err(),
+        "approved command should remove its target"
+    );
+    for _ in 0..unreviewed_count {
+        test.fs()
+            .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
+            .await?;
+        submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
+        assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+        assert_eq!(
+            test.fs().read_file(&target, /*sandbox*/ None).await?,
+            b"seed"
+        );
+    }
+    if matches!(surface, BashRewriteSurface::ExecCommand) {
+        let output = responses
+            .function_call_output_text("custom-shell")
+            .expect("custom shell output should reach the parent");
+        assert!(output.contains("rejected: blocked by policy"), "{output}");
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_allows_dangerous_shell_command_once_under_yolo() -> Result<()> {
+    assert_guardian_allows_dangerous_bash_once(BashRewriteSurface::ShellCommand).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_allows_initial_unified_exec_once_under_yolo() -> Result<()> {
+    assert_guardian_allows_dangerous_bash_once(BashRewriteSurface::ExecCommand).await
 }
 
 #[tokio::test]

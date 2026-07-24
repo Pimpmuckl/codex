@@ -108,6 +108,8 @@ impl ExecCommandHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let exact_pre_tool_use_approval =
+            crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
         let ToolInvocation {
             session,
             turn,
@@ -190,6 +192,11 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
+        let exact_pre_tool_use_approval = exact_pre_tool_use_approval
+            && args.shell.is_none()
+            && !args
+                .login
+                .unwrap_or(turn.config.permissions.allow_login_shell);
         let hook_command = args.cmd.clone();
         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
         if let Some(native_cwd) = native_cwd.as_ref() {
@@ -251,6 +258,7 @@ impl ExecCommandHandler {
             prefix_rule,
             ..
         } = args;
+        let exact_pre_tool_use_approval = exact_pre_tool_use_approval && !tty;
 
         let exec_permission_approvals_enabled =
             session.features().enabled(Feature::ExecPermissionApprovals);
@@ -363,6 +371,7 @@ impl ExecCommandHandler {
                         .permissions_preapproved,
                     justification,
                     prefix_rule,
+                    exact_pre_tool_use_approval,
                 },
                 &context,
             )

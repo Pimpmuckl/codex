@@ -165,6 +165,8 @@ impl ShellCommandHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let exact_pre_tool_use_approval =
+            crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
         let ToolInvocation {
             session,
             turn,
@@ -197,6 +199,10 @@ impl ShellCommandHandler {
         })?;
         let cwd = resolve_workdir_base_path(&arguments, &environment_cwd)?;
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
+        let exact_pre_tool_use_approval = exact_pre_tool_use_approval
+            && !params
+                .login
+                .unwrap_or(turn.config.permissions.allow_login_shell);
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
             turn.as_ref(),
@@ -233,6 +239,7 @@ impl ShellCommandHandler {
             tracker,
             call_id,
             shell_runtime_backend: self.shell_runtime_backend(),
+            exact_pre_tool_use_approval,
         })
         .await
         .map(boxed_tool_output)
