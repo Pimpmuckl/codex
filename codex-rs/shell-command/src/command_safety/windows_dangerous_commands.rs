@@ -221,6 +221,25 @@ fn split_embedded_cmd_operators(token: &str) -> Vec<String> {
 }
 
 fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
+    if tokens.iter().any(|token| token.contains('\u{e000}')) {
+        let mut scopes = vec![String::new()];
+        for ch in tokens
+            .iter()
+            .flat_map(|token| token.chars().chain(std::iter::once(',')))
+        {
+            match ch {
+                '\u{e000}' => scopes.push(String::new()),
+                '\u{e001}' if scopes.len() > 1 => {
+                    if has_force_delete_cmdlet(&[scopes.pop().expect("nested scope")]) {
+                        return true;
+                    }
+                }
+                _ => scopes.last_mut().expect("scope").push(ch),
+            }
+        }
+        return has_force_delete_cmdlet(&scopes[..1]);
+    }
+
     const DELETE_CMDLETS: &[&str] = &["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"];
 
     // Hard separators that end a command segment (so -Force must be in same segment)
@@ -261,7 +280,7 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
     }
 
     // Now, inside each segment, normalize tokens by splitting on soft punctuation
-    if segments.into_iter().any(|seg| {
+    segments.into_iter().any(|seg| {
         let atoms = seg
             .iter()
             .flat_map(|t| t.split(|c| SOFT_SEPS.contains(&c)))
@@ -284,21 +303,7 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
         }
 
         has_delete && has_force
-    }) {
-        return true;
-    }
-
-    let mut statement_depth = 0;
-    let mut outer_tokens = tokens.to_vec();
-    for token in &mut outer_tokens {
-        token.retain(|ch| {
-            statement_depth += usize::from(ch == '\u{e000}');
-            let keep = statement_depth == 0;
-            statement_depth = statement_depth.saturating_sub(usize::from(ch == '\u{e001}'));
-            keep
-        });
-    }
-    outer_tokens != tokens && has_force_delete_cmdlet(&outer_tokens)
+    })
 }
 
 /// Check for /f or /F flag in CMD del/erase arguments.
@@ -347,15 +352,10 @@ fn looks_like_url(token: &str) -> bool {
 }
 
 fn executable_basename(exe: &str) -> Option<String> {
-    let basename = exe
-        .rsplit(['/', '\\'])
+    exe.rsplit(['/', '\\', ':'])
         .next()
-        .filter(|basename| !basename.is_empty())?;
-    let basename = match basename.as_bytes() {
-        [drive, b':', ..] if drive.is_ascii_alphabetic() => &basename[2..],
-        _ => basename,
-    };
-    (!basename.is_empty()).then(|| basename.to_ascii_lowercase())
+        .filter(|basename| !basename.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 fn is_powershell_executable(exe: &str) -> bool {
@@ -396,6 +396,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut continuation_delimiters = Vec::new();
         let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
+            let parses_expression = quote.is_none() || continuation_delimiters.contains(&false);
             match ch {
                 '`' if quote != Some('\'') => {
                     let Some(escaped) = chars.next() else {
@@ -410,9 +411,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         comment_boundary &= quote.is_some();
                     }
                 }
-                '\'' | '"' if quote == Some(ch) => quote = None,
+                '\'' | '"' if quote == Some(ch) && !parses_expression => quote = None,
                 '\'' | '"' if quote.is_none() => quote = Some(ch),
-                '<' if quote.is_none() && comment_boundary && chars.peek() == Some(&'#') => {
+                '<' if parses_expression && comment_boundary && chars.peek() == Some(&'#') => {
                     chars.next();
                     while chars
                         .next()
@@ -421,7 +422,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     }
                     chars.next();
                 }
-                '#' if quote.is_none() && comment_boundary => {
+                '#' if parses_expression && comment_boundary => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
@@ -430,7 +431,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         tokens.push("\n".to_string());
                     }
                 }
-                _ if ch.is_whitespace() && quote.is_none() => {
+                _ if ch.is_whitespace() && parses_expression => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
@@ -442,7 +443,8 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     comment_boundary = true;
                 }
                 _ => {
-                    if quote.is_none() {
+                    if parses_expression || quote == Some('"') && ch == '(' && token.ends_with('$')
+                    {
                         if "([".contains(ch) {
                             let continues_line = ch == '[' || !token.ends_with(['$', '@']);
                             continuation_delimiters.push(continues_line);
@@ -637,12 +639,13 @@ mod tests {
             "<# note #> Remove-Item test -Force",
             "Remove-Item (@('a'\n'b')) -Force",
             "Remove-Item ($(Get-ChildItem\nWrite-Output test)) -Force",
+            "Remove-Item \"$(Get-ChildItem\nWrite-Output test)\" -Force",
         ] {
             assert!(is_dangerous_powershell(&powershell(script)), "{script}");
         }
         for script in [
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
-            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); if ($true) { Get-ChildItem -Force\nRemove-Item test }",
+            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); Get-ChildItem $(Write-Output Remove-Item) -Force; Remove-Item $(Get-ChildItem -Force); if ($true) { Get-ChildItem -Force\nRemove-Item test }",
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
