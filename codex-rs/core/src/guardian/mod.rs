@@ -26,6 +26,7 @@ use serde::Serialize;
 pub(crate) use approval_request::GuardianApprovalRequest;
 pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;
+pub(crate) use approval_request::format_guardian_action_pretty;
 #[cfg(test)]
 pub(crate) use approval_request::guardian_approval_request_to_json;
 pub(crate) use review::guardian_timeout_message;
@@ -129,8 +130,6 @@ impl GuardianRejectionCircuitBreaker {
     }
 }
 
-#[cfg(test)]
-use approval_request::format_guardian_action_pretty;
 #[cfg(test)]
 use approval_request::guardian_assessment_action;
 #[cfg(test)]
