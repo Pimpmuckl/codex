@@ -312,9 +312,10 @@ impl ExecPolicyManager {
         self.policy.load_full()
     }
 
-    pub(crate) async fn create_exec_approval_requirement_for_command(
+    pub(crate) async fn create_exec_approval_requirement_with_guardian(
         &self,
         req: ExecApprovalRequest<'_>,
+        exact_pre_tool_use_approval: bool,
     ) -> ExecApprovalRequirement {
         let ExecApprovalRequest {
             command,
@@ -438,19 +439,28 @@ impl ExecPolicyManager {
 
         match classify_guardian_exec_approval(
             GuardianExecApprovalContext {
-                exact_pre_tool_use_approval: false,
+                exact_pre_tool_use_approval,
                 approval_policy,
                 permission_profile: &permission_profile,
                 sandbox_permissions,
                 evaluation: &evaluation,
-                dangerous_command_match: None,
+                dangerous_command_match: exact_pre_tool_use_approval
+                    .then(|| {
+                        dangerous_command_match_for_heuristics(
+                            &evaluation,
+                            evaluation.decision,
+                            command_origin,
+                        )
+                    })
+                    .flatten(),
             },
             current_requirement,
         ) {
             GuardianExecApprovalRequirement::CurrentPolicy(requirement) => requirement,
-            GuardianExecApprovalRequirement::PreToolUseApproved => {
-                unreachable!("absent Guardian approval cannot override exec policy")
-            }
+            GuardianExecApprovalRequirement::PreToolUseApproved => ExecApprovalRequirement::Skip {
+                bypass_sandbox: false,
+                proposed_execpolicy_amendment: None,
+            },
         }
     }
 

@@ -108,6 +108,8 @@ impl ExecCommandHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let exact_pre_tool_use_approval =
+            crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
         let ToolInvocation {
             session,
             turn,
@@ -363,6 +365,7 @@ impl ExecCommandHandler {
                         .permissions_preapproved,
                     justification,
                     prefix_rule,
+                    exact_pre_tool_use_approval,
                 },
                 &context,
             )

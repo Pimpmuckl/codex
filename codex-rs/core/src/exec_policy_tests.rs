@@ -39,6 +39,18 @@ use toml::Value as TomlValue;
 #[path = "exec_policy_windows_tests.rs"]
 mod windows_tests;
 
+impl ExecPolicyManager {
+    pub(crate) async fn create_exec_approval_requirement_for_command(
+        &self,
+        req: ExecApprovalRequest<'_>,
+    ) -> ExecApprovalRequirement {
+        self.create_exec_approval_requirement_with_guardian(
+            req, /*exact_pre_tool_use_approval*/ false,
+        )
+        .await
+    }
+}
+
 fn config_stack_for_dot_codex_folder(dot_codex_folder: &Path) -> ConfigLayerStack {
     let dot_codex_folder =
         AbsolutePathBuf::from_absolute_path(dot_codex_folder).expect("absolute dot_codex_folder");

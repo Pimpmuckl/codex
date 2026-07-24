@@ -309,6 +309,15 @@ impl CoreToolRuntime for ExposureOverride {
         self.handler.waits_for_runtime_cancellation()
     }
 
+    fn pre_tool_use_approval_matches(
+        &self,
+        invocation: &ToolInvocation,
+        receipt: &PreToolUseApprovalReceipt,
+    ) -> bool {
+        self.handler
+            .pre_tool_use_approval_matches(invocation, receipt)
+    }
+
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         self.handler.pre_tool_use_payload(invocation)
     }
@@ -587,6 +596,7 @@ impl ToolRegistry {
             .await;
             return Err(err);
         }
+        let exact_pre_tool_use_approval = pre_tool_use_approval.is_some();
 
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);
@@ -619,7 +629,13 @@ impl ToolRegistry {
                     let tool = tool.clone();
                     let response_cell = &response_cell;
                     async move {
-                        match handle_any_tool(tool.as_ref(), invocation_for_tool).await {
+                        match handle_any_tool(
+                            tool.as_ref(),
+                            invocation_for_tool,
+                            exact_pre_tool_use_approval,
+                        )
+                        .await
+                        {
                             Ok(result) => {
                                 let preview = result.result.log_preview();
                                 let success = result.result.success_for_logging();
@@ -752,10 +768,15 @@ async fn notify_tool_finish_if_unclaimed(
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
+    exact_pre_tool_use_approval: bool,
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
-    let output = tool.handle(invocation.clone()).await?;
+    let output = crate::tools::codex_plus_plus::pre_tool_use_approval_store::scope(
+        exact_pre_tool_use_approval,
+        async { tool.handle(invocation.clone()).await },
+    )
+    .await?;
     if output.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {
