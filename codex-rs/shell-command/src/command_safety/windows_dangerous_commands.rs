@@ -389,21 +389,24 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                             token.push(ch);
                         }
                     }
-                    '\'' | '"' if quote == Some(ch) => quote = None,
+                    '\'' | '"' if quote == Some(ch) => {
+                        token.push(ch);
+                        quote = None;
+                    }
                     '\'' | '"' if quote.is_none() => quote = Some(ch),
                     '#' if quote.is_none()
                         && (token.is_empty()
-                            || token.ends_with([';', '|', '&', '(', ')', '{', '}', ','])) =>
+                            || token.ends_with([
+                                ';', '|', '&', '(', ')', '{', '}', ',', '\'', '"',
+                            ])) =>
                     {
                         if !token.is_empty() {
                             tokens.push(std::mem::take(&mut token));
                         }
-                        if chars
+                        let _ = chars
                             .by_ref()
-                            .any(|comment_ch| matches!(comment_ch, '\n' | '\r'))
-                        {
-                            tokens.push("\n".to_string());
-                        }
+                            .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
+                        tokens.push("\n".to_string());
                     }
                     _ if ch.is_whitespace() && quote.is_none() => {
                         if !token.is_empty() {
@@ -583,10 +586,7 @@ mod tests {
             r"Remove-Item -Recurse -Force C:\temp\"
         )));
         assert!(!is_dangerous_powershell(&powershell(
-            r#"Write-Output "Remove-Item -Force C:\temp\""#
-        )));
-        assert!(!is_dangerous_powershell(&powershell(
-            r#"Write-Output "C:\temp\" # Remove-Item -Force"#
+            r##"Write-Output "Remove-Item -Force C:\temp\"# Remove-Item -Force"##
         )));
         assert!(is_dangerous_powershell(&powershell(
             r"Write-Output foo#bar; Remove-Item -Force C:\temp\"
