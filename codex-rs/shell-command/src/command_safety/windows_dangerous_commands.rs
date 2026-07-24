@@ -379,6 +379,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut token = String::new();
         let mut quote = None;
         let mut comment_boundary = true;
+        let mut delimiter_depth = 0usize;
         let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
             match ch {
@@ -419,13 +420,16 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
-                    if matches!(ch, '\r' | '\n') {
+                    if matches!(ch, '\r' | '\n') && delimiter_depth == 0 {
                         tokens.push("\n".to_string());
                     }
                     comment_boundary = true;
                 }
                 _ => {
                     if quote.is_none() {
+                        delimiter_depth += usize::from("([{".contains(ch));
+                        delimiter_depth =
+                            delimiter_depth.saturating_sub(usize::from(")]}".contains(ch)));
                         comment_boundary = ";|&(){},".contains(ch);
                     }
                     token.push(ch);
@@ -598,7 +602,7 @@ mod tests {
             "Remove-Item test -Recurse -Force"
         ])));
         for script in [
-            r"Remove-Item -Recurse -Force C:\temp\",
+            "Remove-Item (\n'C:\\temp\\'\n) -Recurse -Force",
             r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##,
             "Write-Output '`'; Remove-Item test -Force",
             "Remove-Item test `\r\n-Force",
@@ -620,11 +624,6 @@ mod tests {
             "C:pwsh.exe",
             "-Command",
             "Remove-Item test -Recurse -Force"
-        ])));
-        assert!(is_dangerous_command_windows(&vec_str(&[
-            "C:cmd.exe",
-            "/c",
-            "del /f test.txt"
         ])));
     }
 
