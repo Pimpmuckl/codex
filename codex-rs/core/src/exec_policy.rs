@@ -312,17 +312,6 @@ impl ExecPolicyManager {
         self.policy.load_full()
     }
 
-    #[cfg(test)]
-    pub(crate) async fn create_exec_approval_requirement_for_command(
-        &self,
-        req: ExecApprovalRequest<'_>,
-    ) -> ExecApprovalRequirement {
-        self.create_exec_approval_requirement_with_guardian(
-            req, /*exact_pre_tool_use_approval*/ false,
-        )
-        .await
-    }
-
     pub(crate) async fn create_exec_approval_requirement_with_guardian(
         &self,
         req: ExecApprovalRequest<'_>,

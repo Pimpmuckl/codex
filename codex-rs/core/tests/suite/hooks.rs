@@ -4421,12 +4421,76 @@ async fn assert_pre_tool_use_guardian_allows_dangerous_bash_once(
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = start_mock_server().await;
     let slug = surface.slug();
     let call_id = format!("pretooluse-{slug}-guardian-dangerous");
+    let unapproved_call_id = format!("{call_id}-unapproved");
     let counter_name = format!("{slug}-guardian-counter");
     let target_name = format!("{slug}-guardian-target");
     let command = surface.dangerous_command(&counter_name, &target_name);
+
+    let unapproved_server = start_mock_server().await;
+    let unapproved_args = surface.tool_call(&unapproved_call_id, &command)?;
+    let unapproved_responses = mount_sse_sequence(
+        &unapproved_server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parent-unapproved-tool"),
+                unapproved_args,
+                ev_completed("resp-parent-unapproved-tool"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-parent-unapproved-done"),
+                ev_assistant_message("msg-parent-unapproved-done", "done"),
+                ev_completed("resp-parent-unapproved-done"),
+            ]),
+        ],
+    )
+    .await;
+    let mut unapproved_builder = test_codex().with_config(move |config| surface.configure(config));
+    let unapproved_test = unapproved_builder
+        .build_with_auto_env(&unapproved_server)
+        .await?;
+    let unapproved_cwd = unapproved_test.executor_environment().selection().cwd;
+    let unapproved_counter = unapproved_cwd.join(&counter_name)?;
+    let unapproved_target = unapproved_cwd.join(&target_name)?;
+    unapproved_test
+        .fs()
+        .write_file(&unapproved_counter, Vec::new(), /*sandbox*/ None)
+        .await?;
+    unapproved_test
+        .fs()
+        .write_file(&unapproved_target, b"seed".to_vec(), /*sandbox*/ None)
+        .await?;
+
+    submit_yolo_hook_review_turn(&unapproved_test, "run the dangerous command").await?;
+
+    assert_eq!(
+        unapproved_test
+            .fs()
+            .read_file(&unapproved_counter, /*sandbox*/ None)
+            .await?,
+        b"",
+        "dangerous command should remain blocked without Guardian approval"
+    );
+    assert_eq!(
+        unapproved_test
+            .fs()
+            .read_file(&unapproved_target, /*sandbox*/ None)
+            .await?,
+        b"seed",
+        "blocked command should leave its exact target intact"
+    );
+    let unapproved_output = unapproved_responses
+        .requests()
+        .iter()
+        .find_map(|request| request.function_call_output_text(&unapproved_call_id))
+        .expect("unapproved command should return a blocked tool output");
+    assert!(
+        unapproved_output.contains("rejected:"),
+        "unexpected unapproved tool output: {unapproved_output}"
+    );
+
+    let server = start_mock_server().await;
     let args = surface.tool_call(&call_id, &command)?;
     let reason = "Review this exact dangerous command";
     let responses = mount_sse_sequence(
