@@ -47,9 +47,19 @@ async fn approval_receipt_requires_exact_call_payload_and_target() {
             .unwrap()
             .selection(),
     );
-    let receipt = PreToolUseApprovalReceipt::for_reviewed(&invocation, Some(target.clone()));
+    let receipt = PreToolUseApprovalReceipt::for_reviewed(
+        &invocation,
+        Some(target.clone()),
+        /*reviewed_action_truncated*/ false,
+    );
+    let truncated_receipt = PreToolUseApprovalReceipt::for_reviewed(
+        &invocation,
+        Some(target.clone()),
+        /*reviewed_action_truncated*/ true,
+    );
 
     assert!(receipt.authorizes("call-1", &payload, Some(&target)));
+    assert!(!truncated_receipt.authorizes("call-1", &payload, Some(&target)));
     assert!(!receipt.authorizes("call-2", &payload, Some(&target)));
     assert!(!receipt.authorizes(
         "call-1",
@@ -71,8 +81,11 @@ async fn exact_review_receipt_allows_default_handler() -> anyhow::Result<()> {
         "call-reviewed",
         tool_name.clone(),
     );
-    let receipt =
-        PreToolUseApprovalReceipt::for_reviewed(&invocation, /*execution_target*/ None);
+    let receipt = PreToolUseApprovalReceipt::for_reviewed(
+        &invocation,
+        /*execution_target*/ None,
+        /*reviewed_action_truncated*/ false,
+    );
     let handler = TestHandler { tool_name };
     assert!(handler.pre_tool_use_approval_matches(&invocation, &receipt));
     let result = handle_any_tool(&handler, invocation).await?;

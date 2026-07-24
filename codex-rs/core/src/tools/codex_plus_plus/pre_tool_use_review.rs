@@ -1,4 +1,5 @@
 use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::format_guardian_action_pretty;
 use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::review_approval_request;
@@ -30,17 +31,20 @@ pub(crate) struct PreToolUseApprovalReceipt {
     call_id: String,
     payload: ToolPayload,
     execution_target: Option<PreToolUseExecutionTarget>,
+    reviewed_action_truncated: bool,
 }
 
 impl PreToolUseApprovalReceipt {
     pub(in crate::tools) fn for_reviewed(
         invocation: &ToolInvocation,
         execution_target: Option<PreToolUseExecutionTarget>,
+        reviewed_action_truncated: bool,
     ) -> Self {
         Self {
             call_id: invocation.call_id.clone(),
             payload: invocation.payload.clone(),
             execution_target,
+            reviewed_action_truncated,
         }
     }
 
@@ -50,7 +54,8 @@ impl PreToolUseApprovalReceipt {
         payload: &ToolPayload,
         execution_target: Option<&PreToolUseExecutionTarget>,
     ) -> bool {
-        self.call_id == call_id
+        !self.reviewed_action_truncated
+            && self.call_id == call_id
             && &self.payload == payload
             && self.execution_target.as_ref() == execution_target
     }
@@ -63,22 +68,25 @@ pub(crate) fn review<'a>(
 ) -> BoxFuture<'a, Result<PreToolUseApprovalReceipt, String>> {
     Box::pin(async move {
         let review_id = new_guardian_review_id();
+        let request = GuardianApprovalRequest::PreToolUse {
+            id: invocation.call_id.clone(),
+            tool_name: payload.tool_name.name().to_string(),
+            tool_input: payload.tool_input.clone(),
+            execution_target: payload
+                .execution_target
+                .as_ref()
+                .map(|target| serde_json::json!(target)),
+            reason,
+            #[allow(deprecated)]
+            cwd: invocation.turn.cwd.clone(),
+        };
+        let reviewed_action_truncated =
+            format_guardian_action_pretty(&request).map_or(true, |action| action.truncated);
         let decision = review_approval_request(
             &invocation.session,
             &invocation.turn,
             review_id,
-            GuardianApprovalRequest::PreToolUse {
-                id: invocation.call_id.clone(),
-                tool_name: payload.tool_name.name().to_string(),
-                tool_input: payload.tool_input.clone(),
-                execution_target: payload
-                    .execution_target
-                    .as_ref()
-                    .map(|target| serde_json::json!(target)),
-                reason,
-                #[allow(deprecated)]
-                cwd: invocation.turn.cwd.clone(),
-            },
+            request,
             /*retry_reason*/ None,
         )
         .await;
@@ -90,6 +98,7 @@ pub(crate) fn review<'a>(
                 Ok(PreToolUseApprovalReceipt::for_reviewed(
                     invocation,
                     payload.execution_target.clone(),
+                    reviewed_action_truncated,
                 ))
             }
             ReviewDecision::Denied { rejection } => Err(rejection),
