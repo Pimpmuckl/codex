@@ -388,12 +388,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     } else {
                         token.push(ch);
                     }
-                    comment_boundary = false;
+                    comment_boundary &= quote.is_some();
                 }
-                '\'' | '"' if quote == Some(ch) => {
-                    quote = None;
-                    comment_boundary = true;
-                }
+                '\'' | '"' if quote == Some(ch) => quote = None,
                 '\'' | '"' if quote.is_none() => quote = Some(ch),
                 '#' if quote.is_none() && comment_boundary => {
                     if !token.is_empty() {
@@ -411,8 +408,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     comment_boundary = true;
                 }
                 _ => {
-                    comment_boundary = quote.is_none()
-                        && matches!(ch, ';' | '|' | '&' | '(' | ')' | '{' | '}' | ',');
+                    if quote.is_none() {
+                        comment_boundary = ";|&(){},".contains(ch);
+                    }
                     token.push(ch);
                 }
             }
@@ -589,7 +587,7 @@ mod tests {
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##
         )));
         assert!(is_dangerous_powershell(&powershell(
-            r#"Write-Output foo#bar; Remove-"It"em -Force C:\temp\"#
+            r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##
         )));
     }
 
