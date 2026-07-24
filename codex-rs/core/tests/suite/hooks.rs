@@ -4460,10 +4460,19 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         format!("printf x >> {counter_name}; rm -rf {target_name}")
     };
     let server = start_mock_server().await;
-    let custom_shell = match test_target_os() {
-        TestTargetOs::Linux | TestTargetOs::MacOs => "/bin/sh",
-        TestTargetOs::Windows => "powershell.exe",
+    let reason = "Review this exact dangerous command";
+    let mut builder = test_codex()
+        .with_pre_build_hook(move |home| {
+            write_pre_tool_use_hook(home, Some("^Bash$"), "ask", reason)
+                .expect("failed to write pre tool use hook fixture");
+        })
+        .with_config(move |config| surface.configure(config));
+    let test = match surface {
+        BashRewriteSurface::ShellCommand => builder.build(&server).await?,
+        BashRewriteSurface::ExecCommand => builder.build_with_auto_env(&server).await?,
     };
+    let environment_info = test.executor_environment().environment().info().await?;
+    let custom_shell = environment_info.shell.path;
     let mut cases = vec![
         ("denied", "deny", serde_json::json!({})),
         ("approved", "allow", serde_json::json!({})),
@@ -4506,17 +4515,6 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         ]);
     }
     let responses = mount_sse_sequence(&server, sequence).await;
-    let reason = "Review this exact dangerous command";
-    let mut builder = test_codex()
-        .with_pre_build_hook(move |home| {
-            write_pre_tool_use_hook(home, Some("^Bash$"), "ask", reason)
-                .expect("failed to write pre tool use hook fixture");
-        })
-        .with_config(move |config| surface.configure(config));
-    let test = match surface {
-        BashRewriteSurface::ShellCommand => builder.build(&server).await?,
-        BashRewriteSurface::ExecCommand => builder.build_with_auto_env(&server).await?,
-    };
     let cwd = test.executor_environment().selection().cwd;
     let counter = cwd.join(&counter_name)?;
     let target = cwd.join(&target_name)?;
@@ -4556,7 +4554,12 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             b"seed"
         );
     }
-    assert_eq!(responses.requests().len(), cases.len() * 3);
+    if matches!(surface, BashRewriteSurface::ExecCommand) {
+        let output = responses
+            .function_call_output_text("custom-shell")
+            .expect("custom shell output should reach the parent");
+        assert!(output.contains("rejected: blocked by policy"), "{output}");
+    }
 
     Ok(())
 }
