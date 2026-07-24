@@ -391,6 +391,18 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     }
                     '\'' | '"' if quote == Some(ch) => quote = None,
                     '\'' | '"' if quote.is_none() => quote = Some(ch),
+                    '#' if quote.is_none() => {
+                        if !token.is_empty() {
+                            tokens.push(std::mem::take(&mut token));
+                        }
+                        if chars
+                            .by_ref()
+                            .find(|comment_ch| matches!(comment_ch, '\n' | '\r'))
+                            .is_some()
+                        {
+                            tokens.push("\n".to_string());
+                        }
+                    }
                     _ if ch.is_whitespace() && quote.is_none() => {
                         if !token.is_empty() {
                             tokens.push(std::mem::take(&mut token));
@@ -578,6 +590,11 @@ mod tests {
             "pwsh.exe",
             "-Command",
             r#"Write-Output "Remove-Item -Force C:\temp\""#
+        ])));
+        assert!(!is_dangerous_powershell(&vec_str(&[
+            "pwsh.exe",
+            "-Command",
+            r#"Write-Output "C:\temp\" # Remove-Item -Force"#
         ])));
         assert!(!is_dangerous_powershell(&vec_str(&[
             "cmd.exe",
