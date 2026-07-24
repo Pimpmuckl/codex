@@ -169,7 +169,7 @@ struct PreToolUseApprovalAction<'a> {
     tool_name: &'a str,
     tool_input: &'a Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    execution_target: Option<&'a Value>,
+    execution_target: Option<Value>,
     reason: &'a str,
     cwd: &'a Path,
 }
@@ -421,7 +421,9 @@ pub(crate) fn guardian_approval_request_to_json(
             tool: "pre_tool_use",
             tool_name,
             tool_input,
-            execution_target: execution_target.as_ref(),
+            execution_target: execution_target
+                .as_ref()
+                .map(bounded_guardian_assessment_input),
             reason,
             cwd,
         }),
@@ -618,6 +620,15 @@ pub(crate) fn guardian_request_turn_id<'a>(
 pub(crate) fn format_guardian_action_pretty(
     action: &GuardianApprovalRequest,
 ) -> serde_json::Result<FormattedGuardianAction> {
+    let execution_target_truncated = if let GuardianApprovalRequest::PreToolUse {
+        execution_target: Some(target),
+        ..
+    } = action
+    {
+        guardian_truncate_text(&target.to_string(), GUARDIAN_MAX_ASSESSMENT_INPUT_TOKENS).1
+    } else {
+        false
+    };
     let value = guardian_approval_request_to_json(action)?;
     let (value, fields_truncated) = truncate_guardian_action_value(value);
     let text = serde_json::to_string_pretty(&value)?;
@@ -637,6 +648,6 @@ pub(crate) fn format_guardian_action_pretty(
     };
     Ok(FormattedGuardianAction {
         text,
-        truncated: fields_truncated || action_truncated,
+        truncated: execution_target_truncated || fields_truncated || action_truncated,
     })
 }
