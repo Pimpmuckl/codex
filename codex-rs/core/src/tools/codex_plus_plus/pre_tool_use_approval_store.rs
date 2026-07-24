@@ -1,29 +1,20 @@
-use super::pre_tool_use_review::PreToolUseApprovalReceipt;
-use super::pre_tool_use_review::PreToolUseExecutionTarget;
-use crate::tools::context::ToolInvocation;
-use std::collections::HashSet;
-use std::sync::Mutex;
+use std::cell::Cell;
+use std::future::Future;
 
-#[derive(Default)]
-pub(crate) struct PreToolUseApprovalStore(Mutex<HashSet<String>>);
-
-impl PreToolUseApprovalStore {
-    pub(crate) fn record_if_authorized(
-        &self,
-        invocation: &ToolInvocation,
-        receipt: &PreToolUseApprovalReceipt,
-        execution_target: Option<&PreToolUseExecutionTarget>,
-    ) -> bool {
-        receipt.authorizes(&invocation.call_id, &invocation.payload, execution_target)
-            && self
-                .0
-                .lock()
-                .is_ok_and(|mut approvals| approvals.insert(invocation.call_id.clone()))
-    }
-
-    pub(crate) fn take(&self, call_id: &str) -> bool {
-        self.0
-            .lock()
-            .is_ok_and(|mut approvals| approvals.remove(call_id))
-    }
+tokio::task_local! {
+    static EXACT_APPROVAL: Cell<bool>;
 }
+
+pub(crate) async fn scope<T>(approved: bool, future: impl Future<Output = T>) -> T {
+    EXACT_APPROVAL.scope(Cell::new(approved), future).await
+}
+
+pub(crate) fn take() -> bool {
+    EXACT_APPROVAL
+        .try_with(|approved| approved.replace(false))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+#[path = "pre_tool_use_approval_store_tests.rs"]
+mod tests;

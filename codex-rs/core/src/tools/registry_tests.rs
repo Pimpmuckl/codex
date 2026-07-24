@@ -75,7 +75,10 @@ async fn exact_review_receipt_allows_default_handler() -> anyhow::Result<()> {
         PreToolUseApprovalReceipt::for_reviewed(&invocation, /*execution_target*/ None);
     let handler = TestHandler { tool_name };
     assert!(handler.pre_tool_use_approval_matches(&invocation, &receipt));
-    let result = handle_any_tool(&handler, invocation).await?;
+    let result = handle_any_tool(
+        &handler, invocation, /*exact_pre_tool_use_approval*/ false,
+    )
+    .await?;
 
     assert_eq!(result.call_id, "call-reviewed");
     Ok(())
