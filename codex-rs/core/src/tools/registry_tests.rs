@@ -62,7 +62,7 @@ async fn approval_receipt_requires_exact_call_payload_and_target() {
 }
 
 #[tokio::test]
-async fn exact_review_receipt_routes_through_post_review_handler() -> anyhow::Result<()> {
+async fn exact_review_receipt_allows_default_handler() -> anyhow::Result<()> {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let tool_name = codex_tools::ToolName::plain("echo");
     let invocation = test_invocation(
@@ -73,7 +73,9 @@ async fn exact_review_receipt_routes_through_post_review_handler() -> anyhow::Re
     );
     let receipt =
         PreToolUseApprovalReceipt::for_reviewed(&invocation, /*execution_target*/ None);
-    let result = handle_any_tool(&TestHandler { tool_name }, invocation, Some(receipt)).await?;
+    let handler = TestHandler { tool_name };
+    assert!(handler.pre_tool_use_approval_matches(&invocation, &receipt));
+    let result = handle_any_tool(&handler, invocation).await?;
 
     assert_eq!(result.call_id, "call-reviewed");
     Ok(())

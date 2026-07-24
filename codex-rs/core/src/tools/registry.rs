@@ -65,28 +65,19 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         false
     }
 
-    fn handle_after_pre_tool_use_approval(
+    fn pre_tool_use_approval_matches(
         &self,
-        invocation: ToolInvocation,
-        receipt: PreToolUseApprovalReceipt,
-    ) -> codex_tools::ToolExecutorFuture<'_> {
+        invocation: &ToolInvocation,
+        receipt: &PreToolUseApprovalReceipt,
+    ) -> bool {
         let execution_target = self
-            .pre_tool_use_payload(&invocation)
+            .pre_tool_use_payload(invocation)
             .and_then(|payload| payload.execution_target);
-        if receipt.authorizes(
+        receipt.authorizes(
             &invocation.call_id,
             &invocation.payload,
             execution_target.as_ref(),
-        ) {
-            self.handle(invocation)
-        } else {
-            Box::pin(async {
-                Err(FunctionCallError::RespondToModel(
-                    "Guardian approval receipt did not match the reviewed tool invocation."
-                        .to_string(),
-                ))
-            })
-        }
+        )
     }
 
     fn telemetry_tags<'a>(
@@ -580,6 +571,23 @@ impl ToolRegistry {
             }
         }
 
+        if pre_tool_use_approval
+            .as_ref()
+            .is_some_and(|receipt| !tool.pre_tool_use_approval_matches(&invocation, receipt))
+        {
+            let err = FunctionCallError::RespondToModel(
+                "Guardian approval receipt did not match the reviewed tool invocation.".to_string(),
+            );
+            dispatch_trace.record_failed(&err);
+            notify_tool_finish_if_unclaimed(
+                &invocation,
+                terminal_outcome_reached.as_deref(),
+                ToolCallOutcome::Blocked,
+            )
+            .await;
+            return Err(err);
+        }
+
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);
             let mut categories = parsed.iter().map(|command| match command {
@@ -611,13 +619,7 @@ impl ToolRegistry {
                     let tool = tool.clone();
                     let response_cell = &response_cell;
                     async move {
-                        match handle_any_tool(
-                            tool.as_ref(),
-                            invocation_for_tool,
-                            pre_tool_use_approval,
-                        )
-                        .await
-                        {
+                        match handle_any_tool(tool.as_ref(), invocation_for_tool).await {
                             Ok(result) => {
                                 let preview = result.result.log_preview();
                                 let success = result.result.success_for_logging();
@@ -750,17 +752,10 @@ async fn notify_tool_finish_if_unclaimed(
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
-    pre_tool_use_approval: Option<PreToolUseApprovalReceipt>,
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
-    let output = match pre_tool_use_approval {
-        Some(receipt) => {
-            tool.handle_after_pre_tool_use_approval(invocation.clone(), receipt)
-                .await?
-        }
-        None => tool.handle(invocation.clone()).await?,
-    };
+    let output = tool.handle(invocation.clone()).await?;
     if output.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {
