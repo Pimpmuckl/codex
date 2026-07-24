@@ -414,7 +414,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     let _ = chars
                         .by_ref()
                         .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
-                    if !continuation_delimiters.contains(&true) {
+                    if !continuation_delimiters.last().copied().unwrap_or(false) {
                         tokens.push("\n".to_string());
                     }
                 }
@@ -422,7 +422,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
-                    if matches!(ch, '\r' | '\n') && !continuation_delimiters.contains(&true) {
+                    if matches!(ch, '\r' | '\n')
+                        && !continuation_delimiters.last().copied().unwrap_or(false)
+                    {
                         tokens.push("\n".to_string());
                     }
                     comment_boundary = true;
@@ -430,7 +432,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 _ => {
                     if quote.is_none() {
                         if "([".contains(ch) {
-                            continuation_delimiters.push(ch == '[' || !token.ends_with('$'));
+                            continuation_delimiters.push(ch == '[' || !token.ends_with(['$', '@']));
                         } else if ")]".contains(ch) {
                             continuation_delimiters.pop();
                         }
@@ -616,7 +618,7 @@ mod tests {
         }
         for script in [
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
-            "$(Get-ChildItem -Force # note\nRemove-Item test); if ($true) { Get-ChildItem -Force\nRemove-Item test }",
+            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); if ($true) { Get-ChildItem -Force\nRemove-Item test }",
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
