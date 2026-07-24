@@ -414,7 +414,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     let _ = chars
                         .by_ref()
                         .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
-                    tokens.push("\n".to_string());
+                    if delimiter_depth == 0 {
+                        tokens.push("\n".to_string());
+                    }
                 }
                 _ if ch.is_whitespace() && quote.is_none() => {
                     if !token.is_empty() {
@@ -427,9 +429,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 }
                 _ => {
                     if quote.is_none() {
-                        delimiter_depth += usize::from("([{".contains(ch));
+                        delimiter_depth += usize::from("([".contains(ch));
                         delimiter_depth =
-                            delimiter_depth.saturating_sub(usize::from(")]}".contains(ch)));
+                            delimiter_depth.saturating_sub(usize::from(")]".contains(ch)));
                         comment_boundary = ";|&(){},".contains(ch);
                     }
                     token.push(ch);
@@ -602,7 +604,7 @@ mod tests {
             "Remove-Item test -Recurse -Force"
         ])));
         for script in [
-            "Remove-Item (\n'C:\\temp\\'\n) -Recurse -Force",
+            "Remove-Item ( # target\n'C:\\temp\\'\n) -Recurse -Force",
             r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##,
             "Write-Output '`'; Remove-Item test -Force",
             "Remove-Item test `\r\n-Force",
@@ -612,7 +614,7 @@ mod tests {
         }
         for script in [
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
-            "Get-ChildItem -Force\nRemove-Item test",
+            "if ($true) { Get-ChildItem -Force\nRemove-Item test }",
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
