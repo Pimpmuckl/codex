@@ -333,10 +333,15 @@ fn looks_like_url(token: &str) -> bool {
 }
 
 fn executable_basename(exe: &str) -> Option<String> {
-    exe.rsplit(['/', '\\'])
+    let basename = exe
+        .rsplit(['/', '\\'])
         .next()
-        .filter(|basename| !basename.is_empty())
-        .map(str::to_ascii_lowercase)
+        .filter(|basename| !basename.is_empty())?;
+    let basename = match basename.as_bytes() {
+        [drive, b':', ..] if drive.is_ascii_alphabetic() => &basename[2..],
+        _ => basename,
+    };
+    (!basename.is_empty()).then(|| basename.to_ascii_lowercase())
 }
 
 fn is_powershell_executable(exe: &str) -> bool {
@@ -539,6 +544,24 @@ mod tests {
         ])));
         assert!(!is_dangerous_powershell(&vec_str(&[
             "explorer.exe",
+            "https://example.com"
+        ])));
+    }
+
+    #[test]
+    fn drive_relative_windows_executable_paths_are_recognized() {
+        assert!(is_dangerous_powershell(&vec_str(&[
+            "C:pwsh.exe",
+            "-Command",
+            "Remove-Item test -Recurse -Force"
+        ])));
+        assert!(is_dangerous_command_windows(&vec_str(&[
+            "C:cmd.exe",
+            "/c",
+            "del /f test.txt"
+        ])));
+        assert!(is_dangerous_command_windows(&vec_str(&[
+            "C:explorer.exe",
             "https://example.com"
         ])));
     }
