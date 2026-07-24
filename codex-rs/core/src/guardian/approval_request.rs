@@ -169,7 +169,7 @@ struct PreToolUseApprovalAction<'a> {
     tool_name: &'a str,
     tool_input: &'a Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    execution_target: Option<Value>,
+    execution_target: Option<&'a Value>,
     reason: &'a str,
     cwd: &'a Path,
 }
@@ -421,9 +421,7 @@ pub(crate) fn guardian_approval_request_to_json(
             tool: "pre_tool_use",
             tool_name,
             tool_input,
-            execution_target: execution_target
-                .as_ref()
-                .map(bounded_guardian_assessment_input),
+            execution_target: execution_target.as_ref(),
             reason,
             cwd,
         }),

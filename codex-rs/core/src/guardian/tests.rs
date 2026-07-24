@@ -949,7 +949,7 @@ fn format_guardian_action_pretty_caps_aggregate_nested_input() -> serde_json::Re
 
 #[test]
 fn pre_tool_use_action_bounds_reviewed_execution_target() -> serde_json::Result<()> {
-    let nested_execution_target = (0..100).fold(serde_json::json!({}), |target, _| {
+    let nested_execution_target = (0..400).fold(serde_json::json!({}), |target, _| {
         serde_json::json!([target])
     });
     let action = GuardianApprovalRequest::PreToolUse {
@@ -973,6 +973,7 @@ fn pre_tool_use_action_bounds_reviewed_execution_target() -> serde_json::Result<
             .as_str()
             .is_some_and(|target| target.contains("<truncated omitted_approx_tokens="))
     );
+    assert!(rendered.truncated);
     assert!(approx_token_count(&rendered.text) <= GUARDIAN_MAX_ACTION_TOKENS);
     Ok(())
 }
