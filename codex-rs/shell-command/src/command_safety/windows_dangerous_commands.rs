@@ -375,52 +375,49 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
     }
 
     let split_script = |script: &str| {
-        shlex_split(script).unwrap_or_else(|| {
-            let mut tokens = Vec::new();
-            let mut token = String::new();
-            let mut quote = None;
-            let mut chars = script.chars();
-            while let Some(ch) = chars.next() {
-                match ch {
-                    '`' => {
-                        if let Some(escaped) = chars.next() {
-                            token.push(escaped);
-                        } else {
-                            token.push(ch);
-                        }
-                    }
-                    '\'' | '"' if quote == Some(ch) => {
+        let mut tokens = Vec::new();
+        let mut token = String::new();
+        let mut quote = None;
+        let mut chars = script.chars();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '`' => {
+                    if let Some(escaped) = chars.next() {
+                        token.push(escaped);
+                    } else {
                         token.push(ch);
-                        quote = None;
                     }
-                    '\'' | '"' if quote.is_none() => quote = Some(ch),
-                    '#' if quote.is_none()
-                        && (token.is_empty()
-                            || token.ends_with([
-                                ';', '|', '&', '(', ')', '{', '}', ',', '\'', '"',
-                            ])) =>
-                    {
-                        if !token.is_empty() {
-                            tokens.push(std::mem::take(&mut token));
-                        }
-                        let _ = chars
-                            .by_ref()
-                            .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
-                        tokens.push("\n".to_string());
-                    }
-                    _ if ch.is_whitespace() && quote.is_none() => {
-                        if !token.is_empty() {
-                            tokens.push(std::mem::take(&mut token));
-                        }
-                    }
-                    _ => token.push(ch),
                 }
+                '\'' | '"' if quote == Some(ch) => {
+                    token.push(ch);
+                    quote = None;
+                }
+                '\'' | '"' if quote.is_none() => quote = Some(ch),
+                '#' if quote.is_none()
+                    && (token.is_empty()
+                        || token
+                            .ends_with([';', '|', '&', '(', ')', '{', '}', ',', '\'', '"'])) =>
+                {
+                    if !token.is_empty() {
+                        tokens.push(std::mem::take(&mut token));
+                    }
+                    let _ = chars
+                        .by_ref()
+                        .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
+                    tokens.push("\n".to_string());
+                }
+                _ if ch.is_whitespace() && quote.is_none() => {
+                    if !token.is_empty() {
+                        tokens.push(std::mem::take(&mut token));
+                    }
+                }
+                _ => token.push(ch),
             }
-            if !token.is_empty() {
-                tokens.push(token);
-            }
-            tokens
-        })
+        }
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+        tokens
     };
 
     let mut idx = 0;
@@ -586,7 +583,7 @@ mod tests {
             r"Remove-Item -Recurse -Force C:\temp\"
         )));
         assert!(!is_dangerous_powershell(&powershell(
-            r##"Write-Output "Remove-Item -Force C:\temp\"# Remove-Item -Force"##
+            r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##
         )));
         assert!(is_dangerous_powershell(&powershell(
             r"Write-Output foo#bar; Remove-Item -Force C:\temp\"
