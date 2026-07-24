@@ -41,8 +41,6 @@ fn dangerous_command_match_with_depth(
         return Some(dangerous_match);
     }
 
-    // PowerShell syntax is portable even when the selected executor is not
-    // running on this host. Keep the broader CMD/GUI rules Windows-only below.
     #[cfg(not(windows))]
     if windows_dangerous_commands::is_dangerous_powershell(command) {
         return Some(DangerousCommandMatch::Other);
@@ -323,13 +321,10 @@ mod tests {
 
     #[test]
     fn direct_powershell_words_return_other_match_on_all_hosts() {
+        let command = vec_str(&["Remove-Item", "test", "-Force"]);
+
         assert_eq!(
-            dangerous_powershell_words_match(&vec_str(&[
-                "Remove-Item",
-                "test",
-                "-Recurse",
-                "-Force"
-            ])),
+            dangerous_powershell_words_match(&command),
             Some(DangerousCommandMatch::Other)
         );
     }

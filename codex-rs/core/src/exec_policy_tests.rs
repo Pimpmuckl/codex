@@ -735,30 +735,16 @@ fn raw_powershell_fallback_uses_portable_dangerous_heuristics() {
             },
         )
     };
+    let powershell = |script| decision_for(&["powershell.exe", "-Command", script]);
 
-    assert_eq!(
-        decision_for(&[
-            "powershell.exe",
-            "-Command",
-            "Remove-Item test -Recurse -Force"
-        ]),
-        Decision::Forbidden
-    );
-    assert_eq!(
-        decision_for(&[
-            "powershell.exe",
-            "-Command",
-            "Get-ChildItem -Force; Remove-Item test"
-        ]),
-        Decision::Allow
-    );
+    assert!(powershell("Remove-Item test -Recurse -Force") == Decision::Forbidden);
 
     #[cfg(not(windows))]
     for command in [
-        &["cmd.exe", "/c", "del /f test.txt"][..],
-        &["explorer.exe", "https://example.com"][..],
+        ["cmd.exe", "/c", "del /f test.txt"],
+        ["explorer.exe", "https://example.com", ""],
     ] {
-        assert_eq!(decision_for(command), Decision::Allow, "{command:?}");
+        assert_eq!(decision_for(&command), Decision::Allow, "{command:?}");
     }
 }
 

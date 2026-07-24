@@ -261,7 +261,7 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
     }
 
     // Now, inside each segment, normalize tokens by splitting on soft punctuation
-    segments.into_iter().any(|seg| {
+    if segments.into_iter().any(|seg| {
         let atoms = seg
             .iter()
             .flat_map(|t| t.split(|c| SOFT_SEPS.contains(&c)))
@@ -284,7 +284,21 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
         }
 
         has_delete && has_force
-    })
+    }) {
+        return true;
+    }
+
+    let mut statement_depth = 0;
+    let mut outer_tokens = tokens.to_vec();
+    for token in &mut outer_tokens {
+        token.retain(|ch| {
+            statement_depth += usize::from(ch == '\u{e000}');
+            let keep = statement_depth == 0;
+            statement_depth = statement_depth.saturating_sub(usize::from(ch == '\u{e001}'));
+            keep
+        });
+    }
+    outer_tokens != tokens && has_force_delete_cmdlet(&outer_tokens)
 }
 
 /// Check for /f or /F flag in CMD del/erase arguments.
@@ -400,20 +414,18 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 '\'' | '"' if quote.is_none() => quote = Some(ch),
                 '<' if quote.is_none() && comment_boundary && chars.peek() == Some(&'#') => {
                     chars.next();
-                    while let Some(comment_ch) = chars.next() {
-                        if comment_ch == '#' && chars.peek() == Some(&'>') {
-                            chars.next();
-                            break;
-                        }
+                    while chars
+                        .next()
+                        .is_some_and(|ch| ch != '#' || chars.peek() != Some(&'>'))
+                    {
                     }
+                    chars.next();
                 }
                 '#' if quote.is_none() && comment_boundary => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
                     }
-                    let _ = chars
-                        .by_ref()
-                        .find(|comment_ch| matches!(comment_ch, '\n' | '\r'));
+                    let _ = chars.by_ref().find(|ch| matches!(ch, '\n' | '\r'));
                     if !continuation_delimiters.last().copied().unwrap_or(false) {
                         tokens.push("\n".to_string());
                     }
@@ -432,9 +444,16 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 _ => {
                     if quote.is_none() {
                         if "([".contains(ch) {
-                            continuation_delimiters.push(ch == '[' || !token.ends_with(['$', '@']));
-                        } else if ")]".contains(ch) {
-                            continuation_delimiters.pop();
+                            let continues_line = ch == '[' || !token.ends_with(['$', '@']);
+                            continuation_delimiters.push(continues_line);
+                            if !continues_line {
+                                token.push('\u{e000}');
+                            }
+                        } else if ")]".contains(ch) && continuation_delimiters.pop() == Some(false)
+                        {
+                            token.push(ch);
+                            token.push('\u{e001}');
+                            continue;
                         }
                         comment_boundary = ";|&(){},".contains(ch);
                     }
@@ -442,9 +461,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 }
             }
         }
-        if !token.is_empty() {
-            tokens.push(token);
-        }
+        tokens.push(token);
         tokens
     };
 
@@ -602,17 +619,24 @@ mod tests {
     #[test]
     fn portable_powershell_matcher_does_not_apply_cmd_or_gui_rules() {
         let powershell = |script| vec_str(&["pwsh.exe", "-Command", script]);
-        assert!(is_dangerous_powershell(&vec_str(&[
+        for exe in [
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-            "-Command",
-            "Remove-Item test -Recurse -Force"
-        ])));
+            "C:pwsh.exe",
+        ] {
+            assert!(is_dangerous_powershell(&vec_str(&[
+                exe,
+                "-Command",
+                "Remove-Item test -Recurse -Force",
+            ])));
+        }
         for script in [
             "Remove-Item ( # target\n'C:\\temp\\'\n) -Recurse -Force",
             r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##,
             "Write-Output '`'; Remove-Item test -Force",
             "Remove-Item test `\r\n-Force",
             "<# note #> Remove-Item test -Force",
+            "Remove-Item (@('a'\n'b')) -Force",
+            "Remove-Item ($(Get-ChildItem\nWrite-Output test)) -Force",
         ] {
             assert!(is_dangerous_powershell(&powershell(script)), "{script}");
         }
@@ -622,11 +646,6 @@ mod tests {
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
-        assert!(is_dangerous_powershell(&vec_str(&[
-            "C:pwsh.exe",
-            "-Command",
-            "Remove-Item test -Recurse -Force"
-        ])));
     }
 
     // Force delete tests for CMD
