@@ -396,6 +396,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut quote = None;
         let mut expandable_scope_depths = Vec::new();
         let mut comment_boundary = true;
+        let mut comma_continues = false;
         let mut continuation_delimiters = Vec::new();
         let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
@@ -411,10 +412,11 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     if !matches!(escaped, '\r' | '\n') {
                         token.push(escaped);
                         comment_boundary &= quote.is_some();
+                        comma_continues = false;
                     }
                 }
                 '\'' | '"' if quote == Some(ch) => quote = None,
-                '\'' | '"' if quote.is_none() => quote = Some(ch),
+                '\'' | '"' if quote.is_none() => (quote, comma_continues) = (Some(ch), false),
                 '<' if quote.is_none() && comment_boundary && chars.peek() == Some(&'#') => {
                     chars.next();
                     while chars
@@ -428,8 +430,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         tokens.push(std::mem::take(&mut token));
                     }
                     let _ = chars.by_ref().find(|ch| matches!(ch, '\n' | '\r'));
-                    if !continuation_delimiters.last().copied().unwrap_or(false)
-                        && !tokens.last().is_some_and(|token| token.ends_with(','))
+                    if !continuation_delimiters.last().copied().unwrap_or(false) && !comma_continues
                     {
                         tokens.push("\n".to_string());
                     }
@@ -440,7 +441,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     }
                     if matches!(ch, '\r' | '\n')
                         && !continuation_delimiters.last().copied().unwrap_or(false)
-                        && !tokens.last().is_some_and(|token| token.ends_with(','))
+                        && !comma_continues
                     {
                         tokens.push("\n".to_string());
                     }
@@ -470,6 +471,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                         }
                         comment_boundary = ";|&(){},".contains(ch);
                     }
+                    comma_continues = quote.is_none() && ch == ',';
                     token.push(ch);
                 }
             }
@@ -632,14 +634,12 @@ mod tests {
     #[test]
     fn portable_powershell_matcher_does_not_apply_cmd_or_gui_rules() {
         let powershell = |script| vec_str(&["pwsh.exe", "-Command", script]);
-        let dangerous_script = "Remove-Item test -Recurse -Force";
         for exe in [
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             "C:pwsh.exe",
             "/tmp/runner:pwsh.exe",
         ] {
-            let classified =
-                is_dangerous_powershell(&vec_str(&[exe, "-Command", dangerous_script]));
+            let classified = is_dangerous_powershell(&vec_str(&[exe, "-c", "rm x -Force"]));
             assert_eq!(classified, !exe.starts_with('/'));
         }
         for script in [
@@ -659,7 +659,7 @@ mod tests {
         }
         for script in [
             r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
-            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); Get-ChildItem $(Write-Output Remove-Item) -Force; Remove-Item $(Get-ChildItem -Force); Write-Output \"$(Write-Output \"$(Get-Date)\") Remove-Item -Force\"; if ($true) { Get-ChildItem -Force\nRemove-Item test }",
+            "$(Get-ChildItem -Force # note\nRemove-Item test); @(Get-ChildItem -Force\nRemove-Item test); ($(Get-ChildItem -Force\nRemove-Item test)); Get-ChildItem $(Write-Output Remove-Item) -Force; Remove-Item $(Get-ChildItem -Force); Write-Output \"$(Write-Output \"$(Get-Date)\") Remove-Item -Force\"; Write-Output Remove-Item 'literal,'\nGet-ChildItem -Force; if ($true) { Get-ChildItem -Force\nRemove-Item test }",
         ] {
             assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
         }
