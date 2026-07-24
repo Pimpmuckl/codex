@@ -752,30 +752,13 @@ fn raw_powershell_fallback_uses_portable_dangerous_heuristics() {
         ]),
         Decision::Allow
     );
-}
 
-#[cfg(not(windows))]
-#[test]
-fn portable_powershell_fallback_does_not_enable_windows_cmd_or_gui_rules() {
+    #[cfg(not(windows))]
     for command in [
-        vec_str(&["cmd.exe", "/c", "del /f test.txt"]),
-        vec_str(&["explorer.exe", "https://example.com"]),
+        &["cmd.exe", "/c", "del /f test.txt"][..],
+        &["explorer.exe", "https://example.com"][..],
     ] {
-        assert_eq!(
-            render_decision_for_unmatched_command(
-                &command,
-                UnmatchedCommandContext {
-                    approval_policy: AskForApproval::Never,
-                    permission_profile: &PermissionProfile::Disabled,
-                    windows_sandbox_level: WindowsSandboxLevel::Disabled,
-                    sandbox_permissions: SandboxPermissions::UseDefault,
-                    used_complex_parsing: false,
-                    command_origin: ExecPolicyCommandOrigin::Generic,
-                },
-            ),
-            Decision::Allow,
-            "{command:?}"
-        );
+        assert_eq!(decision_for(command), Decision::Allow, "{command:?}");
     }
 }
 

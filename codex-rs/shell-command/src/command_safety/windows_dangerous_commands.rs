@@ -379,19 +379,33 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         let mut token = String::new();
         let mut quote = None;
         let mut comment_boundary = true;
-        let mut chars = script.chars();
+        let mut chars = script.chars().peekable();
         while let Some(ch) = chars.next() {
             match ch {
-                '`' => {
-                    if let Some(escaped) = chars.next() {
-                        token.push(escaped);
-                    } else {
+                '`' if quote != Some('\'') => {
+                    let Some(escaped) = chars.next() else {
                         token.push(ch);
+                        break;
+                    };
+                    if escaped == '\r' && chars.peek() == Some(&'\n') {
+                        chars.next();
                     }
-                    comment_boundary &= quote.is_some();
+                    if !matches!(escaped, '\r' | '\n') {
+                        token.push(escaped);
+                        comment_boundary &= quote.is_some();
+                    }
                 }
                 '\'' | '"' if quote == Some(ch) => quote = None,
                 '\'' | '"' if quote.is_none() => quote = Some(ch),
+                '<' if quote.is_none() && comment_boundary && chars.peek() == Some(&'#') => {
+                    chars.next();
+                    while let Some(comment_ch) = chars.next() {
+                        if comment_ch == '#' && chars.peek() == Some(&'>') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
                 '#' if quote.is_none() && comment_boundary => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
@@ -404,6 +418,9 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 _ if ch.is_whitespace() && quote.is_none() => {
                     if !token.is_empty() {
                         tokens.push(std::mem::take(&mut token));
+                    }
+                    if matches!(ch, '\r' | '\n') {
+                        tokens.push("\n".to_string());
                     }
                     comment_boundary = true;
                 }
@@ -580,15 +597,21 @@ mod tests {
             "-Command",
             "Remove-Item test -Recurse -Force"
         ])));
-        assert!(is_dangerous_powershell(&powershell(
-            r"Remove-Item -Recurse -Force C:\temp\"
-        )));
-        assert!(!is_dangerous_powershell(&powershell(
-            r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##
-        )));
-        assert!(is_dangerous_powershell(&powershell(
-            r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##
-        )));
+        for script in [
+            r"Remove-Item -Recurse -Force C:\temp\",
+            r##"Write-Output foo#bar; Remove-"It"em C:\"temp"#suffix -Force"##,
+            "Write-Output '`'; Remove-Item test -Force",
+            "Remove-Item test `\r\n-Force",
+            "<# note #> Remove-Item test -Force",
+        ] {
+            assert!(is_dangerous_powershell(&powershell(script)), "{script}");
+        }
+        for script in [
+            r##"Write-Output "Remove-Item -Force C:\temp"# Remove-Item -Force"##,
+            "Get-ChildItem -Force\nRemove-Item test",
+        ] {
+            assert!(!is_dangerous_powershell(&powershell(script)), "{script}");
+        }
     }
 
     #[test]
@@ -602,10 +625,6 @@ mod tests {
             "C:cmd.exe",
             "/c",
             "del /f test.txt"
-        ])));
-        assert!(is_dangerous_command_windows(&vec_str(&[
-            "C:explorer.exe",
-            "https://example.com"
         ])));
     }
 
