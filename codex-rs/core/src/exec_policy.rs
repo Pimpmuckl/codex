@@ -33,6 +33,9 @@ use tokio::sync::Semaphore;
 use tokio::task::spawn_blocking;
 use tracing::instrument;
 
+use crate::codex_plus_plus::guardian_exec_approval::GuardianExecApprovalContext;
+use crate::codex_plus_plus::guardian_exec_approval::GuardianExecApprovalRequirement;
+use crate::codex_plus_plus::guardian_exec_approval::classify_guardian_exec_approval;
 use crate::config::Config;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::sandboxing::ExecApprovalRequirement;
@@ -366,7 +369,7 @@ impl ExecPolicyManager {
             None
         };
 
-        match evaluation.decision {
+        let current_requirement = match evaluation.decision {
             Decision::Forbidden => ExecApprovalRequirement::Forbidden {
                 reason: derive_forbidden_reason(
                     command,
@@ -431,6 +434,23 @@ impl ExecPolicyManager {
                     None
                 },
             },
+        };
+
+        match classify_guardian_exec_approval(
+            GuardianExecApprovalContext {
+                exact_pre_tool_use_approval: false,
+                approval_policy,
+                permission_profile: &permission_profile,
+                sandbox_permissions,
+                evaluation: &evaluation,
+                dangerous_command_match: None,
+            },
+            current_requirement,
+        ) {
+            GuardianExecApprovalRequirement::CurrentPolicy(requirement) => requirement,
+            GuardianExecApprovalRequirement::PreToolUseApproved => {
+                unreachable!("absent Guardian approval cannot override exec policy")
+            }
         }
     }
 
