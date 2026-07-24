@@ -3336,12 +3336,17 @@ impl BashRewriteSurface {
     }
 
     fn dangerous_command(self, counter_name: &str, target_name: &str) -> String {
-        match (self, test_target_os()) {
-            (BashRewriteSurface::ExecCommand, TestTargetOs::Windows) => format!(
+        let uses_windows_shell = match self {
+            BashRewriteSurface::ExecCommand => test_target_os() == TestTargetOs::Windows,
+            BashRewriteSurface::ShellCommand => cfg!(windows),
+        };
+        if uses_windows_shell {
+            format!(
                 "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
                  rm {target_name} -Recurse -Force"
-            ),
-            _ => format!("printf x >> {counter_name}; rm -rf {target_name}"),
+            )
+        } else {
+            format!("printf x >> {counter_name}; rm -rf {target_name}")
         }
     }
 }
