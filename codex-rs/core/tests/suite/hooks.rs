@@ -3288,23 +3288,26 @@ impl BashRewriteSurface {
         }
     }
 
-    fn unreviewed_semantics_tool_call(self, call_id: &str, command_text: &str) -> Result<Value> {
-        match self {
-            BashRewriteSurface::ExecCommand => Ok(ev_function_call(
-                call_id,
-                "exec_command",
-                &serde_json::to_string(
-                    &serde_json::json!({ "cmd": command_text, "login": false, "tty": true }),
-                )?,
-            )),
-            BashRewriteSurface::ShellCommand => Ok(ev_function_call(
-                call_id,
-                "shell_command",
-                &serde_json::to_string(
-                    &serde_json::json!({ "command": command_text, "login": true }),
-                )?,
-            )),
+    fn tool_call_with_overrides(
+        self,
+        call_id: &str,
+        command_text: &str,
+        overrides: &Value,
+    ) -> Result<Value> {
+        let mut call = self.tool_call(call_id, command_text)?;
+        let mut args: Value = serde_json::from_str(
+            call["item"]["arguments"]
+                .as_str()
+                .expect("function call arguments should be a string"),
+        )?;
+        for (key, value) in overrides
+            .as_object()
+            .expect("argument overrides should be an object")
+        {
+            args[key] = value.clone();
         }
+        call["item"]["arguments"] = serde_json::to_string(&args)?.into();
+        Ok(call)
     }
 
     fn original_command(self, marker: &Path) -> String {
@@ -3332,21 +3335,6 @@ impl BashRewriteSurface {
                 .features
                 .enable(Feature::UnifiedExec)
                 .expect("test config should allow feature update");
-        }
-    }
-
-    fn dangerous_command(self, counter_name: &str, target_name: &str) -> String {
-        let uses_windows_shell = match self {
-            BashRewriteSurface::ExecCommand => test_target_os() == TestTargetOs::Windows,
-            BashRewriteSurface::ShellCommand => cfg!(windows),
-        };
-        if uses_windows_shell {
-            format!(
-                "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
-                 rm {target_name} -Recurse -Force"
-            )
-        } else {
-            format!("printf x >> {counter_name}; rm -rf {target_name}")
         }
     }
 }
@@ -4457,64 +4445,67 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     );
 
     let slug = surface.slug();
-    let denied_call_id = format!("pretooluse-{slug}-guardian-denied");
-    let approved_call_id = format!("pretooluse-{slug}-guardian-approved");
-    let unreviewed_call_id = format!("pretooluse-{slug}-guardian-unreviewed-semantics");
     let counter_name = format!("{slug}-guardian-counter");
     let target_name = format!("{slug}-guardian-target");
-    let command = surface.dangerous_command(&counter_name, &target_name);
+    let uses_windows_shell = match surface {
+        BashRewriteSurface::ExecCommand => test_target_os() == TestTargetOs::Windows,
+        BashRewriteSurface::ShellCommand => cfg!(windows),
+    };
+    let command = if uses_windows_shell {
+        format!(
+            "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
+             rm {target_name} -Recurse -Force"
+        )
+    } else {
+        format!("printf x >> {counter_name}; rm -rf {target_name}")
+    };
     let server = start_mock_server().await;
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-parent-denied-tool"),
-                surface.tool_call(&denied_call_id, &command)?,
-                ev_completed("resp-parent-denied-tool"),
-            ]),
-            guardian_review_sse(
-                "resp-guardian-deny",
-                "deny",
-                "The exact requested command is not authorized.",
-            ),
-            sse(vec![
-                ev_response_created("resp-parent-denied-done"),
-                ev_assistant_message("msg-parent-denied-done", "denied"),
-                ev_completed("resp-parent-denied-done"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-parent-approved-tool"),
-                surface.tool_call(&approved_call_id, &command)?,
-                ev_completed("resp-parent-approved-tool"),
-            ]),
-            guardian_review_sse(
-                "resp-guardian-allow",
+    let custom_shell = match test_target_os() {
+        TestTargetOs::Linux | TestTargetOs::MacOs => "/bin/sh",
+        TestTargetOs::Windows => "powershell.exe",
+    };
+    let mut cases = vec![
+        ("denied", "deny", serde_json::json!({})),
+        ("approved", "allow", serde_json::json!({})),
+    ];
+    match surface {
+        BashRewriteSurface::ExecCommand => cases.extend([
+            ("interactive", "allow", serde_json::json!({ "tty": true })),
+            ("login", "allow", serde_json::json!({ "login": true })),
+            (
+                "custom-shell",
                 "allow",
-                "The exact requested command is authorized.",
+                serde_json::json!({ "shell": custom_shell }),
             ),
+        ]),
+        BashRewriteSurface::ShellCommand => {
+            cases.push(("login", "allow", serde_json::json!({ "login": true })))
+        }
+    }
+    let unreviewed_count = cases.len() - 2;
+    let mut sequence = Vec::new();
+    for (label, verdict, overrides) in &cases {
+        let tool_response_id = format!("resp-parent-{label}-tool");
+        let done_response_id = format!("resp-parent-{label}-done");
+        sequence.extend([
             sse(vec![
-                ev_response_created("resp-parent-approved-done"),
-                ev_assistant_message("msg-parent-approved-done", "approved"),
-                ev_completed("resp-parent-approved-done"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-parent-unreviewed-tool"),
-                surface.unreviewed_semantics_tool_call(&unreviewed_call_id, &command)?,
-                ev_completed("resp-parent-unreviewed-tool"),
+                ev_response_created(&tool_response_id),
+                surface.tool_call_with_overrides(label, &command, overrides)?,
+                ev_completed(&tool_response_id),
             ]),
             guardian_review_sse(
-                "resp-guardian-unreviewed-allow",
-                "allow",
-                "The displayed command is authorized.",
+                &format!("resp-guardian-{label}"),
+                verdict,
+                "Review the exact requested command.",
             ),
             sse(vec![
-                ev_response_created("resp-parent-unreviewed-done"),
-                ev_assistant_message("msg-parent-unreviewed-done", "blocked"),
-                ev_completed("resp-parent-unreviewed-done"),
+                ev_response_created(&done_response_id),
+                ev_assistant_message(&format!("msg-parent-{label}-done"), label),
+                ev_completed(&done_response_id),
             ]),
-        ],
-    )
-    .await;
+        ]);
+    }
+    let responses = mount_sse_sequence(&server, sequence).await;
     let reason = "Review this exact dangerous command";
     let mut builder = test_codex()
         .with_pre_build_hook(move |home| {
@@ -4554,18 +4545,18 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .is_err(),
         "approved command should remove its target"
     );
-    test.fs()
-        .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
-        .await?;
-
-    submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
-
-    assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
-    assert_eq!(
-        test.fs().read_file(&target, /*sandbox*/ None).await?,
-        b"seed"
-    );
-    assert_eq!(responses.requests().len(), 9);
+    for _ in 0..unreviewed_count {
+        test.fs()
+            .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
+            .await?;
+        submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
+        assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+        assert_eq!(
+            test.fs().read_file(&target, /*sandbox*/ None).await?,
+            b"seed"
+        );
+    }
+    assert_eq!(responses.requests().len(), cases.len() * 3);
 
     Ok(())
 }
