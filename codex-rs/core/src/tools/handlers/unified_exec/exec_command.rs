@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -409,13 +410,29 @@ impl CoreToolRuntime for ExecCommandHandler {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
         };
-
-        parse_arguments::<ExecCommandArgs>(arguments)
-            .ok()
-            .map(|args| PreToolUsePayload {
-                tool_name: HookToolName::bash(),
-                tool_input: serde_json::json!({ "command": args.cmd }),
-            })
+        let args = parse_arguments::<ExecCommandArgs>(arguments).ok()?;
+        let environment_args: ExecCommandEnvironmentArgs = parse_arguments(arguments).ok()?;
+        let turn_environment = resolve_tool_environment(
+            &invocation.step_context.environments,
+            environment_args.environment_id.as_deref(),
+        )
+        .ok()
+        .flatten()?;
+        let cwd = environment_args
+            .workdir
+            .as_deref()
+            .filter(|workdir| !workdir.is_empty())
+            .map_or_else(
+                || Some(turn_environment.cwd().clone()),
+                |workdir| turn_environment.cwd().join(workdir).ok(),
+            )?;
+        let mut execution_target = turn_environment.selection();
+        execution_target.cwd = cwd;
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::bash(),
+            tool_input: serde_json::json!({ "command": args.cmd }),
+            execution_target: Some(PreToolUseExecutionTarget::from(execution_target)),
+        })
     }
 
     fn with_updated_hook_input(

@@ -29,6 +29,23 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
 
 impl CoreToolRuntime for TestHandler {}
 
+#[tokio::test]
+async fn exact_review_receipt_routes_through_post_review_handler() -> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let tool_name = codex_tools::ToolName::plain("echo");
+    let invocation = test_invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "call-reviewed",
+        tool_name.clone(),
+    );
+    let receipt = PreToolUseApprovalReceipt::for_reviewed(&invocation, None);
+    let result = handle_any_tool(&TestHandler { tool_name }, invocation, Some(receipt)).await?;
+
+    assert_eq!(result.call_id, "call-reviewed");
+    Ok(())
+}
+
 #[derive(Clone)]
 enum LifecycleTestResult {
     Ok { success: bool },
@@ -200,6 +217,7 @@ async fn function_tools_expose_default_hook_payloads_and_rewrites() -> anyhow::R
         Some(PreToolUsePayload {
             tool_name: HookToolName::new("functions.echo"),
             tool_input: serde_json::json!({ "message": "hello" }),
+            execution_target: None,
         })
     );
     assert_eq!(
@@ -244,6 +262,7 @@ async fn function_hook_input_defaults_empty_arguments_to_object() {
         Some(PreToolUsePayload {
             tool_name: HookToolName::new("echo"),
             tool_input: serde_json::json!({}),
+            execution_target: None,
         })
     );
 }
@@ -279,10 +298,12 @@ async fn spawn_agent_function_tools_use_agent_matcher_alias() {
             Some(PreToolUsePayload {
                 tool_name: HookToolName::spawn_agent(),
                 tool_input: serde_json::json!({ "message": "inspect this repo" }),
+                execution_target: None,
             }),
             Some(PreToolUsePayload {
                 tool_name: HookToolName::spawn_agent(),
                 tool_input: serde_json::json!({ "message": "inspect this repo" }),
+                execution_target: None,
             }),
         ]
     );

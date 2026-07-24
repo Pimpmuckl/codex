@@ -6,11 +6,15 @@ use codex_tools::UnifiedExecShellMode;
 use codex_tools::ZshForkConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
+use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnEnvironment;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -234,18 +238,39 @@ async fn shell_mode_for_environment_uses_direct_mode_for_remote_environments() -
 }
 
 #[tokio::test]
-async fn exec_command_pre_tool_use_payload_uses_raw_command() {
+async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::Result<()> {
+    let remote_cwd = PathUri::parse("file:///srv/repo")?;
     let payload = ToolPayload::Function {
-        arguments: serde_json::json!({ "cmd": "printf exec command" }).to_string(),
+        arguments: serde_json::json!({
+            "cmd": "printf exec command",
+            "environment_id": "remote",
+            "workdir": "reviewed",
+        })
+        .to_string(),
     };
-    let (session, turn) = make_session_and_context().await;
+    let (session, mut turn) = make_session_and_context().await;
+    turn.environments = TurnEnvironmentSnapshot {
+        environments: vec![TurnEnvironmentState::Ready(TurnEnvironment::new(
+            "remote".to_string(),
+            Arc::new(Environment::create_for_tests(Some(
+                "ws://127.0.0.1:1/remote-exec-server".to_string(),
+            ))?),
+            remote_cwd.clone(),
+            vec![remote_cwd.clone()],
+            None,
+        ))],
+    };
     let turn = Arc::new(turn);
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let environment = step_context.environments.primary().unwrap();
+    let mut execution_target = environment.selection();
+    execution_target.cwd = remote_cwd.join("reviewed")?;
     let handler = ExecCommandHandler::default();
 
     assert_eq!(
         handler.pre_tool_use_payload(&ToolInvocation {
             session: session.into(),
-            step_context: StepContext::for_test(Arc::clone(&turn)),
+            step_context,
             turn,
             cancellation_token: tokio_util::sync::CancellationToken::new(),
             tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
@@ -257,8 +282,14 @@ async fn exec_command_pre_tool_use_payload_uses_raw_command() {
         Some(crate::tools::registry::PreToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_input: serde_json::json!({ "command": "printf exec command" }),
+            execution_target: Some(
+                crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget::from(
+                    execution_target,
+                ),
+            ),
         })
     );
+    Ok(())
 }
 
 #[tokio::test]
