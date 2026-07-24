@@ -1,6 +1,5 @@
 use crate::bash::parse_shell_lc_literal_commands;
 use std::path::Path;
-#[cfg(windows)]
 #[path = "windows_dangerous_commands.rs"]
 mod windows_dangerous_commands;
 
@@ -42,6 +41,12 @@ fn dangerous_command_match_with_depth(
         return Some(dangerous_match);
     }
 
+    // PowerShell syntax is portable even when the selected executor is not
+    // running on this host. Keep the broader CMD/GUI rules Windows-only below.
+    if windows_dangerous_commands::is_dangerous_powershell(command) {
+        return Some(DangerousCommandMatch::Other);
+    }
+
     #[cfg(windows)]
     {
         if windows_dangerous_commands::is_dangerous_command_windows(command) {
@@ -54,17 +59,8 @@ fn dangerous_command_match_with_depth(
 
 /// Returns the dangerous-command rule matched by tokenized PowerShell words.
 pub fn dangerous_powershell_words_match(command: &[String]) -> Option<DangerousCommandMatch> {
-    #[cfg(windows)]
-    {
-        windows_dangerous_commands::is_dangerous_powershell_words(command)
-            .then_some(DangerousCommandMatch::Other)
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = command;
-        None
-    }
+    windows_dangerous_commands::is_dangerous_powershell_words(command)
+        .then_some(DangerousCommandMatch::Other)
 }
 
 fn is_git_global_option_with_value(arg: &str) -> bool {
@@ -325,16 +321,15 @@ mod tests {
     }
 
     #[test]
-    fn direct_powershell_words_return_other_match_on_windows() {
-        let command = vec_str(&["Remove-Item", "test", "-Force"]);
-
-        if cfg!(windows) {
-            assert_eq!(
-                dangerous_powershell_words_match(&command),
-                Some(DangerousCommandMatch::Other)
-            );
-        } else {
-            assert_eq!(dangerous_powershell_words_match(&command), None);
-        }
+    fn direct_powershell_words_return_other_match_on_all_hosts() {
+        assert_eq!(
+            dangerous_powershell_words_match(&vec_str(&[
+                "Remove-Item",
+                "test",
+                "-Recurse",
+                "-Force"
+            ])),
+            Some(DangerousCommandMatch::Other)
+        );
     }
 }

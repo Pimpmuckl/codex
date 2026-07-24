@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use once_cell::sync::Lazy;
 use regex::Regex;
 use shlex::split as shlex_split;
@@ -20,7 +18,7 @@ pub fn is_dangerous_command_windows(command: &[String]) -> bool {
     is_direct_gui_launch(command)
 }
 
-fn is_dangerous_powershell(command: &[String]) -> bool {
+pub(crate) fn is_dangerous_powershell(command: &[String]) -> bool {
     let Some((exe, rest)) = command.split_first() else {
         return false;
     };
@@ -335,9 +333,9 @@ fn looks_like_url(token: &str) -> bool {
 }
 
 fn executable_basename(exe: &str) -> Option<String> {
-    Path::new(exe)
-        .file_name()
-        .and_then(|osstr| osstr.to_str())
+    exe.rsplit(['/', '\\'])
+        .next()
+        .filter(|basename| !basename.is_empty())
         .map(str::to_ascii_lowercase)
 }
 
@@ -411,6 +409,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
 #[cfg(test)]
 mod tests {
     use super::is_dangerous_command_windows;
+    use super::is_dangerous_powershell;
 
     fn vec_str(items: &[&str]) -> Vec<String> {
         items.iter().map(std::string::ToString::to_string).collect()
@@ -518,6 +517,29 @@ mod tests {
             "powershell",
             "-Command",
             "Remove-Item test"
+        ])));
+    }
+
+    #[test]
+    fn portable_powershell_matcher_does_not_apply_cmd_or_gui_rules() {
+        assert!(is_dangerous_powershell(&vec_str(&[
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "-Command",
+            "Remove-Item test -Recurse -Force"
+        ])));
+        assert!(!is_dangerous_powershell(&vec_str(&[
+            "powershell.exe",
+            "-Command",
+            "Get-ChildItem -Force; Remove-Item test"
+        ])));
+        assert!(!is_dangerous_powershell(&vec_str(&[
+            "cmd.exe",
+            "/c",
+            "del /f test.txt"
+        ])));
+        assert!(!is_dangerous_powershell(&vec_str(&[
+            "explorer.exe",
+            "https://example.com"
         ])));
     }
 
