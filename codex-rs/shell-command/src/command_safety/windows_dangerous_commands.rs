@@ -374,6 +374,38 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
         return None;
     }
 
+    let split_script = |script: &str| {
+        shlex_split(script).unwrap_or_else(|| {
+            let mut tokens = Vec::new();
+            let mut token = String::new();
+            let mut quote = None;
+            let mut chars = script.chars();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '`' => {
+                        if let Some(escaped) = chars.next() {
+                            token.push(escaped);
+                        } else {
+                            token.push(ch);
+                        }
+                    }
+                    '\'' | '"' if quote == Some(ch) => quote = None,
+                    '\'' | '"' if quote.is_none() => quote = Some(ch),
+                    _ if ch.is_whitespace() && quote.is_none() => {
+                        if !token.is_empty() {
+                            tokens.push(std::mem::take(&mut token));
+                        }
+                    }
+                    _ => token.push(ch),
+                }
+            }
+            if !token.is_empty() {
+                tokens.push(token);
+            }
+            tokens
+        })
+    };
+
     let mut idx = 0;
     while idx < args.len() {
         let arg = &args[idx];
@@ -384,7 +416,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                 if idx + 2 != args.len() {
                     return None;
                 }
-                let tokens = shlex_split(script)?;
+                let tokens = split_script(script);
                 return Some(ParsedPowershell { tokens });
             }
             _ if lower.starts_with("-command:") || lower.starts_with("/command:") => {
@@ -392,7 +424,7 @@ fn parse_powershell_invocation(args: &[String]) -> Option<ParsedPowershell> {
                     return None;
                 }
                 let (_, script) = arg.split_once(':')?;
-                let tokens = shlex_split(script)?;
+                let tokens = split_script(script);
                 return Some(ParsedPowershell { tokens });
             }
             "-nologo" | "-noprofile" | "-noninteractive" | "-mta" | "-sta" => {
@@ -532,10 +564,20 @@ mod tests {
             "-Command",
             "Remove-Item test -Recurse -Force"
         ])));
+        assert!(is_dangerous_powershell(&vec_str(&[
+            "pwsh.exe",
+            "-Command",
+            r"Remove-Item -Recurse -Force C:\temp\"
+        ])));
         assert!(!is_dangerous_powershell(&vec_str(&[
             "powershell.exe",
             "-Command",
             "Get-ChildItem -Force; Remove-Item test"
+        ])));
+        assert!(!is_dangerous_powershell(&vec_str(&[
+            "pwsh.exe",
+            "-Command",
+            r#"Write-Output "Remove-Item -Force C:\temp\""#
         ])));
         assert!(!is_dangerous_powershell(&vec_str(&[
             "cmd.exe",
