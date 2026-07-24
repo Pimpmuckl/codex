@@ -245,19 +245,13 @@ fn shell_command_handler_rejects_login_when_disallowed() {
 #[tokio::test]
 async fn shell_command_pre_tool_use_payload_uses_raw_command() {
     let payload = ToolPayload::Function {
-        arguments: json!({
-            "command": "printf shell command",
-            "workdir": "~/reviewed",
-        })
-        .to_string(),
+        arguments: json!({ "command": "printf shell command" }).to_string(),
     };
     let (session, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);
     let step_context = StepContext::for_test(Arc::clone(&turn));
     let environment = step_context.environments.primary().unwrap();
-    let mut execution_target = environment.selection();
-    execution_target.cwd =
-        PathUri::from_abs_path(&environment.cwd().to_abs_path().unwrap().join("~/reviewed"));
+    let execution_target = environment.selection();
     let handler = ShellCommandHandler::from(codex_tools::ShellCommandBackendConfig::Classic);
 
     assert_eq!(
