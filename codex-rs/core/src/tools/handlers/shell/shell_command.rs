@@ -199,6 +199,10 @@ impl ShellCommandHandler {
         })?;
         let cwd = resolve_workdir_base_path(&arguments, &environment_cwd)?;
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
+        let exact_pre_tool_use_approval = exact_pre_tool_use_approval
+            && !params
+                .login
+                .unwrap_or(turn.config.permissions.allow_login_shell);
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
             turn.as_ref(),

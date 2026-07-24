@@ -3274,12 +3274,35 @@ impl BashRewriteSurface {
             BashRewriteSurface::ExecCommand => Ok(ev_function_call(
                 call_id,
                 "exec_command",
-                &serde_json::to_string(&serde_json::json!({ "cmd": command_text }))?,
+                &serde_json::to_string(
+                    &serde_json::json!({ "cmd": command_text, "login": false, "tty": false }),
+                )?,
             )),
             BashRewriteSurface::ShellCommand => Ok(ev_function_call(
                 call_id,
                 "shell_command",
-                &serde_json::to_string(&serde_json::json!({ "command": command_text }))?,
+                &serde_json::to_string(
+                    &serde_json::json!({ "command": command_text, "login": false }),
+                )?,
+            )),
+        }
+    }
+
+    fn unreviewed_semantics_tool_call(self, call_id: &str, command_text: &str) -> Result<Value> {
+        match self {
+            BashRewriteSurface::ExecCommand => Ok(ev_function_call(
+                call_id,
+                "exec_command",
+                &serde_json::to_string(
+                    &serde_json::json!({ "cmd": command_text, "login": false, "tty": true }),
+                )?,
+            )),
+            BashRewriteSurface::ShellCommand => Ok(ev_function_call(
+                call_id,
+                "shell_command",
+                &serde_json::to_string(
+                    &serde_json::json!({ "command": command_text, "login": true }),
+                )?,
             )),
         }
     }
@@ -3302,6 +3325,7 @@ impl BashRewriteSurface {
 
     fn configure(self, config: &mut Config) {
         trust_discovered_hooks(config);
+        config.permissions.allow_login_shell = true;
         if matches!(self, BashRewriteSurface::ExecCommand) {
             config.use_experimental_unified_exec_tool = true;
             config
@@ -3316,12 +3340,10 @@ impl BashRewriteSurface {
             TestTargetOs::Linux | TestTargetOs::MacOs => {
                 format!("printf x >> {counter_name}; rm -rf {target_name}")
             }
-            TestTargetOs::Windows => {
-                format!(
-                    "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
-                     rm {target_name} -Recurse -Force"
-                )
-            }
+            TestTargetOs::Windows => format!(
+                "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
+                 rm {target_name} -Recurse -Force"
+            ),
         }
     }
 }
@@ -4434,6 +4456,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     let slug = surface.slug();
     let denied_call_id = format!("pretooluse-{slug}-guardian-denied");
     let approved_call_id = format!("pretooluse-{slug}-guardian-approved");
+    let unreviewed_call_id = format!("pretooluse-{slug}-guardian-unreviewed-semantics");
     let counter_name = format!("{slug}-guardian-counter");
     let target_name = format!("{slug}-guardian-target");
     let command = surface.dangerous_command(&counter_name, &target_name);
@@ -4470,6 +4493,21 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
                 ev_response_created("resp-parent-approved-done"),
                 ev_assistant_message("msg-parent-approved-done", "approved"),
                 ev_completed("resp-parent-approved-done"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-parent-unreviewed-tool"),
+                surface.unreviewed_semantics_tool_call(&unreviewed_call_id, &command)?,
+                ev_completed("resp-parent-unreviewed-tool"),
+            ]),
+            guardian_review_sse(
+                "resp-guardian-unreviewed-allow",
+                "allow",
+                "The displayed command is authorized.",
+            ),
+            sse(vec![
+                ev_response_created("resp-parent-unreviewed-done"),
+                ev_assistant_message("msg-parent-unreviewed-done", "blocked"),
+                ev_completed("resp-parent-unreviewed-done"),
             ]),
         ],
     )
@@ -4513,20 +4551,18 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .is_err(),
         "approved command should remove its target"
     );
+    test.fs()
+        .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
+        .await?;
+
+    submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
+
+    assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
     assert_eq!(
-        responses
-            .requests()
-            .iter()
-            .filter(|request| {
-                request.function_call_output_text(&denied_call_id).is_some()
-                    || request
-                        .function_call_output_text(&approved_call_id)
-                        .is_some()
-            })
-            .count(),
-        2,
-        "each reviewed invocation should return exactly one tool output"
+        test.fs().read_file(&target, /*sandbox*/ None).await?,
+        b"seed"
     );
+    assert_eq!(responses.requests().len(), 9);
 
     Ok(())
 }
