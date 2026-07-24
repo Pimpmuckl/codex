@@ -309,6 +309,15 @@ impl CoreToolRuntime for ExposureOverride {
         self.handler.waits_for_runtime_cancellation()
     }
 
+    fn pre_tool_use_approval_matches(
+        &self,
+        invocation: &ToolInvocation,
+        receipt: &PreToolUseApprovalReceipt,
+    ) -> bool {
+        self.handler
+            .pre_tool_use_approval_matches(invocation, receipt)
+    }
+
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         self.handler.pre_tool_use_payload(invocation)
     }

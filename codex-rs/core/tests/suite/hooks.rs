@@ -3302,13 +3302,11 @@ impl BashRewriteSurface {
 
     fn configure(self, config: &mut Config) {
         trust_discovered_hooks(config);
-        if matches!(self, BashRewriteSurface::ExecCommand) {
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        }
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
     }
 
     fn dangerous_command(self, counter_name: &str, target_name: &str) -> String {
