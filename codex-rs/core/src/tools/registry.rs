@@ -15,6 +15,8 @@ use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
 use crate::tools::codex_plus_plus::pre_tool_use_review;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApprovalReceipt;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -61,6 +63,21 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     /// host returns an aborted tool response.
     fn waits_for_runtime_cancellation(&self) -> bool {
         false
+    }
+
+    fn pre_tool_use_approval_matches(
+        &self,
+        invocation: &ToolInvocation,
+        receipt: &PreToolUseApprovalReceipt,
+    ) -> bool {
+        let execution_target = self
+            .pre_tool_use_payload(invocation)
+            .and_then(|payload| payload.execution_target);
+        receipt.authorizes(
+            &invocation.call_id,
+            &invocation.payload,
+            execution_target.as_ref(),
+        )
     }
 
     fn telemetry_tags<'a>(
@@ -112,6 +129,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         Some(PreToolUsePayload {
             tool_name: function_hook_tool_name(invocation),
             tool_input: function_hook_tool_input(arguments),
+            execution_target: None,
         })
     }
 
@@ -210,7 +228,7 @@ impl ToolOutput for PostToolUseFeedbackOutput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreToolUsePayload {
     /// Hook-facing tool name model.
     ///
@@ -222,6 +240,7 @@ pub(crate) struct PreToolUsePayload {
     /// Shell-like tools use `{ "command": ... }`; MCP tools use their resolved
     /// JSON arguments.
     pub(crate) tool_input: Value,
+    pub(crate) execution_target: Option<PreToolUseExecutionTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -487,6 +506,7 @@ impl ToolRegistry {
 
         notify_tool_start(&invocation).await;
 
+        let mut pre_tool_use_approval = None;
         if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
             match run_pre_tool_use_hooks(
                 &invocation.session,
@@ -509,19 +529,21 @@ impl ToolRegistry {
                     return Err(err);
                 }
                 PreToolUseHookResult::Review { reason } => {
-                    if let Err(message) =
-                        pre_tool_use_review::review(&invocation, &pre_tool_use_payload, reason)
-                            .await
+                    match pre_tool_use_review::review(&invocation, &pre_tool_use_payload, reason)
+                        .await
                     {
-                        let err = FunctionCallError::RespondToModel(message);
-                        dispatch_trace.record_failed(&err);
-                        notify_tool_finish_if_unclaimed(
-                            &invocation,
-                            terminal_outcome_reached.as_deref(),
-                            ToolCallOutcome::Blocked,
-                        )
-                        .await;
-                        return Err(err);
+                        Ok(receipt) => pre_tool_use_approval = Some(receipt),
+                        Err(message) => {
+                            let err = FunctionCallError::RespondToModel(message);
+                            dispatch_trace.record_failed(&err);
+                            notify_tool_finish_if_unclaimed(
+                                &invocation,
+                                terminal_outcome_reached.as_deref(),
+                                ToolCallOutcome::Blocked,
+                            )
+                            .await;
+                            return Err(err);
+                        }
                     }
                 }
                 PreToolUseHookResult::Continue {
@@ -547,6 +569,23 @@ impl ToolRegistry {
                     updated_input: None,
                 } => {}
             }
+        }
+
+        if pre_tool_use_approval
+            .as_ref()
+            .is_some_and(|receipt| !tool.pre_tool_use_approval_matches(&invocation, receipt))
+        {
+            let err = FunctionCallError::RespondToModel(
+                "Guardian approval receipt did not match the reviewed tool invocation.".to_string(),
+            );
+            dispatch_trace.record_failed(&err);
+            notify_tool_finish_if_unclaimed(
+                &invocation,
+                terminal_outcome_reached.as_deref(),
+                ToolCallOutcome::Blocked,
+            )
+            .await;
+            return Err(err);
         }
 
         if let Some(command) = shell_script_for_invocation(&invocation) {

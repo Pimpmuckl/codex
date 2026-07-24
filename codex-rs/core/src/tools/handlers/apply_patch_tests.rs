@@ -58,6 +58,7 @@ async fn pre_tool_use_payload_uses_freeform_patch_input() {
         Some(PreToolUsePayload {
             tool_name: HookToolName::apply_patch(),
             tool_input: json!({ "command": patch }),
+            execution_target: None,
         })
     );
 }

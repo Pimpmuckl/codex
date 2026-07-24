@@ -2,6 +2,7 @@ use codex_protocol::models::ShellCommandToolCallParams;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolName;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
@@ -12,6 +13,7 @@ use crate::maybe_emit_implicit_skill_invocation;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::shell::Shell;
+use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -247,9 +249,19 @@ impl CoreToolRuntime for ShellCommandHandler {
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
-        shell_command_payload_command(&invocation.payload).map(|command| PreToolUsePayload {
+        let command = shell_command_payload_command(&invocation.payload)?;
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return None;
+        };
+        let turn_environment = invocation.step_context.environments.primary()?;
+        let environment_cwd = turn_environment.cwd().to_abs_path().ok()?;
+        let cwd = resolve_workdir_base_path(arguments, &environment_cwd).ok()?;
+        let mut execution_target = turn_environment.selection();
+        execution_target.cwd = PathUri::from_abs_path(&cwd);
+        Some(PreToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_input: serde_json::json!({ "command": command }),
+            execution_target: Some(PreToolUseExecutionTarget::from(execution_target)),
         })
     }
 

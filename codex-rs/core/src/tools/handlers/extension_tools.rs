@@ -309,6 +309,7 @@ mod tests {
             Some(PreToolUsePayload {
                 tool_name: HookToolName::new("extension_echo"),
                 tool_input: json!({ "message": "hello" }),
+                execution_target: None,
             })
         );
         assert_eq!(
