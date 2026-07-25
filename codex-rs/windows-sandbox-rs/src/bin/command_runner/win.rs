@@ -1,4 +1,4 @@
-//! Windows command runner used by the **elevated** sandbox path.
+//! Windows command runner used by elevated and current-user sandbox paths.
 //!
 //! The CLI launches this binary under the sandbox user when Windows sandbox level is
 //! Elevated. It connects to the IPC pipes, reads the framed `SpawnRequest`, derives a
@@ -9,6 +9,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[path = "win/cwd_junction.rs"]
 mod cwd_junction;
 
 use anyhow::Context;

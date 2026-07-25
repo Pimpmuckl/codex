@@ -2,6 +2,9 @@
 // from the eventual unsafe cleanup.
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[cfg(target_os = "windows")]
+extern crate self as codex_windows_sandbox;
+
 #[cfg(any(target_os = "windows", test))]
 mod ssh_config_dependencies;
 
@@ -52,6 +55,11 @@ mod allow;
 mod audit;
 #[cfg(target_os = "windows")]
 mod cap;
+#[cfg(target_os = "windows")]
+mod codex_plus_plus;
+#[cfg(target_os = "windows")]
+#[path = "bin/command_runner/win.rs"]
+mod command_runner;
 #[cfg(target_os = "windows")]
 mod deny_read_acl;
 #[cfg(target_os = "windows")]
@@ -161,6 +169,9 @@ pub use cap::workspace_write_cap_sid_for_root;
 pub use cap::workspace_write_root_contains_path;
 #[cfg(target_os = "windows")]
 pub use cap::workspace_write_root_overlaps_path;
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use codex_plus_plus::current_user_runner::CODEX_COMMAND_RUNNER_ARG1;
 #[cfg(target_os = "windows")]
 pub use conpty::ConptyInstance;
 #[cfg(target_os = "windows")]
@@ -349,6 +360,13 @@ pub use wrapper::CODEX_WINDOWS_SANDBOX_ARG1;
 pub use wrapper::create_windows_sandbox_command_args_for_permission_profile;
 #[cfg(target_os = "windows")]
 pub use wrapper::run_windows_sandbox_wrapper_main;
+
+/// Runs the bundled Windows command runner entrypoint.
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub fn run_command_runner_main() -> anyhow::Result<()> {
+    command_runner::main()
+}
 
 #[cfg(not(target_os = "windows"))]
 pub use stub::CaptureResult;
