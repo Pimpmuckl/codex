@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 
 use super::spawn_windows_sandbox_session_legacy;
+use super::spawn_windows_current_user_runner_session;
 use crate::WindowsSandboxCancellationToken;
 use crate::ipc_framed::Message;
 use crate::ipc_framed::decode_bytes;
@@ -147,6 +148,36 @@ async fn collect_stdout_and_exit(
         })
         .expect("stdout task join");
     (stdout, exit_code)
+}
+#[test]
+fn current_user_runner_isolates_console_and_closes_descendants() {
+    if codex_utils_cargo_bin::cargo_bin("codex-command-runner").is_err() {
+        return;
+    }
+    let Some(pwsh) = pwsh_path() else {
+        return;
+    };
+    current_thread_runtime().block_on(async move {
+        let codex_home = sandbox_home("current-user-runner");
+        let probe = codex_home.path().join("runner-probe.cmd");
+        fs::write(&probe, format!(r#"@"{}" -NoProfile -Command "try {{ [IO.File]::OpenRead('CONIN$').Dispose(); exit 2 }} catch {{}}; Start-Process -NoNewWindow -FilePath $env:ComSpec -ArgumentList '/d /c ping -n 30 127.0.0.1 >nul'; 'descendant-started'""#, pwsh.display())).unwrap();
+        let mut env: HashMap<_, _> = std::env::vars().collect();
+        env.insert("Path".into(), codex_home.path().display().to_string());
+        let spawned = spawn_windows_current_user_runner_session(
+            codex_home.path(),
+            vec!["runner-probe.cmd".into()],
+            &sandbox_cwd(),
+            env,
+            false,
+        )
+        .await
+        .expect("spawn current-user runner");
+        let (stdout, exit) =
+            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
+        assert_eq!(exit, 0);
+        let stdout = String::from_utf8_lossy(&stdout);
+        assert!(stdout.contains("descendant-started"));
+    });
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use crate::desktop::LaunchDesktop;
+use crate::ipc_framed::ChildConsoleMode;
 use crate::logging;
 use crate::proc_thread_attr::ProcThreadAttributeList;
 use crate::winutil::argv_to_command_line;
@@ -8,6 +9,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::ffi::c_void;
 use std::path::Path;
 use std::ptr;
@@ -24,8 +26,10 @@ use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
+use windows_sys::Win32::System::Threading::CreateProcessW;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
@@ -38,10 +42,60 @@ pub struct CreatedProcess {
     _desktop: LaunchDesktop,
 }
 
-/// Controls console creation for pipe-backed child processes.
-pub enum ConsoleMode {
-    Inherit,
-    NoWindow,
+#[derive(Clone, Copy)]
+pub enum ProcessExecutionMode {
+    CurrentUser,
+    Token(HANDLE),
+}
+
+fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
+    if arg.contains(['\0', '\r', '\n']) {
+        anyhow::bail!("batch file arguments may not contain NUL or newlines");
+    }
+    const UNQUOTED: &str = r"#$*+-./:?@\_";
+    let quoted = arg.is_empty()
+        || arg.ends_with('\\')
+        || arg.chars().any(|ch| {
+            ch.is_control()
+                || ch.is_ascii() && !(ch.is_ascii_alphanumeric() || UNQUOTED.contains(ch))
+        });
+    if quoted {
+        command.push('"');
+    }
+    let mut backslashes = 0;
+    for ch in arg.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+        } else {
+            if ch == '"' {
+                command.extend(std::iter::repeat_n('\\', backslashes));
+                command.push('"');
+            } else if ch == '%' {
+                command.push_str("%%cd:~,%");
+            }
+            backslashes = 0;
+        }
+        command.push(ch);
+    }
+    if quoted {
+        command.extend(std::iter::repeat_n('\\', backslashes));
+        command.push('"');
+    }
+    Ok(())
+}
+
+fn batch_command_line(program: &Path, argv: &[String]) -> Result<String> {
+    let program = program.to_string_lossy();
+    if program.contains('"') || program.ends_with('\\') {
+        anyhow::bail!("invalid Windows batch file path");
+    }
+    let mut command = format!("cmd.exe /e:ON /v:OFF /d /c \"\"{program}\"");
+    for arg in &argv[1..] {
+        command.push(' ');
+        append_batch_arg(&mut command, arg)?;
+    }
+    command.push('"');
+    Ok(command)
 }
 
 pub fn make_env_block(env: &HashMap<String, String>) -> Vec<u16> {
@@ -57,6 +111,9 @@ pub fn make_env_block(env: &HashMap<String, String>) -> Vec<u16> {
         let mut s = to_wide(format!("{k}={v}"));
         s.pop();
         w.extend_from_slice(&s);
+        w.push(0);
+    }
+    if w.is_empty() {
         w.push(0);
     }
     w.push(0);
@@ -85,20 +142,53 @@ unsafe fn ensure_inheritable_stdio(si: &mut STARTUPINFOW) -> Result<()> {
 /// and the `argv`, `cwd`, and `env_map` must remain valid for the duration of the call.
 // Low-level CreateProcessAsUserW wrapper mirrors the Windows API shape.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn create_process_as_user(
-    h_token: HANDLE,
+unsafe fn create_process(
+    user: ProcessExecutionMode,
     argv: &[String],
     cwd: &Path,
     env_map: &HashMap<String, String>,
     logs_base_dir: Option<&Path>,
     stdio: Option<(HANDLE, HANDLE, HANDLE)>,
-    console_mode: ConsoleMode,
+    console_mode: ChildConsoleMode,
     use_private_desktop: bool,
 ) -> Result<CreatedProcess> {
-    let cmdline_str = argv_to_command_line(argv);
+    let request_path = env_map
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| OsStr::new(value));
+    let inherited_path = std::env::var_os("PATH");
+    let resolved_program = matches!(user, ProcessExecutionMode::CurrentUser)
+        .then(|| which::which_in(&argv[0], request_path.or(inherited_path.as_deref()), cwd))
+        .transpose()
+        .or_else(|err| {
+            if request_path.is_some() {
+                Err(err)
+            } else {
+                Ok(None)
+            }
+        })
+        .with_context(|| format!("failed to resolve executable `{}`", argv[0]))?;
+    let is_batch = resolved_program.as_ref().is_some_and(|program| {
+        program
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd"))
+    });
+    let cmdline_str = if is_batch {
+        batch_command_line(resolved_program.as_deref().expect("resolved batch path"), argv)?
+    } else {
+        argv_to_command_line(argv)
+    };
     let mut cmdline: Vec<u16> = to_wide(&cmdline_str);
     let env_block = make_env_block(env_map);
     let desktop = LaunchDesktop::prepare(use_private_desktop, logs_base_dir)?;
+    let application_name = if request_path.is_some() && !is_batch {
+        resolved_program.as_ref().map(to_wide)
+    } else {
+        None
+    };
+    let application_name = application_name
+        .as_ref()
+        .map_or(ptr::null(), |path| path.as_ptr());
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     let cwd_wide = to_wide(cwd);
     let env_block_len = env_block.len();
@@ -132,23 +222,42 @@ pub unsafe fn create_process_as_user(
 
             let creation_flags = CREATE_UNICODE_ENVIRONMENT
                 | EXTENDED_STARTUPINFO_PRESENT
+                | if matches!(user, ProcessExecutionMode::CurrentUser) {
+                    CREATE_SUSPENDED
+                } else {
+                    0
+                }
                 | match console_mode {
-                    ConsoleMode::Inherit => 0,
-                    ConsoleMode::NoWindow => CREATE_NO_WINDOW,
+                    ChildConsoleMode::Inherit => 0,
+                    ChildConsoleMode::NoWindow => CREATE_NO_WINDOW,
                 };
-            let ok = CreateProcessAsUserW(
-                h_token,
-                std::ptr::null(),
-                cmdline.as_mut_ptr(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                1,
-                creation_flags,
-                env_block.as_ptr() as *mut c_void,
-                cwd_wide.as_ptr(),
-                &si.StartupInfo,
-                &mut pi,
-            );
+            let ok = match user {
+                ProcessExecutionMode::CurrentUser => CreateProcessW(
+                    application_name,
+                    cmdline.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    1,
+                    creation_flags,
+                    env_block.as_ptr() as *mut c_void,
+                    cwd_wide.as_ptr(),
+                    &si.StartupInfo,
+                    &mut pi,
+                ),
+                ProcessExecutionMode::Token(h_token) => CreateProcessAsUserW(
+                    h_token,
+                    std::ptr::null(),
+                    cmdline.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    1,
+                    creation_flags,
+                    env_block.as_ptr() as *mut c_void,
+                    cwd_wide.as_ptr(),
+                    &si.StartupInfo,
+                    &mut pi,
+                ),
+            };
             if ok == 0 {
                 let err = GetLastError() as i32;
                 let msg = format!(
@@ -177,6 +286,9 @@ pub unsafe fn create_process_as_user(
             ensure_inheritable_stdio(&mut si)?;
 
             let creation_flags = CREATE_UNICODE_ENVIRONMENT;
+            let ProcessExecutionMode::Token(h_token) = user else {
+                anyhow::bail!("current-user process creation requires explicit stdio");
+            };
             let ok = CreateProcessAsUserW(
                 h_token,
                 std::ptr::null(),
@@ -214,6 +326,29 @@ pub unsafe fn create_process_as_user(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn create_process_as_user(
+    h_token: HANDLE,
+    argv: &[String],
+    cwd: &Path,
+    env_map: &HashMap<String, String>,
+    logs_base_dir: Option<&Path>,
+    stdio: Option<(HANDLE, HANDLE, HANDLE)>,
+    console_mode: ChildConsoleMode,
+    use_private_desktop: bool,
+) -> Result<CreatedProcess> {
+    create_process(
+        ProcessExecutionMode::Token(h_token),
+        argv,
+        cwd,
+        env_map,
+        logs_base_dir,
+        stdio,
+        console_mode,
+        use_private_desktop,
+    )
+}
+
 /// Controls whether the child's stdin handle is kept open for writing.
 #[allow(dead_code)]
 pub enum StdinMode {
@@ -226,6 +361,7 @@ pub enum StdinMode {
 pub enum StderrMode {
     MergeStdout,
     Separate,
+    InheritOutput,
 }
 
 /// Handles returned by `spawn_process_with_pipes`.
@@ -241,13 +377,13 @@ pub struct PipeSpawnHandles {
 /// Spawns a process with anonymous pipes and returns the relevant handles.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_process_with_pipes(
-    h_token: HANDLE,
+    execution_mode: ProcessExecutionMode,
     argv: &[String],
     cwd: &Path,
     env_map: &HashMap<String, String>,
     stdin_mode: StdinMode,
     stderr_mode: StderrMode,
-    console_mode: ConsoleMode,
+    console_mode: ChildConsoleMode,
     use_private_desktop: bool,
     logs_base_dir: Option<&Path>,
 ) -> Result<PipeSpawnHandles> {
@@ -261,7 +397,9 @@ pub fn spawn_process_with_pipes(
         if CreatePipe(&mut in_r, &mut in_w, ptr::null_mut(), 0) == 0 {
             return Err(anyhow!("CreatePipe stdin failed: {}", GetLastError()));
         }
-        if CreatePipe(&mut out_r, &mut out_w, ptr::null_mut(), 0) == 0 {
+        if !matches!(stderr_mode, StderrMode::InheritOutput)
+            && CreatePipe(&mut out_r, &mut out_w, ptr::null_mut(), 0) == 0
+        {
             CloseHandle(in_r);
             CloseHandle(in_w);
             return Err(anyhow!("CreatePipe stdout failed: {}", GetLastError()));
@@ -280,12 +418,18 @@ pub fn spawn_process_with_pipes(
     let stderr_handle = match stderr_mode {
         StderrMode::MergeStdout => out_w,
         StderrMode::Separate => err_w,
+        StderrMode::InheritOutput => unsafe { GetStdHandle(STD_ERROR_HANDLE) },
     };
 
-    let stdio = Some((in_r, out_w, stderr_handle));
+    let stdout_handle = if matches!(stderr_mode, StderrMode::InheritOutput) {
+        unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
+    } else {
+        out_w
+    };
+    let stdio = Some((in_r, stdout_handle, stderr_handle));
     let spawn_result = unsafe {
-        create_process_as_user(
-            h_token,
+        create_process(
+            execution_mode,
             argv,
             cwd,
             env_map,
@@ -301,8 +445,10 @@ pub fn spawn_process_with_pipes(
             unsafe {
                 CloseHandle(in_r);
                 CloseHandle(in_w);
-                CloseHandle(out_r);
-                CloseHandle(out_w);
+                if !matches!(stderr_mode, StderrMode::InheritOutput) {
+                    CloseHandle(out_r);
+                    CloseHandle(out_w);
+                }
                 if matches!(stderr_mode, StderrMode::Separate) {
                     CloseHandle(err_r);
                     CloseHandle(err_w);
@@ -319,7 +465,9 @@ pub fn spawn_process_with_pipes(
 
     unsafe {
         CloseHandle(in_r);
-        CloseHandle(out_w);
+        if !matches!(stderr_mode, StderrMode::InheritOutput) {
+            CloseHandle(out_w);
+        }
         if matches!(stderr_mode, StderrMode::Separate) {
             CloseHandle(err_w);
         }
@@ -334,10 +482,14 @@ pub fn spawn_process_with_pipes(
             StdinMode::Open => Some(in_w),
             StdinMode::Closed => None,
         },
-        stdout_read: out_r,
+        stdout_read: if matches!(stderr_mode, StderrMode::InheritOutput) {
+            INVALID_HANDLE_VALUE
+        } else {
+            out_r
+        },
         stderr_read: match stderr_mode {
             StderrMode::Separate => Some(err_r),
-            StderrMode::MergeStdout => None,
+            StderrMode::MergeStdout | StderrMode::InheritOutput => None,
         },
         desktop,
     })
@@ -371,3 +523,7 @@ where
         }
     })
 }
+
+#[cfg(test)]
+#[path = "process_tests.rs"]
+mod tests;

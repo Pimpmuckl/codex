@@ -41,6 +41,12 @@ pub const PIPE_ACCESS_OUTBOUND: u32 = 0x0000_0002;
 /// Resolves the elevated command runner path, preferring the copied helper under
 /// `.sandbox-bin` and falling back to the legacy sibling lookup when needed.
 pub fn find_runner_exe(codex_home: &Path, log_dir: Option<&Path>) -> PathBuf {
+    if (std::env::var_os("CARGO_BIN_EXE_codex-command-runner").is_some()
+        || std::env::var_os("CARGO_BIN_EXE_codex_command_runner").is_some())
+        && let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-command-runner")
+    {
+        return path;
+    }
     resolve_helper_for_launch(HelperExecutable::CommandRunner, codex_home, log_dir)
 }
 

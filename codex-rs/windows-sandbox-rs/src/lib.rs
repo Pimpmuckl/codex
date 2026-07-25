@@ -211,6 +211,10 @@ pub use ipc_framed::OutputPayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::OutputStream;
 #[cfg(target_os = "windows")]
+pub use ipc_framed::ChildConsoleMode;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::RunnerExecutionMode;
+#[cfg(target_os = "windows")]
 pub use ipc_framed::ResizePayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::SpawnReady;
@@ -237,9 +241,9 @@ pub use logging::log_writer;
 #[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
-pub use process::ConsoleMode;
-#[cfg(target_os = "windows")]
 pub use process::PipeSpawnHandles;
+#[cfg(target_os = "windows")]
+pub use process::ProcessExecutionMode;
 #[cfg(target_os = "windows")]
 pub use process::StderrMode;
 #[cfg(target_os = "windows")]
@@ -312,6 +316,8 @@ pub use token::get_current_token_for_restriction;
 #[cfg(target_os = "windows")]
 pub use unified_exec::WindowsSandboxSessionRequest;
 #[cfg(target_os = "windows")]
+pub use unified_exec::spawn_windows_current_user_runner_session;
+#[cfg(target_os = "windows")]
 pub use unified_exec::spawn_windows_sandbox_session_elevated_for_permission_profile;
 #[cfg(target_os = "windows")]
 pub use unified_exec::spawn_windows_sandbox_session_for_level;
@@ -356,7 +362,7 @@ mod windows_impl {
     use super::WindowsSandboxCancellationToken;
     use super::logging::log_failure;
     use super::logging::log_success;
-    use super::process::ConsoleMode;
+    use super::ChildConsoleMode;
     use super::process::create_process_as_user;
     use super::sandbox_utils::ensure_codex_home_exists;
     use super::spawn_prep::LegacyAclSids;
@@ -574,7 +580,7 @@ mod windows_impl {
                 &env_map,
                 logs_base_dir,
                 Some((in_r, out_w, err_w)),
-                ConsoleMode::Inherit,
+                ChildConsoleMode::Inherit,
                 use_private_desktop,
             )
         };

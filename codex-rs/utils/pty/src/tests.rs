@@ -649,6 +649,23 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
 
     Ok(())
 }
+#[tokio::test]
+async fn direct_driver_stream_drop_is_independent() {
+    let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel(1);
+    let (stderr_tx, stderr_rx) = tokio::sync::mpsc::channel(1);
+    let mut spawned = crate::spawn_from_direct_driver(crate::DirectProcessDriver {
+        writer_tx: tokio::sync::mpsc::channel(1).0,
+        stdout_rx,
+        stderr_rx,
+        exit_rx: tokio::sync::oneshot::channel().1,
+        terminator: None,
+        writer_handle: None,
+    });
+    drop(spawned.stderr_rx);
+    assert!(stderr_tx.send(b"dropped".to_vec()).await.is_err());
+    stdout_tx.send(b"stdout".to_vec()).await.unwrap();
+    assert_eq!(spawned.stdout_rx.recv().await, Some(b"stdout".to_vec()));
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_backed_process_can_resize_via_resizer_hook() -> anyhow::Result<()> {
