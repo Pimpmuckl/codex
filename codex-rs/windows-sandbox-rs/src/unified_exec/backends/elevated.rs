@@ -226,6 +226,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
         pipe_read,
         stdout_tx,
         stderr_rx.as_ref().map(|(tx, _rx)| tx.clone()),
+        None,
         exit_tx,
     );
 

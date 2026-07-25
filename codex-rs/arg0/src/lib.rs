@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
@@ -9,6 +11,8 @@ use codex_exec_server::CODEX_FS_HELPER_ARG1;
 use codex_install_context::InstallContext;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_utils_home_dir::find_codex_home;
+#[cfg(target_os = "windows")]
+use codex_windows_sandbox::CODEX_COMMAND_RUNNER_ARG1;
 #[cfg(target_os = "windows")]
 use codex_windows_sandbox::CODEX_WINDOWS_SANDBOX_ARG1;
 #[cfg(unix)]
@@ -98,6 +102,17 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     }
 
     let argv1 = args.next().unwrap_or_default();
+    #[cfg(target_os = "windows")]
+    if let Some(result) = command_runner_dispatch(&argv1) {
+        let exit_code = match result {
+            Ok(()) => 0,
+            Err(err) => {
+                eprintln!("{err:#}");
+                1
+            }
+        };
+        std::process::exit(exit_code);
+    }
     if argv1 == CODEX_FS_HELPER_ARG1 {
         codex_exec_server::run_fs_helper_main();
     }
@@ -160,6 +175,11 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         }
     }
     path_entry_guard
+}
+
+#[cfg(target_os = "windows")]
+fn command_runner_dispatch(argv1: &OsStr) -> Option<anyhow::Result<()>> {
+    (argv1 == CODEX_COMMAND_RUNNER_ARG1).then(codex_windows_sandbox::run_command_runner_main)
 }
 
 fn prepare_path_env_var_with_aliases(
@@ -532,6 +552,17 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn command_runner_dispatch_reaches_the_shared_entrypoint() {
+        let err = super::command_runner_dispatch(std::ffi::OsStr::new(
+            codex_windows_sandbox::CODEX_COMMAND_RUNNER_ARG1,
+        ))
+        .expect("internal runner argument")
+        .unwrap_err();
+        assert!(err.to_string().contains("runner: no pipe-in provided"));
+    }
 
     struct PackagePathTestFixture {
         _temp_dir: TempDir,

@@ -1,9 +1,6 @@
 #[cfg(target_os = "windows")]
-mod win;
-
-#[cfg(target_os = "windows")]
 fn main() -> anyhow::Result<()> {
-    win::main()
+    codex_windows_sandbox::run_command_runner_main()
 }
 
 #[cfg(not(target_os = "windows"))]

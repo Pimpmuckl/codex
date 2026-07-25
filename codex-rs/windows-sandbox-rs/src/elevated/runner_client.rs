@@ -1,3 +1,4 @@
+use crate::codex_plus_plus::current_user_runner;
 use crate::identity::SandboxCreds;
 use crate::ipc_framed::ErrorPayload;
 use crate::ipc_framed::ErrorStage;
@@ -45,9 +46,7 @@ use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-use windows_sys::Win32::System::Threading::CreateProcessW;
 use windows_sys::Win32::System::Threading::CreateProcessWithLogonW;
-use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::GetCurrentThread;
 use windows_sys::Win32::System::Threading::LOGON_WITH_PROFILE;
@@ -197,6 +196,7 @@ impl RunnerTransport {
         Ok((self.pipe_write, self.pipe_read, stdout, stderr))
     }
 }
+
 fn runner_output_pipe() -> Result<(File, File)> {
     let mut read = 0;
     let mut write = 0;
@@ -375,14 +375,29 @@ pub(crate) fn spawn_runner_transport(
     let h_pipe_out = create_named_pipe(&pipe_out_name, PIPE_ACCESS_INBOUND, &pipe_username)?;
     let pipe_out_guard = unsafe { File::from_raw_handle(h_pipe_out as _) };
 
-    let runner_exe = find_runner_exe(codex_home, log_dir);
+    let helper_exe = find_runner_exe(codex_home, log_dir);
+    let current_user_command = match launch {
+        RunnerLaunch::CurrentUser => {
+            Some(current_user_runner::resolve_runner_command(&helper_exe)?)
+        }
+        RunnerLaunch::Logon(_) => None,
+    };
+    let runner_exe = current_user_command
+        .as_ref()
+        .map_or(helper_exe.as_path(), |command| command.executable.as_path());
     let runner_cmdline = runner_exe
         .to_str()
         .map(str::to_owned)
         .unwrap_or_else(|| "codex-command-runner.exe".to_string());
+    let internal_arg = current_user_command
+        .as_ref()
+        .and_then(|command| command.internal_arg)
+        .map(|arg| format!(" {}", quote_windows_arg(arg)))
+        .unwrap_or_default();
     let runner_full_cmd = format!(
-        "{} {} {}",
+        "{}{} {} {}",
         quote_windows_arg(&runner_cmdline),
+        internal_arg,
         quote_windows_arg(&format!("--pipe-in={pipe_in_name}")),
         quote_windows_arg(&format!("--pipe-out={pipe_out_name}"))
     );
@@ -420,27 +435,14 @@ pub(crate) fn spawn_runner_transport(
     std::mem::forget(pipe_in_guard);
     std::mem::forget(pipe_out_guard);
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let env_block: Option<Vec<u16>> = None;
 
     let previous_error_mode = unsafe { SetErrorMode(RUNNER_ERROR_MODE_FLAGS) };
-    let creation_flags = windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
-        | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT
-        | if output_pipes.is_some() {
-            EXTENDED_STARTUPINFO_PRESENT
-        } else {
-            0
-        };
     let spawn_res = unsafe {
         match launch {
-            RunnerLaunch::CurrentUser => CreateProcessW(
-                exe_w.as_ptr(),
-                cmdline_vec.as_mut_ptr(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                1,
-                creation_flags,
-                ptr::null(),
-                cwd_w.as_ptr(),
+            RunnerLaunch::CurrentUser => current_user_runner::create_process(
+                &exe_w,
+                &mut cmdline_vec,
+                &cwd_w,
                 &si.StartupInfo,
                 &mut pi,
             ),
@@ -455,11 +457,9 @@ pub(crate) fn spawn_runner_transport(
                     LOGON_WITH_PROFILE,
                     exe_w.as_ptr(),
                     cmdline_vec.as_mut_ptr(),
-                    creation_flags,
-                    env_block
-                        .as_ref()
-                        .map(|block| block.as_ptr() as *const c_void)
-                        .unwrap_or(ptr::null()),
+                    windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+                        | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT,
+                    ptr::null(),
                     cwd_w.as_ptr(),
                     &si.StartupInfo,
                     &mut pi,

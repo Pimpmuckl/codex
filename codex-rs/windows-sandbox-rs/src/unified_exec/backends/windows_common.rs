@@ -81,6 +81,7 @@ pub(crate) fn start_runner_stdout_reader(
     mut pipe_read: File,
     stdout_tx: broadcast::Sender<Vec<u8>>,
     stderr_tx: Option<broadcast::Sender<Vec<u8>>>,
+    direct_stderr_tx: Option<mpsc::Sender<Vec<u8>>>,
     exit_tx: oneshot::Sender<i32>,
 ) {
     std::thread::spawn(move || {
@@ -92,6 +93,7 @@ pub(crate) fn start_runner_stdout_reader(
                         "runner pipe closed before exit",
                         &stdout_tx,
                         stderr_tx.as_ref(),
+                        direct_stderr_tx.as_ref(),
                     );
                     let _ = exit_tx.send(-1);
                     break;
@@ -101,6 +103,7 @@ pub(crate) fn start_runner_stdout_reader(
                         &format!("runner read failed: {err}"),
                         &stdout_tx,
                         stderr_tx.as_ref(),
+                        direct_stderr_tx.as_ref(),
                     );
                     let _ = exit_tx.send(-1);
                     break;
@@ -129,7 +132,12 @@ pub(crate) fn start_runner_stdout_reader(
                     break;
                 }
                 Message::Error { payload } => {
-                    send_runner_error(&payload.message, &stdout_tx, stderr_tx.as_ref());
+                    send_runner_error(
+                        &payload.message,
+                        &stdout_tx,
+                        stderr_tx.as_ref(),
+                        direct_stderr_tx.as_ref(),
+                    );
                     let _ = exit_tx.send(-1);
                     break;
                 }
@@ -166,11 +174,18 @@ fn send_runner_error(
     message: &str,
     stdout_tx: &broadcast::Sender<Vec<u8>>,
     stderr_tx: Option<&broadcast::Sender<Vec<u8>>>,
+    direct_stderr_tx: Option<&mpsc::Sender<Vec<u8>>>,
 ) {
     let formatted = format!("runner error: {message}\n").into_bytes();
-    if let Some(stderr_tx) = stderr_tx {
+    if let Some(direct_stderr_tx) = direct_stderr_tx {
+        let _ = direct_stderr_tx.blocking_send(formatted);
+    } else if let Some(stderr_tx) = stderr_tx {
         let _ = stderr_tx.send(formatted);
     } else {
         let _ = stdout_tx.send(formatted);
     }
 }
+
+#[cfg(test)]
+#[path = "windows_common_tests.rs"]
+mod tests;
