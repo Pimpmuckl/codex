@@ -16,6 +16,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +37,10 @@ use windows_sys::Win32::System::Console::GetConsoleProcessList as console_proces
 
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+const DIRECT_OUTPUT_CHANNEL_CAPACITY: usize = 256;
+const DIRECT_OUTPUT_CHUNK_BYTES: usize = 8192;
+const DIRECT_OUTPUT_BURST_BYTES: usize =
+    (DIRECT_OUTPUT_CHANNEL_CAPACITY + 1) * DIRECT_OUTPUT_CHUNK_BYTES;
 
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
@@ -161,6 +166,20 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
                 as usize;
         let parent_pid = std::env::var("CODEX_PARENT_PID").unwrap().parse().unwrap();
         assert!(count <= console_pids.len() && !console_pids[..count].contains(&parent_pid));
+        {
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(&vec![1; DIRECT_OUTPUT_BURST_BYTES])
+                .unwrap();
+            stdout.flush().unwrap();
+        }
+        {
+            let mut stderr = std::io::stderr().lock();
+            stderr
+                .write_all(&vec![2; DIRECT_OUTPUT_BURST_BYTES])
+                .unwrap();
+            stderr.flush().unwrap();
+        }
         println!(
             "native-stdout:{}",
             std::env::var("CODEX_BATCH_ARG").unwrap()
@@ -193,9 +212,66 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         )
         .await
         .expect("spawn current-user runner");
-        let (output, exit) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
-        assert!(exit == 0 && ["shell-stdout", "shell-stderr", r"native-stdout:C:\dir\", "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)), "exit={exit}, output={output:?}");
+        let codex_utils_pty::SpawnedProcess {
+            session: _session,
+            stdout_rx,
+            stderr_rx,
+            exit_rx,
+        } = spawned;
+        let stdout_task = tokio::spawn(async move {
+            let mut stdout = Vec::new();
+            let mut stdout_rx = stdout_rx;
+            while let Some(chunk) = stdout_rx.recv().await {
+                stdout.extend(chunk);
+            }
+            stdout
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut stderr = Vec::new();
+            let mut stderr_rx = stderr_rx;
+            while let Some(chunk) = stderr_rx.recv().await {
+                stderr.extend(chunk);
+            }
+            stderr
+        });
+        let timeout_duration = Duration::from_secs(10);
+        let exit = timeout(timeout_duration, exit_rx)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for exit\n{}", sandbox_log(codex_home.path())))
+            .unwrap_or(-1);
+        let stdout = timeout(timeout_duration, stdout_task)
+            .await
+            .expect("timed out draining stdout")
+            .expect("stdout task join");
+        let stderr = timeout(timeout_duration, stderr_task)
+            .await
+            .expect("timed out draining stderr")
+            .expect("stderr task join");
+        assert_eq!(
+            (
+                exit,
+                stdout.iter().filter(|&&byte| byte == 1).count(),
+                stderr.iter().filter(|&&byte| byte == 2).count(),
+            ),
+            (0, DIRECT_OUTPUT_BURST_BYTES, DIRECT_OUTPUT_BURST_BYTES),
+            "stdout_len={}, stderr_len={}",
+            stdout.len(),
+            stderr.len()
+        );
+        assert!(
+            ["shell-stdout", r"native-stdout:C:\dir\"]
+                .into_iter()
+                .all(|expected| String::from_utf8_lossy(&stdout).contains(expected)),
+            "stdout markers missing; stdout_len={}",
+            stdout.len()
+        );
+        assert!(
+            ["shell-stderr", "native-stderr"]
+                .into_iter()
+                .all(|expected| String::from_utf8_lossy(&stderr).contains(expected)),
+            "stderr markers missing; stderr_len={}",
+            stderr.len()
+        );
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists());
     });

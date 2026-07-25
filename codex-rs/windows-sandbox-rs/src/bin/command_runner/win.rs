@@ -9,6 +9,8 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+#[path = "win/codex_plus_plus/mod.rs"]
+mod codex_plus_plus;
 #[path = "win/cwd_junction.rs"]
 mod cwd_junction;
 
@@ -79,7 +81,6 @@ use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::MUTEX_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::OpenMutexW;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
-use windows_sys::Win32::System::Threading::ResumeThread;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
@@ -261,40 +262,7 @@ fn effective_cwd(req_cwd: &Path, log_dir: Option<&Path>) -> PathBuf {
 
 fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
     if req.execution_mode == RunnerExecutionMode::CurrentUser {
-        if req.tty {
-            anyhow::bail!("runner: current-user execution is non-TTY only");
-        }
-        let stdin_mode = match req.stdin_open {
-            true => StdinMode::Open,
-            false => StdinMode::Closed,
-        };
-        let pipes = spawn_process_with_pipes(
-            ProcessExecutionMode::CurrentUser,
-            &req.command,
-            &req.cwd,
-            &req.env,
-            stdin_mode,
-            StderrMode::InheritOutput,
-            req.child_console_mode,
-            req.use_private_desktop,
-            Some(req.codex_home.as_path()),
-        )?;
-        let job = assign_process_to_job(pipes.process.hProcess)?;
-        if unsafe { ResumeThread(pipes.process.hThread) } == u32::MAX {
-            let _ = unsafe { TerminateJobObject(job.raw(), 1) };
-            return Err(std::io::Error::last_os_error()).context("ResumeThread failed");
-        }
-        return Ok(IpcSpawnedProcess {
-            log_dir: req.codex_home.clone(),
-            pi: pipes.process,
-            job,
-            stdout_handle: INVALID_HANDLE_VALUE,
-            stderr_handle: INVALID_HANDLE_VALUE,
-            stdin_handle: pipes.stdin_write,
-            conpty_owner: None,
-            hpc_handle: None,
-            _pipe_handles: Some(pipes),
-        });
+        return codex_plus_plus::spawn_current_user_process(req);
     }
     let log_dir = req.codex_home.clone();
     hide_current_user_profile_dir(req.codex_home.as_path());
