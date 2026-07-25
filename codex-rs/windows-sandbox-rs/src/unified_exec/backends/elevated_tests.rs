@@ -2,8 +2,10 @@ use super::RunnerTransportRequest;
 use super::spawn_runner_transport_with_retry;
 use crate::WindowsSandboxProxySettingsMode;
 use crate::identity::SandboxCreds;
+use crate::ipc_framed::ChildConsoleMode;
 use crate::ipc_framed::ErrorPayload;
 use crate::ipc_framed::ErrorStage;
+use crate::ipc_framed::RunnerExecutionMode;
 use crate::ipc_framed::SpawnRequest;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
 use crate::runner_client::RunnerStartupError;
@@ -71,6 +73,8 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
             command: vec!["pwsh.exe".to_string(), "-NoProfile".to_string()],
             cwd: PathBuf::from(r"C:\workspace"),
             env: env_map.clone(),
+            execution_mode: RunnerExecutionMode::RestrictedToken,
+            child_console_mode: ChildConsoleMode::Inherit,
             permission_profile,
             workspace_roots: vec![workspace_root],
             codex_home: PathBuf::from(r"C:\Users\codex\.sandbox"),

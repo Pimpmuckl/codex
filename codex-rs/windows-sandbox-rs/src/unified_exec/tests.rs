@@ -1,5 +1,6 @@
 #![cfg(target_os = "windows")]
 
+use super::spawn_windows_current_user_runner_session;
 use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
 use crate::ipc_framed::Message;
@@ -31,6 +32,7 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use windows_sys::Win32::System::Console::GetConsoleProcessList as console_processes;
 
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -122,13 +124,14 @@ async fn collect_stdout_and_exit(
 ) -> (Vec<u8>, i32) {
     let codex_utils_pty::SpawnedProcess {
         session: _session,
-        mut stdout_rx,
-        stderr_rx: _stderr_rx,
+        stdout_rx,
+        stderr_rx,
         exit_rx,
     } = spawned;
+    let mut output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
     let stdout_task = tokio::spawn(async move {
         let mut stdout = Vec::new();
-        while let Some(chunk) = stdout_rx.recv().await {
+        while let Ok(chunk) = output_rx.recv().await {
             stdout.extend(chunk);
         }
         stdout
@@ -147,6 +150,55 @@ async fn collect_stdout_and_exit(
         })
         .expect("stdout task join");
     (stdout, exit_code)
+}
+#[test]
+#[allow(clippy::zombie_processes)]
+fn current_user_runner_isolates_console_and_closes_descendants() {
+    if std::env::var_os("CODEX_RUNNER_PROBE").is_some() {
+        let mut console_pids = [0; 8];
+        let count =
+            unsafe { console_processes(console_pids.as_mut_ptr(), console_pids.len() as u32) }
+                as usize;
+        let parent_pid = std::env::var("CODEX_PARENT_PID").unwrap().parse().unwrap();
+        assert!(count <= console_pids.len() && !console_pids[..count].contains(&parent_pid));
+        println!(
+            "native-stdout:{}",
+            std::env::var("CODEX_BATCH_ARG").unwrap()
+        );
+        eprintln!("native-stderr");
+        std::process::Command::new(std::env::var_os("ComSpec").unwrap()).args(["/d", "/c", r#""%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul & echo survived > "%CODEX_RUNNER_PROBE%""#]).spawn().unwrap();
+        return;
+    }
+    if codex_utils_cargo_bin::cargo_bin("codex-command-runner").is_err() {
+        return;
+    }
+    current_thread_runtime().block_on(async move {
+        let codex_home = sandbox_home("current-user-runner");
+        let marker = codex_home.path().join("descendant-survived");
+        let probe = codex_home.path().join("runner-probe.exe");
+        fs::copy(std::env::current_exe().unwrap(), &probe).unwrap();
+        let batch = codex_home.path().join("runner-probe.cmd");
+        let script = "@echo shell-stdout\r\n@echo shell-stderr 1>&2\r\n@set CODEX_BATCH_ARG=%~1\r\n@runner-probe.exe isolates_console_and_closes_descendants --nocapture\r\n";
+        fs::write(&batch, script).unwrap();
+        let mut env: HashMap<_, _> = std::env::vars().collect();
+        env.insert("Path".into(), codex_home.path().display().to_string());
+        env.insert("CODEX_RUNNER_PROBE".into(), marker.display().to_string());
+        env.insert("CODEX_PARENT_PID".into(), std::process::id().to_string());
+        let spawned = spawn_windows_current_user_runner_session(
+            codex_home.path(),
+            vec![batch.display().to_string(), r"C:\dir\".into()],
+            &sandbox_cwd(),
+            env,
+            false,
+        )
+        .await
+        .expect("spawn current-user runner");
+        let (output, exit) =
+            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
+        assert!(exit == 0 && ["shell-stdout", "shell-stderr", r"native-stdout:C:\dir\", "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)), "exit={exit}, output={output:?}");
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!marker.exists());
+    });
 }
 
 #[test]

@@ -7,6 +7,7 @@ use crate::ipc_framed::Message;
 use crate::ipc_framed::SpawnRequest;
 use crate::ipc_framed::read_frame;
 use crate::ipc_framed::write_frame;
+use crate::proc_thread_attr::ProcThreadAttributeList;
 use crate::runner_pipe::PIPE_ACCESS_INBOUND;
 use crate::runner_pipe::PIPE_ACCESS_OUTBOUND;
 use crate::runner_pipe::connect_pipe;
@@ -35,14 +36,24 @@ use windows_sys::Win32::Foundation::ERROR_NO_SUCH_LOGON_SESSION;
 use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::SetHandleInformation;
+use windows_sys::Win32::Security::Authentication::Identity::GetUserNameExW;
+use windows_sys::Win32::Security::Authentication::Identity::NameSamCompatible;
 use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+use windows_sys::Win32::System::Threading::CreateProcessW;
 use windows_sys::Win32::System::Threading::CreateProcessWithLogonW;
+use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::GetCurrentThread;
 use windows_sys::Win32::System::Threading::LOGON_WITH_PROFILE;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
+use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
+use windows_sys::Win32::System::Threading::STARTUPINFOEXW;
 use windows_sys::Win32::System::Threading::STARTUPINFOW;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -53,6 +64,11 @@ const RUNNER_SPAWN_READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const RUNNER_ERROR_MODE_FLAGS: u32 = 0x0001 | 0x0002;
 const WAIT_OBJECT_0: u32 = 0;
 
+#[derive(Clone, Copy)]
+pub(crate) enum RunnerLaunch<'a> {
+    CurrentUser,
+    Logon(&'a SandboxCreds),
+}
 #[derive(Debug)]
 struct RunnerLogonError {
     code: u32,
@@ -96,6 +112,7 @@ impl std::error::Error for RunnerStartupError {}
 pub(crate) struct RunnerTransport {
     pipe_write: File,
     pipe_read: File,
+    direct_output: Option<(File, File)>,
 }
 
 fn is_refreshable_windows_error(code: u32) -> bool {
@@ -173,6 +190,28 @@ impl RunnerTransport {
     pub(crate) fn into_files(self) -> (File, File) {
         (self.pipe_write, self.pipe_read)
     }
+    pub(crate) fn into_files_with_output(self) -> Result<(File, File, File, File)> {
+        let (stdout, stderr) = self
+            .direct_output
+            .context("current-user runner output pipes are missing")?;
+        Ok((self.pipe_write, self.pipe_read, stdout, stderr))
+    }
+}
+fn runner_output_pipe() -> Result<(File, File)> {
+    let mut read = 0;
+    let mut write = 0;
+    if unsafe { CreatePipe(&mut read, &mut write, ptr::null_mut(), 0) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("CreatePipe failed for runner output");
+    }
+    let read = unsafe { File::from_raw_handle(read as _) };
+    let write = unsafe { File::from_raw_handle(write as _) };
+    let write_handle = write.as_raw_handle() as _;
+    if unsafe { SetHandleInformation(write_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("SetHandleInformation failed for runner output");
+    }
+    Ok((read, write))
 }
 
 fn try_take_completed_connect_result(
@@ -311,15 +350,30 @@ fn connect_pipe_with_timeout(
 pub(crate) fn spawn_runner_transport(
     codex_home: &Path,
     cwd: &Path,
-    sandbox_creds: &SandboxCreds,
+    launch: RunnerLaunch<'_>,
     log_dir: Option<&Path>,
     spawn_request: SpawnRequest,
 ) -> Result<RunnerTransport> {
+    fn current_username() -> Result<String> {
+        let mut len: u32 = 0;
+        unsafe {
+            GetUserNameExW(NameSamCompatible, ptr::null_mut(), &mut len);
+        }
+        let mut buffer = vec![0; len as usize];
+        if unsafe { GetUserNameExW(NameSamCompatible, buffer.as_mut_ptr(), &mut len) } == 0 {
+            return Err(std::io::Error::last_os_error()).context("GetUserNameExW failed");
+        }
+        Ok(String::from_utf16_lossy(&buffer[..len as usize]))
+    }
     let (pipe_in_name, pipe_out_name) = pipe_pair();
-    let h_pipe_in =
-        create_named_pipe(&pipe_in_name, PIPE_ACCESS_OUTBOUND, &sandbox_creds.username)?;
-    let h_pipe_out =
-        create_named_pipe(&pipe_out_name, PIPE_ACCESS_INBOUND, &sandbox_creds.username)?;
+    let pipe_username = match launch {
+        RunnerLaunch::CurrentUser => current_username()?,
+        RunnerLaunch::Logon(sandbox_creds) => sandbox_creds.username.clone(),
+    };
+    let h_pipe_in = create_named_pipe(&pipe_in_name, PIPE_ACCESS_OUTBOUND, &pipe_username)?;
+    let pipe_in_guard = unsafe { File::from_raw_handle(h_pipe_in as _) };
+    let h_pipe_out = create_named_pipe(&pipe_out_name, PIPE_ACCESS_INBOUND, &pipe_username)?;
+    let pipe_out_guard = unsafe { File::from_raw_handle(h_pipe_out as _) };
 
     let runner_exe = find_runner_exe(codex_home, log_dir);
     let runner_cmdline = runner_exe
@@ -335,44 +389,104 @@ pub(crate) fn spawn_runner_transport(
     let mut cmdline_vec = to_wide(&runner_full_cmd);
     let exe_w = to_wide(&runner_cmdline);
     let cwd_w = to_wide(cwd);
-    let user_w = to_wide(&sandbox_creds.username);
-    let domain_w = to_wide(".");
-    let password_w = to_wide(&sandbox_creds.password);
-    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    let output_pipes = match launch {
+        RunnerLaunch::CurrentUser => {
+            let (stdout_read, stdout_write) = runner_output_pipe()?;
+            let (stderr_read, stderr_write) = runner_output_pipe()?;
+            Some((stdout_read, stdout_write, stderr_read, stderr_write))
+        }
+        RunnerLaunch::Logon(_) => None,
+    };
+    let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+    si.StartupInfo.cb = if output_pipes.is_some() {
+        std::mem::size_of::<STARTUPINFOEXW>() as u32
+    } else {
+        std::mem::size_of::<STARTUPINFOW>() as u32
+    };
+    let mut attrs = if let Some((_, stdout, _, stderr)) = output_pipes.as_ref() {
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdOutput = stdout.as_raw_handle() as _;
+        si.StartupInfo.hStdError = stderr.as_raw_handle() as _;
+        let mut attrs = ProcThreadAttributeList::new(/*attr_count*/ 1)?;
+        attrs.set_handle_list(vec![si.StartupInfo.hStdOutput, si.StartupInfo.hStdError])?;
+        Some(attrs)
+    } else {
+        None
+    };
+    if let Some(attrs) = attrs.as_mut() {
+        si.lpAttributeList = attrs.as_mut_ptr();
+    }
+    std::mem::forget(pipe_in_guard);
+    std::mem::forget(pipe_out_guard);
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let env_block: Option<Vec<u16>> = None;
 
     let previous_error_mode = unsafe { SetErrorMode(RUNNER_ERROR_MODE_FLAGS) };
+    let creation_flags = windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+        | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT
+        | if output_pipes.is_some() {
+            EXTENDED_STARTUPINFO_PRESENT
+        } else {
+            0
+        };
     let spawn_res = unsafe {
-        CreateProcessWithLogonW(
-            user_w.as_ptr(),
-            domain_w.as_ptr(),
-            password_w.as_ptr(),
-            LOGON_WITH_PROFILE,
-            exe_w.as_ptr(),
-            cmdline_vec.as_mut_ptr(),
-            windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
-                | windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT,
-            env_block
-                .as_ref()
-                .map(|block| block.as_ptr() as *const c_void)
-                .unwrap_or(ptr::null()),
-            cwd_w.as_ptr(),
-            &si,
-            &mut pi,
-        )
+        match launch {
+            RunnerLaunch::CurrentUser => CreateProcessW(
+                exe_w.as_ptr(),
+                cmdline_vec.as_mut_ptr(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                1,
+                creation_flags,
+                ptr::null(),
+                cwd_w.as_ptr(),
+                &si.StartupInfo,
+                &mut pi,
+            ),
+            RunnerLaunch::Logon(sandbox_creds) => {
+                let user_w = to_wide(&sandbox_creds.username);
+                let domain_w = to_wide(".");
+                let password_w = to_wide(&sandbox_creds.password);
+                CreateProcessWithLogonW(
+                    user_w.as_ptr(),
+                    domain_w.as_ptr(),
+                    password_w.as_ptr(),
+                    LOGON_WITH_PROFILE,
+                    exe_w.as_ptr(),
+                    cmdline_vec.as_mut_ptr(),
+                    creation_flags,
+                    env_block
+                        .as_ref()
+                        .map(|block| block.as_ptr() as *const c_void)
+                        .unwrap_or(ptr::null()),
+                    cwd_w.as_ptr(),
+                    &si.StartupInfo,
+                    &mut pi,
+                )
+            }
+        }
     };
     unsafe {
         SetErrorMode(previous_error_mode);
     }
+    let direct_output =
+        output_pipes.map(|(stdout_read, stdout_write, stderr_read, stderr_write)| {
+            drop(stdout_write);
+            drop(stderr_write);
+            (stdout_read, stderr_read)
+        });
     if spawn_res == 0 {
         let err = unsafe { GetLastError() };
         unsafe {
             CloseHandle(h_pipe_in);
             CloseHandle(h_pipe_out);
         }
-        return Err(RunnerLogonError { code: err }.into());
+        return match launch {
+            RunnerLaunch::CurrentUser => Err(std::io::Error::from_raw_os_error(err as i32))
+                .context("CreateProcessW failed for current-user runner"),
+            RunnerLaunch::Logon(_) => Err(RunnerLogonError { code: err }.into()),
+        };
     }
     let expected_runner_pid = pi.dwProcessId;
 
@@ -408,6 +522,7 @@ pub(crate) fn spawn_runner_transport(
         // From here on, the `RunnerTransport` owns closing the pipes on every success/error path.
         pipe_write: unsafe { File::from_raw_handle(h_pipe_in as _) },
         pipe_read: unsafe { File::from_raw_handle(h_pipe_out as _) },
+        direct_output,
     };
     let startup_result = (|| -> Result<()> {
         // Keep the runner process HANDLE alive until the *entire* startup handshake finishes.

@@ -5,12 +5,15 @@ use super::windows_common::start_runner_stdin_writer;
 use super::windows_common::start_runner_stdout_reader;
 use crate::identity::SandboxCreds;
 use crate::identity::refresh_logon_sandbox_creds;
+use crate::ipc_framed::ChildConsoleMode;
 use crate::ipc_framed::EmptyPayload;
 use crate::ipc_framed::FramedMessage;
 use crate::ipc_framed::IPC_PROTOCOL_VERSION;
 use crate::ipc_framed::Message;
+use crate::ipc_framed::RunnerExecutionMode;
 use crate::ipc_framed::SpawnRequest;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+use crate::runner_client::RunnerLaunch;
 use crate::runner_client::RunnerTransport;
 use crate::runner_client::retry_runner_spawn_once;
 use crate::runner_client::spawn_runner_transport;
@@ -99,7 +102,15 @@ async fn spawn_runner_transport_task(
         spawn_runner_transport_with_retry(
             sandbox_creds,
             &request,
-            spawn_runner_transport,
+            |codex_home, cwd, sandbox_creds, log_dir, request| {
+                spawn_runner_transport(
+                    codex_home,
+                    cwd,
+                    RunnerLaunch::Logon(sandbox_creds),
+                    log_dir,
+                    request,
+                )
+            },
             refresh_logon_sandbox_creds,
         )
     })
@@ -166,6 +177,8 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
             command,
             cwd: cwd.to_path_buf(),
             env: env_map,
+            execution_mode: RunnerExecutionMode::RestrictedToken,
+            child_console_mode: ChildConsoleMode::Inherit,
             permission_profile: permission_profile.clone(),
             workspace_roots: workspace_roots.to_vec(),
             codex_home: elevated.sandbox_base,
@@ -195,7 +208,6 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
         Some(broadcast::channel::<Vec<u8>>(256))
     };
     let (exit_tx, exit_rx) = oneshot::channel::<i32>();
-
     let outbound_tx = start_runner_pipe_writer(pipe_write);
     let writer_handle = start_runner_stdin_writer(writer_rx, outbound_tx.clone(), tty, stdin_open);
     let terminator = {

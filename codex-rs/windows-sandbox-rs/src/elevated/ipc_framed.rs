@@ -26,7 +26,7 @@ use std::path::PathBuf;
 const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
 
 /// Protocol version shared by the parent process and elevated command runner.
-pub const IPC_PROTOCOL_VERSION: u8 = 4;
+pub const IPC_PROTOCOL_VERSION: u8 = 5;
 
 /// Length-prefixed, JSON-encoded frame.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -60,6 +60,8 @@ pub struct SpawnRequest {
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
+    pub execution_mode: RunnerExecutionMode,
+    pub child_console_mode: ChildConsoleMode,
     pub permission_profile: PermissionProfile,
     pub workspace_roots: Vec<AbsolutePathBuf>,
     pub codex_home: PathBuf,
@@ -72,7 +74,19 @@ pub struct SpawnRequest {
     #[serde(default)]
     pub use_private_desktop: bool,
 }
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerExecutionMode {
+    CurrentUser,
+    RestrictedToken,
+}
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildConsoleMode {
+    Inherit,
+    NoWindow,
+}
 /// Ack from runner after it spawns the child process.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SpawnReady {
@@ -219,6 +233,8 @@ mod tests {
                     command: vec!["cmd.exe".to_string(), "/c".to_string(), "ver".to_string()],
                     cwd: PathBuf::from(r"C:\workspace"),
                     env: HashMap::new(),
+                    execution_mode: RunnerExecutionMode::RestrictedToken,
+                    child_console_mode: ChildConsoleMode::Inherit,
                     permission_profile: PermissionProfile::read_only(),
                     workspace_roots: workspace_roots.clone(),
                     codex_home: PathBuf::from(r"C:\codex"),

@@ -32,10 +32,12 @@ mod windows_impl {
     use crate::env::normalize_null_device_env;
     use crate::identity::refresh_logon_sandbox_creds;
     use crate::identity::require_logon_sandbox_creds;
+    use crate::ipc_framed::ChildConsoleMode;
     use crate::ipc_framed::EmptyPayload;
     use crate::ipc_framed::FramedMessage;
     use crate::ipc_framed::Message;
     use crate::ipc_framed::OutputStream;
+    use crate::ipc_framed::RunnerExecutionMode;
     use crate::ipc_framed::SpawnRequest;
     use crate::ipc_framed::decode_bytes;
     use crate::ipc_framed::read_frame;
@@ -44,6 +46,7 @@ mod windows_impl {
     use crate::logging::log_start;
     use crate::logging::log_success;
     use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+    use crate::runner_client::RunnerLaunch;
     use crate::runner_client::retry_runner_spawn_once;
     use crate::runner_client::spawn_runner_transport;
     use crate::sandbox_utils::ensure_codex_home_exists;
@@ -185,6 +188,8 @@ mod windows_impl {
                 command: command.clone(),
                 cwd: cwd.to_path_buf(),
                 env: env_map.clone(),
+                execution_mode: RunnerExecutionMode::RestrictedToken,
+                child_console_mode: ChildConsoleMode::Inherit,
                 permission_profile: permission_profile.clone(),
                 workspace_roots: workspace_roots.to_vec(),
                 codex_home: sandbox_base.clone(),
@@ -202,7 +207,7 @@ mod windows_impl {
                     spawn_runner_transport(
                         codex_home,
                         cwd,
-                        &sandbox_creds,
+                        RunnerLaunch::Logon(&sandbox_creds),
                         logs_base_dir,
                         spawn_request.clone(),
                     )

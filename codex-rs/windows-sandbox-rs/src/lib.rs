@@ -195,6 +195,8 @@ pub use identity::require_logon_sandbox_creds;
 #[cfg(target_os = "windows")]
 pub use identity::sandbox_setup_is_complete;
 #[cfg(target_os = "windows")]
+pub use ipc_framed::ChildConsoleMode;
+#[cfg(target_os = "windows")]
 pub use ipc_framed::ErrorPayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::ErrorStage;
@@ -212,6 +214,8 @@ pub use ipc_framed::OutputPayload;
 pub use ipc_framed::OutputStream;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::ResizePayload;
+#[cfg(target_os = "windows")]
+pub use ipc_framed::RunnerExecutionMode;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::SpawnReady;
 #[cfg(target_os = "windows")]
@@ -237,15 +241,15 @@ pub use logging::log_writer;
 #[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
-pub use process::ConsoleMode;
-#[cfg(target_os = "windows")]
 pub use process::PipeSpawnHandles;
+#[cfg(target_os = "windows")]
+pub use process::ProcessExecutionMode;
 #[cfg(target_os = "windows")]
 pub use process::StderrMode;
 #[cfg(target_os = "windows")]
 pub use process::StdinMode;
 #[cfg(target_os = "windows")]
-pub use process::create_process_as_user;
+pub use process::create_process;
 #[cfg(target_os = "windows")]
 pub use process::read_handle_loop;
 #[cfg(target_os = "windows")]
@@ -312,6 +316,8 @@ pub use token::get_current_token_for_restriction;
 #[cfg(target_os = "windows")]
 pub use unified_exec::WindowsSandboxSessionRequest;
 #[cfg(target_os = "windows")]
+pub use unified_exec::spawn_windows_current_user_runner_session;
+#[cfg(target_os = "windows")]
 pub use unified_exec::spawn_windows_sandbox_session_elevated_for_permission_profile;
 #[cfg(target_os = "windows")]
 pub use unified_exec::spawn_windows_sandbox_session_for_level;
@@ -353,11 +359,12 @@ pub use stub::run_windows_sandbox_legacy_preflight;
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
+    use super::ChildConsoleMode;
     use super::WindowsSandboxCancellationToken;
     use super::logging::log_failure;
     use super::logging::log_success;
-    use super::process::ConsoleMode;
-    use super::process::create_process_as_user;
+    use super::process::ProcessExecutionMode;
+    use super::process::create_process;
     use super::sandbox_utils::ensure_codex_home_exists;
     use super::spawn_prep::LegacyAclSids;
     use super::spawn_prep::SpawnPrepOptions;
@@ -567,14 +574,14 @@ mod windows_impl {
         let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
         let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (stdin_pair, stdout_pair, stderr_pair);
         let spawn_res = unsafe {
-            create_process_as_user(
-                security.h_token,
+            create_process(
+                ProcessExecutionMode::Token(security.h_token),
                 &command,
                 cwd,
                 &env_map,
                 logs_base_dir,
                 Some((in_r, out_w, err_w)),
-                ConsoleMode::Inherit,
+                ChildConsoleMode::Inherit,
                 use_private_desktop,
             )
         };

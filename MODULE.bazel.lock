@@ -942,6 +942,7 @@
       "foreign-types-shared_0.1.1": "{\"dependencies\":[],\"features\":{}}",
       "foreign-types_0.3.2": "{\"dependencies\":[{\"name\":\"foreign-types-shared\",\"req\":\"^0.1\"}],\"features\":{}}",
       "form_urlencoded_1.2.2": "{\"dependencies\":[{\"default_features\":false,\"name\":\"percent-encoding\",\"req\":\"^2.3.0\"}],\"features\":{\"alloc\":[\"percent-encoding/alloc\"],\"default\":[\"std\"],\"std\":[\"alloc\",\"percent-encoding/std\"]}}",
+      "fs2_0.4.3": "{\"dependencies\":[{\"name\":\"libc\",\"req\":\"^0.2.30\",\"target\":\"cfg(unix)\"},{\"kind\":\"dev\",\"name\":\"tempdir\",\"req\":\"^0.3\"},{\"features\":[\"handleapi\",\"processthreadsapi\",\"winerror\",\"fileapi\",\"winbase\",\"std\"],\"name\":\"winapi\",\"req\":\"^0.3\",\"target\":\"cfg(windows)\"}],\"features\":{}}",
       "fs_extra_1.3.0": "{\"dependencies\":[],\"features\":{}}",
       "fsevent-sys_4.1.0": "{\"dependencies\":[{\"name\":\"libc\",\"req\":\"^0.2.68\"}],\"features\":{}}",
       "fslock_0.2.1": "{\"dependencies\":[{\"default_features\":false,\"name\":\"libc\",\"req\":\"^0.2.66\",\"target\":\"cfg(unix)\"},{\"features\":[\"minwindef\",\"minwinbase\",\"winbase\",\"errhandlingapi\",\"winerror\",\"winnt\",\"synchapi\",\"handleapi\",\"fileapi\",\"processthreadsapi\"],\"name\":\"winapi\",\"req\":\"^0.3.8\",\"target\":\"cfg(windows)\"}],\"features\":{\"default\":[\"std\"],\"std\":[]}}",

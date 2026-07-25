@@ -2,9 +2,10 @@ use super::windows_common::finish_driver_spawn;
 use crate::conpty::ConptyInstance;
 use crate::conpty::spawn_conpty_process_as_user;
 use crate::desktop::LaunchDesktop;
+use crate::ipc_framed::ChildConsoleMode;
 use crate::logging::log_failure;
 use crate::logging::log_success;
-use crate::process::ConsoleMode;
+use crate::process::ProcessExecutionMode;
 use crate::process::StderrMode;
 use crate::process::StdinMode;
 use crate::process::read_handle_loop;
@@ -89,7 +90,7 @@ fn spawn_legacy_process(
         (pi, output_join, writer_handle, hpc, Some(conpty), None)
     } else {
         let pipe_handles = spawn_process_with_pipes(
-            h_token,
+            ProcessExecutionMode::Token(h_token),
             command,
             cwd,
             env_map,
@@ -99,7 +100,7 @@ fn spawn_legacy_process(
                 StdinMode::Closed
             },
             StderrMode::Separate,
-            ConsoleMode::Inherit,
+            ChildConsoleMode::Inherit,
             use_private_desktop,
             logs_base_dir,
         )?;
