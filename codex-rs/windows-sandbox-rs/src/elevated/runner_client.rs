@@ -371,7 +371,9 @@ pub(crate) fn spawn_runner_transport(
         RunnerLaunch::Logon(sandbox_creds) => sandbox_creds.username.clone(),
     };
     let h_pipe_in = create_named_pipe(&pipe_in_name, PIPE_ACCESS_OUTBOUND, &pipe_username)?;
+    let pipe_in_guard = unsafe { File::from_raw_handle(h_pipe_in as _) };
     let h_pipe_out = create_named_pipe(&pipe_out_name, PIPE_ACCESS_INBOUND, &pipe_username)?;
+    let pipe_out_guard = unsafe { File::from_raw_handle(h_pipe_out as _) };
 
     let runner_exe = find_runner_exe(codex_home, log_dir);
     let runner_cmdline = runner_exe
@@ -415,6 +417,8 @@ pub(crate) fn spawn_runner_transport(
     if let Some(attrs) = attrs.as_mut() {
         si.lpAttributeList = attrs.as_mut_ptr();
     }
+    std::mem::forget(pipe_in_guard);
+    std::mem::forget(pipe_out_guard);
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let env_block: Option<Vec<u16>> = None;
 

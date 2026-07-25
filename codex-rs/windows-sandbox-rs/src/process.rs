@@ -79,7 +79,6 @@ fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
         command.push(ch);
     }
     if quoted {
-        command.extend(std::iter::repeat_n('\\', backslashes));
         command.push('"');
     }
     Ok(())
@@ -98,10 +97,9 @@ fn batch_command_line(program: &Path, argv: &[String]) -> Result<String> {
 fn command_prompt() -> Result<Vec<u16>> {
     let mut system = [0; MAX_PATH as usize];
     let len = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), MAX_PATH) } as usize;
-    anyhow::ensure!(
-        len > 0 && len < system.len(),
-        "failed to resolve system directory"
-    );
+    if len == 0 || len >= system.len() {
+        return Err(anyhow!("system directory unavailable"));
+    }
     let mut path = system[..len].to_vec();
     path.extend(r"\cmd.exe".encode_utf16().chain([0]));
     Ok(path)
