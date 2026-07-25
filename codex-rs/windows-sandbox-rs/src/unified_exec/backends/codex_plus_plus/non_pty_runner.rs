@@ -1,27 +1,16 @@
 use super::windows_common::start_runner_pipe_writer;
 use super::windows_common::start_runner_stdin_writer;
 use super::windows_common::start_runner_stdout_reader;
-use crate::ipc_framed::ChildConsoleMode;
-use crate::ipc_framed::EmptyPayload;
-use crate::ipc_framed::FramedMessage;
-use crate::ipc_framed::IPC_PROTOCOL_VERSION;
-use crate::ipc_framed::Message;
-use crate::ipc_framed::RunnerExecutionMode;
-use crate::ipc_framed::SpawnRequest;
-use crate::runner_client::RunnerLaunch;
-use crate::runner_client::spawn_runner_transport;
+use crate::ipc_framed::{
+    ChildConsoleMode, EmptyPayload, FramedMessage, IPC_PROTOCOL_VERSION, Message,
+    RunnerExecutionMode, SpawnRequest,
+};
+use crate::runner_client::{RunnerLaunch, spawn_runner_transport};
 use anyhow::Result;
 use codex_protocol::models::PermissionProfile;
-use codex_utils_pty::DirectProcessDriver;
-use codex_utils_pty::SpawnedProcess;
-use codex_utils_pty::spawn_from_direct_driver;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use codex_utils_pty::{DirectProcessDriver, SpawnedProcess, spawn_from_direct_driver};
+use std::{collections::HashMap, fs::File, io::Read, path::Path};
+use tokio::sync::{broadcast, mpsc, oneshot};
 fn direct_output_receiver(mut file: File) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel(256);
     tokio::task::spawn_blocking(move || {
@@ -72,8 +61,6 @@ pub async fn spawn_current_user_runner_session(
     .map_err(|err| anyhow::anyhow!("runner handshake task failed: {err}"))??;
     let (pipe_write, pipe_read, stdout_file, stderr_file) = transport.into_files_with_output()?;
     let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
-    let stdout_rx = direct_output_receiver(stdout_file);
-    let stderr_rx = direct_output_receiver(stderr_file);
     let (exit_tx, exit_rx) = oneshot::channel::<i32>();
     let outbound_tx = start_runner_pipe_writer(pipe_write);
     let writer_handle =
@@ -90,8 +77,8 @@ pub async fn spawn_current_user_runner_session(
     start_runner_stdout_reader(pipe_read, discard_output, None, exit_tx);
     let spawned = spawn_from_direct_driver(DirectProcessDriver {
         writer_tx,
-        stdout_rx,
-        stderr_rx,
+        stdout_rx: direct_output_receiver(stdout_file),
+        stderr_rx: direct_output_receiver(stderr_file),
         exit_rx,
         terminator,
         writer_handle: Some(writer_handle),

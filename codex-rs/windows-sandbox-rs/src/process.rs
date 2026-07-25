@@ -18,6 +18,7 @@ use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::MAX_PATH;
 use windows_sys::Win32::Foundation::SetHandleInformation;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::Console::GetStdHandle;
@@ -25,6 +26,7 @@ use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
 use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
 use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
@@ -84,17 +86,23 @@ fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
     Ok(())
 }
 fn batch_command_line(program: &Path, argv: &[String]) -> Result<String> {
-    let program = program.to_string_lossy();
-    if program.contains('"') || program.ends_with('\\') {
-        anyhow::bail!("invalid Windows batch file path");
-    }
-    let mut command = format!("cmd.exe /e:ON /v:OFF /d /c \"\"{program}\"");
+    let mut command = "cmd.exe /e:ON /v:OFF /d /c \"".to_string();
+    append_batch_arg(&mut command, &program.to_string_lossy())?;
     for arg in &argv[1..] {
         command.push(' ');
         append_batch_arg(&mut command, arg)?;
     }
     command.push('"');
     Ok(command)
+}
+
+fn command_prompt() -> Result<Vec<u16>> {
+    let mut system = [0; MAX_PATH as usize];
+    let len = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), MAX_PATH) } as usize;
+    anyhow::ensure!(len > 0 && len < system.len(), "failed to resolve system directory");
+    let mut path = system[..len].to_vec();
+    path.extend(r"\cmd.exe".encode_utf16().chain([0]));
+    Ok(path)
 }
 
 pub fn make_env_block(env: &HashMap<String, String>) -> Vec<u16> {
@@ -183,7 +191,9 @@ pub unsafe fn create_process(
     let mut cmdline: Vec<u16> = to_wide(&cmdline_str);
     let env_block = make_env_block(env_map);
     let desktop = LaunchDesktop::prepare(use_private_desktop, logs_base_dir)?;
-    let application_name = if request_path.is_some() && !is_batch {
+    let application_name = if is_batch {
+        Some(command_prompt()?)
+    } else if request_path.is_some() {
         resolved_program.as_ref().map(to_wide)
     } else {
         None
