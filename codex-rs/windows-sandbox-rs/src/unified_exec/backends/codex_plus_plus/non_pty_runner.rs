@@ -5,10 +5,14 @@ use codex_utils_pty as pty;
 use tokio::sync;
 fn direct_output_channel(
     mut file: std::fs::File,
-) -> (sync::mpsc::Sender<Vec<u8>>, sync::mpsc::Receiver<Vec<u8>>) {
+) -> (
+    sync::mpsc::Sender<Vec<u8>>,
+    sync::mpsc::Receiver<Vec<u8>>,
+    tokio::task::JoinHandle<()>,
+) {
     let (tx, rx) = sync::mpsc::channel(256);
     let reader_tx = tx.clone();
-    tokio::task::spawn_blocking(move || {
+    let reader_handle = tokio::task::spawn_blocking(move || {
         let mut buffer = [0; 8192];
         while let Ok(count) = std::io::Read::read(&mut file, &mut buffer) {
             if count == 0 || reader_tx.blocking_send(buffer[..count].to_vec()).is_err() {
@@ -16,7 +20,7 @@ fn direct_output_channel(
             }
         }
     });
-    (tx, rx)
+    (tx, rx, reader_handle)
 }
 pub async fn spawn_current_user_runner_session(
     codex_home: &std::path::Path,
@@ -57,8 +61,8 @@ pub async fn spawn_current_user_runner_session(
     let (pipe_write, pipe_read, stdout_file, stderr_file) = transport.into_files_with_output()?;
     let (writer_tx, writer_rx) = sync::mpsc::channel::<Vec<u8>>(128);
     let (exit_tx, exit_rx) = sync::oneshot::channel::<i32>();
-    let (stdout_tx, stdout_rx) = direct_output_channel(stdout_file);
-    let (stderr_tx, stderr_rx) = direct_output_channel(stderr_file);
+    let (stdout_tx, stdout_rx, stdout_reader_handle) = direct_output_channel(stdout_file);
+    let (stderr_tx, stderr_rx, stderr_reader_handle) = direct_output_channel(stderr_file);
     drop(stdout_tx);
     let outbound_tx = runner::start_runner_pipe_writer(pipe_write);
     let writer_handle =
@@ -75,6 +79,8 @@ pub async fn spawn_current_user_runner_session(
         stdout_rx,
         stderr_rx,
         exit_rx,
+        stdout_reader_handle,
+        stderr_reader_handle,
         writer_handle: Some(writer_handle),
         terminator: Some(Box::new(move || {
             let _ = outbound_tx.send(ipc::FramedMessage {
