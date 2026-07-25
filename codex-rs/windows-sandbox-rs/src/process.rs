@@ -32,7 +32,6 @@ use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
 use windows_sys::Win32::System::Threading::CreateProcessW;
-use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
@@ -99,7 +98,10 @@ fn batch_command_line(program: &Path, argv: &[String]) -> Result<String> {
 fn command_prompt() -> Result<Vec<u16>> {
     let mut system = [0; MAX_PATH as usize];
     let len = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), MAX_PATH) } as usize;
-    anyhow::ensure!(len > 0 && len < system.len(), "failed to resolve system directory");
+    anyhow::ensure!(
+        len > 0 && len < system.len(),
+        "failed to resolve system directory"
+    );
     let mut path = system[..len].to_vec();
     path.extend(r"\cmd.exe".encode_utf16().chain([0]));
     Ok(path)
@@ -182,7 +184,9 @@ pub unsafe fn create_process(
     });
     let cmdline_str = if is_batch {
         batch_command_line(
-            resolved_program.as_deref().expect("resolved batch path"),
+            resolved_program
+                .as_deref()
+                .context("resolved batch path missing")?,
             argv,
         )?
     } else {
@@ -198,9 +202,7 @@ pub unsafe fn create_process(
     } else {
         None
     };
-    let application_name = application_name
-        .as_ref()
-        .map_or(ptr::null(), |path| path.as_ptr());
+    let application_name = application_name.as_ref().map_or(ptr::null(), Vec::as_ptr);
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     let cwd_wide = to_wide(cwd);
     let env_block_len = env_block.len();
@@ -241,11 +243,6 @@ pub unsafe fn create_process(
                 }
                 | match console_mode {
                     ChildConsoleMode::Inherit => 0,
-                    ChildConsoleMode::NoWindow
-                        if matches!(user, ProcessExecutionMode::CurrentUser) =>
-                    {
-                        DETACHED_PROCESS
-                    }
                     ChildConsoleMode::NoWindow => CREATE_NO_WINDOW,
                 };
             let ok = match user {

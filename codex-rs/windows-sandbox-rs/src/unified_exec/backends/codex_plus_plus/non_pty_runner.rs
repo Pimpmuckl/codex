@@ -1,21 +1,13 @@
-use super::windows_common::start_runner_pipe_writer;
-use super::windows_common::start_runner_stdin_writer;
-use super::windows_common::start_runner_stdout_reader;
-use crate::ipc_framed::{
-    ChildConsoleMode, EmptyPayload, FramedMessage, IPC_PROTOCOL_VERSION, Message,
-    RunnerExecutionMode, SpawnRequest,
-};
-use crate::runner_client::{RunnerLaunch, spawn_runner_transport};
-use anyhow::Result;
-use codex_protocol::models::PermissionProfile;
-use codex_utils_pty::{DirectProcessDriver, SpawnedProcess, spawn_from_direct_driver};
-use std::{collections::HashMap, fs::File, io::Read, path::Path};
-use tokio::sync::{broadcast, mpsc, oneshot};
-fn direct_output_receiver(mut file: File) -> mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = mpsc::channel(256);
+use super::windows_common as runner;
+use crate::ipc_framed as ipc;
+use crate::runner_client as client;
+use codex_utils_pty as pty;
+use tokio::sync;
+fn direct_output_receiver(mut file: std::fs::File) -> sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = sync::mpsc::channel(256);
     tokio::task::spawn_blocking(move || {
         let mut buffer = [0; 8192];
-        while let Ok(count) = file.read(&mut buffer) {
+        while let Ok(count) = std::io::Read::read(&mut file, &mut buffer) {
             if count == 0 || tx.blocking_send(buffer[..count].to_vec()).is_err() {
                 break;
             }
@@ -24,21 +16,21 @@ fn direct_output_receiver(mut file: File) -> mpsc::Receiver<Vec<u8>> {
     rx
 }
 pub async fn spawn_current_user_runner_session(
-    codex_home: &Path,
+    codex_home: &std::path::Path,
     command: Vec<String>,
-    cwd: &Path,
-    env: HashMap<String, String>,
+    cwd: &std::path::Path,
+    env: std::collections::HashMap<String, String>,
     stdin_open: bool,
-) -> Result<SpawnedProcess> {
+) -> anyhow::Result<pty::SpawnedProcess> {
     let codex_home = codex_home.to_path_buf();
     let cwd = cwd.to_path_buf();
-    let request = SpawnRequest {
+    let request = ipc::SpawnRequest {
         command,
         cwd: cwd.clone(),
         env,
-        execution_mode: RunnerExecutionMode::CurrentUser,
-        child_console_mode: ChildConsoleMode::NoWindow,
-        permission_profile: PermissionProfile::Disabled,
+        execution_mode: ipc::RunnerExecutionMode::CurrentUser,
+        child_console_mode: ipc::ChildConsoleMode::Inherit,
+        permission_profile: codex_protocol::models::PermissionProfile::Disabled,
         workspace_roots: Vec::new(),
         codex_home: codex_home.clone(),
         real_codex_home: codex_home.clone(),
@@ -49,10 +41,10 @@ pub async fn spawn_current_user_runner_session(
         use_private_desktop: false,
     };
     let transport = tokio::task::spawn_blocking(move || {
-        spawn_runner_transport(
+        client::spawn_runner_transport(
             &codex_home,
             &cwd,
-            RunnerLaunch::CurrentUser,
+            client::RunnerLaunch::CurrentUser,
             /*log_dir*/ None,
             request,
         )
@@ -60,28 +52,26 @@ pub async fn spawn_current_user_runner_session(
     .await
     .map_err(|err| anyhow::anyhow!("runner handshake task failed: {err}"))??;
     let (pipe_write, pipe_read, stdout_file, stderr_file) = transport.into_files_with_output()?;
-    let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
-    let (exit_tx, exit_rx) = oneshot::channel::<i32>();
-    let outbound_tx = start_runner_pipe_writer(pipe_write);
+    let (writer_tx, writer_rx) = sync::mpsc::channel::<Vec<u8>>(128);
+    let (exit_tx, exit_rx) = sync::oneshot::channel::<i32>();
+    let outbound_tx = runner::start_runner_pipe_writer(pipe_write);
     let writer_handle =
-        start_runner_stdin_writer(writer_rx, outbound_tx.clone(), false, stdin_open);
-    let terminator = Some(Box::new(move || {
-        let _ = outbound_tx.send(FramedMessage {
-            version: IPC_PROTOCOL_VERSION,
-            message: Message::Terminate {
-                payload: EmptyPayload::default(),
-            },
-        });
-    }) as Box<dyn FnMut() + Send + Sync>);
-    let (discard_output, _) = broadcast::channel(1);
-    start_runner_stdout_reader(pipe_read, discard_output, None, exit_tx);
-    let spawned = spawn_from_direct_driver(DirectProcessDriver {
+        runner::start_runner_stdin_writer(writer_rx, outbound_tx.clone(), false, stdin_open);
+    runner::start_runner_stdout_reader(pipe_read, sync::broadcast::channel(1).0, None, exit_tx);
+    let spawned = pty::spawn_from_direct_driver(pty::DirectProcessDriver {
         writer_tx,
         stdout_rx: direct_output_receiver(stdout_file),
         stderr_rx: direct_output_receiver(stderr_file),
         exit_rx,
-        terminator,
         writer_handle: Some(writer_handle),
+        terminator: Some(Box::new(move || {
+            let _ = outbound_tx.send(ipc::FramedMessage {
+                version: ipc::IPC_PROTOCOL_VERSION,
+                message: ipc::Message::Terminate {
+                    payload: ipc::EmptyPayload::default(),
+                },
+            });
+        })),
     });
     if !stdin_open {
         spawned.session.close_stdin();

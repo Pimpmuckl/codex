@@ -32,11 +32,10 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use windows_sys::Win32::System::Console::GetConsoleProcessList as console_processes;
 
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
-const RUNNER_PROBE_ENV: &str = "CODEX_RUNNER_PROBE";
-const RUNNER_TEST_FILTER: &str = "isolates_console_and_closes_descendants";
 
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
@@ -125,13 +124,14 @@ async fn collect_stdout_and_exit(
 ) -> (Vec<u8>, i32) {
     let codex_utils_pty::SpawnedProcess {
         session: _session,
-        mut stdout_rx,
-        stderr_rx: _stderr_rx,
+        stdout_rx,
+        stderr_rx,
         exit_rx,
     } = spawned;
+    let mut output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
     let stdout_task = tokio::spawn(async move {
         let mut stdout = Vec::new();
-        while let Some(chunk) = stdout_rx.recv().await {
+        while let Ok(chunk) = output_rx.recv().await {
             stdout.extend(chunk);
         }
         stdout
@@ -152,9 +152,17 @@ async fn collect_stdout_and_exit(
     (stdout, exit_code)
 }
 #[test]
+#[allow(clippy::zombie_processes)]
 fn current_user_runner_isolates_console_and_closes_descendants() {
-    if std::env::var_os(RUNNER_PROBE_ENV).is_some() {
-        assert!(fs::File::open("CONIN$").is_err());
+    if std::env::var_os("CODEX_RUNNER_PROBE").is_some() {
+        let mut console_pids = [0; 8];
+        let count =
+            unsafe { console_processes(console_pids.as_mut_ptr(), console_pids.len() as u32) }
+                as usize;
+        let parent_pid = std::env::var("CODEX_PARENT_PID").unwrap().parse().unwrap();
+        assert!(count <= console_pids.len() && !console_pids[..count].contains(&parent_pid));
+        println!("native-stdout");
+        eprintln!("native-stderr");
         std::process::Command::new(std::env::var_os("ComSpec").unwrap()).args(["/d", "/c", r#""%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul & echo survived > "%CODEX_RUNNER_PROBE%""#]).spawn().unwrap();
         return;
     }
@@ -168,19 +176,20 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         fs::copy(std::env::current_exe().unwrap(), &probe).unwrap();
         let mut env: HashMap<_, _> = std::env::vars().collect();
         env.insert("Path".into(), codex_home.path().display().to_string());
-        env.insert(RUNNER_PROBE_ENV.into(), marker.display().to_string());
+        env.insert("CODEX_RUNNER_PROBE".into(), marker.display().to_string());
+        env.insert("CODEX_PARENT_PID".into(), std::process::id().to_string());
         let spawned = spawn_windows_current_user_runner_session(
             codex_home.path(),
-            vec!["runner-probe.exe".into(), RUNNER_TEST_FILTER.into()],
+            vec![std::env::var("ComSpec").unwrap(), "/d".into(), "/c".into(), "echo shell-stdout & echo shell-stderr 1>&2 & runner-probe.exe isolates_console_and_closes_descendants --nocapture".into()],
             &sandbox_cwd(),
             env,
             false,
         )
         .await
         .expect("spawn current-user runner");
-        let (_, exit) =
+        let (output, exit) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
-        assert_eq!(exit, 0);
+        assert!(exit == 0 && ["shell-stdout", "shell-stderr", "native-stdout", "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)));
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists());
     });

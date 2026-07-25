@@ -1,4 +1,5 @@
-use super::{batch_command_line, make_env_block};
+use super::batch_command_line;
+use super::make_env_block;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 #[test]
