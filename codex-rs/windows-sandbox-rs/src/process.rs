@@ -30,6 +30,7 @@ use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
 use windows_sys::Win32::System::Threading::CreateProcessW;
+use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
@@ -47,7 +48,6 @@ pub enum ProcessExecutionMode {
     CurrentUser,
     Token(HANDLE),
 }
-
 fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
     if arg.contains(['\0', '\r', '\n']) {
         anyhow::bail!("batch file arguments may not contain NUL or newlines");
@@ -83,7 +83,6 @@ fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
     }
     Ok(())
 }
-
 fn batch_command_line(program: &Path, argv: &[String]) -> Result<String> {
     let program = program.to_string_lossy();
     if program.contains('"') || program.ends_with('\\') {
@@ -142,7 +141,7 @@ unsafe fn ensure_inheritable_stdio(si: &mut STARTUPINFOW) -> Result<()> {
 /// and the `argv`, `cwd`, and `env_map` must remain valid for the duration of the call.
 // Low-level CreateProcessAsUserW wrapper mirrors the Windows API shape.
 #[allow(clippy::too_many_arguments)]
-unsafe fn create_process(
+pub unsafe fn create_process(
     user: ProcessExecutionMode,
     argv: &[String],
     cwd: &Path,
@@ -174,7 +173,10 @@ unsafe fn create_process(
             .is_some_and(|ext| ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd"))
     });
     let cmdline_str = if is_batch {
-        batch_command_line(resolved_program.as_deref().expect("resolved batch path"), argv)?
+        batch_command_line(
+            resolved_program.as_deref().expect("resolved batch path"),
+            argv,
+        )?
     } else {
         argv_to_command_line(argv)
     };
@@ -229,6 +231,11 @@ unsafe fn create_process(
                 }
                 | match console_mode {
                     ChildConsoleMode::Inherit => 0,
+                    ChildConsoleMode::NoWindow
+                        if matches!(user, ProcessExecutionMode::CurrentUser) =>
+                    {
+                        DETACHED_PROCESS
+                    }
                     ChildConsoleMode::NoWindow => CREATE_NO_WINDOW,
                 };
             let ok = match user {
@@ -325,30 +332,6 @@ unsafe fn create_process(
         }
     }
 }
-
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn create_process_as_user(
-    h_token: HANDLE,
-    argv: &[String],
-    cwd: &Path,
-    env_map: &HashMap<String, String>,
-    logs_base_dir: Option<&Path>,
-    stdio: Option<(HANDLE, HANDLE, HANDLE)>,
-    console_mode: ChildConsoleMode,
-    use_private_desktop: bool,
-) -> Result<CreatedProcess> {
-    create_process(
-        ProcessExecutionMode::Token(h_token),
-        argv,
-        cwd,
-        env_map,
-        logs_base_dir,
-        stdio,
-        console_mode,
-        use_private_desktop,
-    )
-}
-
 /// Controls whether the child's stdin handle is kept open for writing.
 #[allow(dead_code)]
 pub enum StdinMode {
@@ -523,7 +506,6 @@ where
         }
     })
 }
-
 #[cfg(test)]
 #[path = "process_tests.rs"]
 mod tests;

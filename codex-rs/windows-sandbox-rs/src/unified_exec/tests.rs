@@ -1,7 +1,7 @@
 #![cfg(target_os = "windows")]
 
-use super::spawn_windows_sandbox_session_legacy;
 use super::spawn_windows_current_user_runner_session;
+use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
 use crate::ipc_framed::Message;
 use crate::ipc_framed::decode_bytes;
@@ -35,6 +35,8 @@ use tokio::time::timeout;
 
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+const RUNNER_PROBE_ENV: &str = "CODEX_RUNNER_PROBE";
+const RUNNER_TEST_FILTER: &str = "isolates_console_and_closes_descendants";
 
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
@@ -151,32 +153,36 @@ async fn collect_stdout_and_exit(
 }
 #[test]
 fn current_user_runner_isolates_console_and_closes_descendants() {
+    if std::env::var_os(RUNNER_PROBE_ENV).is_some() {
+        assert!(fs::File::open("CONIN$").is_err());
+        std::process::Command::new(std::env::var_os("ComSpec").unwrap()).args(["/d", "/c", r#""%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul & echo survived > "%CODEX_RUNNER_PROBE%""#]).spawn().unwrap();
+        return;
+    }
     if codex_utils_cargo_bin::cargo_bin("codex-command-runner").is_err() {
         return;
     }
-    let Some(pwsh) = pwsh_path() else {
-        return;
-    };
     current_thread_runtime().block_on(async move {
         let codex_home = sandbox_home("current-user-runner");
-        let probe = codex_home.path().join("runner-probe.cmd");
-        fs::write(&probe, format!(r#"@"{}" -NoProfile -Command "try {{ [IO.File]::OpenRead('CONIN$').Dispose(); exit 2 }} catch {{}}; Start-Process -NoNewWindow -FilePath $env:ComSpec -ArgumentList '/d /c ping -n 30 127.0.0.1 >nul'; 'descendant-started'""#, pwsh.display())).unwrap();
+        let marker = codex_home.path().join("descendant-survived");
+        let probe = codex_home.path().join("runner-probe.exe");
+        fs::copy(std::env::current_exe().unwrap(), &probe).unwrap();
         let mut env: HashMap<_, _> = std::env::vars().collect();
         env.insert("Path".into(), codex_home.path().display().to_string());
+        env.insert(RUNNER_PROBE_ENV.into(), marker.display().to_string());
         let spawned = spawn_windows_current_user_runner_session(
             codex_home.path(),
-            vec!["runner-probe.cmd".into()],
+            vec!["runner-probe.exe".into(), RUNNER_TEST_FILTER.into()],
             &sandbox_cwd(),
             env,
             false,
         )
         .await
         .expect("spawn current-user runner");
-        let (stdout, exit) =
+        let (_, exit) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
         assert_eq!(exit, 0);
-        let stdout = String::from_utf8_lossy(&stdout);
-        assert!(stdout.contains("descendant-started"));
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!marker.exists());
     });
 }
 

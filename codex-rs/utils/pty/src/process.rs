@@ -387,7 +387,9 @@ pub fn spawn_from_direct_driver(driver: DirectProcessDriver) -> SpawnedProcess {
         }),
         tokio::spawn(async {}),
         Vec::new(),
-        driver.writer_handle.unwrap_or_else(|| tokio::spawn(async {})),
+        driver
+            .writer_handle
+            .unwrap_or_else(|| tokio::spawn(async {})),
         wait_handle,
         exit_status,
         exit_code,

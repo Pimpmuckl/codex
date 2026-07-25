@@ -26,12 +26,12 @@ use codex_windows_sandbox::OutputStream;
 use codex_windows_sandbox::PipeSpawnHandles;
 use codex_windows_sandbox::ProcessExecutionMode;
 use codex_windows_sandbox::ResizePayload;
+use codex_windows_sandbox::RunnerExecutionMode;
 use codex_windows_sandbox::SpawnReady;
 use codex_windows_sandbox::SpawnRequest;
 use codex_windows_sandbox::StderrMode;
 use codex_windows_sandbox::StdinMode;
 use codex_windows_sandbox::WindowsSandboxTokenMode;
-use codex_windows_sandbox::RunnerExecutionMode;
 use codex_windows_sandbox::allow_null_device;
 use codex_windows_sandbox::create_readonly_token_with_caps_and_user_from;
 use codex_windows_sandbox::create_workspace_write_token_with_caps_and_user_from;
@@ -263,10 +263,9 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
         if req.tty {
             anyhow::bail!("runner: current-user execution is non-TTY only");
         }
-        let stdin_mode = if req.stdin_open {
-            StdinMode::Open
-        } else {
-            StdinMode::Closed
+        let stdin_mode = match req.stdin_open {
+            true => StdinMode::Open,
+            false => StdinMode::Closed,
         };
         let pipes = spawn_process_with_pipes(
             ProcessExecutionMode::CurrentUser,
@@ -281,17 +280,15 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
         )?;
         let job = assign_process_to_job(pipes.process.hProcess)?;
         if unsafe { ResumeThread(pipes.process.hThread) } == u32::MAX {
-            unsafe {
-                let _ = TerminateJobObject(job.raw(), 1);
-            }
+            let _ = unsafe { TerminateJobObject(job.raw(), 1) };
             return Err(std::io::Error::last_os_error()).context("ResumeThread failed");
         }
         return Ok(IpcSpawnedProcess {
             log_dir: req.codex_home.clone(),
             pi: pipes.process,
             job,
-            stdout_handle: windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE,
-            stderr_handle: windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE,
+            stdout_handle: INVALID_HANDLE_VALUE,
+            stderr_handle: INVALID_HANDLE_VALUE,
             stdin_handle: pipes.stdin_write,
             conpty_owner: None,
             hpc_handle: None,
@@ -421,9 +418,7 @@ fn assign_process_to_job(process: HANDLE) -> Result<Arc<OwnedWinHandle>> {
     let job = unsafe { create_job_kill_on_close()? };
     if unsafe { AssignProcessToJobObject(job.raw(), process) } == 0 {
         let err = std::io::Error::last_os_error();
-        unsafe {
-            let _ = TerminateProcess(process, 1);
-        }
+        let _ = unsafe { TerminateProcess(process, 1) };
         return Err(err).context("AssignProcessToJobObject failed");
     }
     Ok(Arc::new(job))
@@ -553,11 +548,9 @@ fn spawn_input_loop(
                         }
                     }
                 }
-                Message::Terminate { .. } => {
-                    unsafe {
-                        let _ = TerminateJobObject(job.raw(), 1);
-                    }
-                }
+                Message::Terminate { .. } => unsafe {
+                    let _ = TerminateJobObject(job.raw(), 1);
+                },
                 Message::SpawnRequest { .. } => {}
                 Message::SpawnReady { .. } => {}
                 Message::Output { .. } => {}
@@ -659,16 +652,15 @@ pub fn main() -> Result<()> {
         return Err(err);
     }
     let log_dir_owned = log_dir.map(Path::to_path_buf);
-    let out_thread =
-        (stdout_handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE).then(|| {
-            spawn_output_reader(
-                Arc::clone(&pipe_write),
-                stdout_handle,
-                OutputStream::Stdout,
-                log_dir_owned.clone(),
-            )
-        });
-    let err_thread = if stderr_handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+    let out_thread = (stdout_handle != INVALID_HANDLE_VALUE).then(|| {
+        spawn_output_reader(
+            Arc::clone(&pipe_write),
+            stdout_handle,
+            OutputStream::Stdout,
+            log_dir_owned.clone(),
+        )
+    });
+    let err_thread = if stderr_handle != INVALID_HANDLE_VALUE {
         Some(spawn_output_reader(
             Arc::clone(&pipe_write),
             stderr_handle,

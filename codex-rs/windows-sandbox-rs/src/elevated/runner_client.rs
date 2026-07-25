@@ -39,14 +39,14 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::SetHandleInformation;
+use windows_sys::Win32::Security::Authentication::Identity::GetUserNameExW;
+use windows_sys::Win32::Security::Authentication::Identity::NameSamCompatible;
 use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-use windows_sys::Win32::Security::Authentication::Identity::GetUserNameExW;
-use windows_sys::Win32::Security::Authentication::Identity::NameSamCompatible;
-use windows_sys::Win32::System::Threading::CreateProcessWithLogonW;
 use windows_sys::Win32::System::Threading::CreateProcessW;
+use windows_sys::Win32::System::Threading::CreateProcessWithLogonW;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::GetCurrentThread;
@@ -205,7 +205,9 @@ fn runner_output_pipe() -> Result<(File, File)> {
     }
     let read = unsafe { File::from_raw_handle(read as _) };
     let write = unsafe { File::from_raw_handle(write as _) };
-    if unsafe { SetHandleInformation(write.as_raw_handle() as _, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+    let write_handle = write.as_raw_handle() as _;
+    if unsafe { SetHandleInformation(write_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0
+    {
         return Err(std::io::Error::last_os_error())
             .context("SetHandleInformation failed for runner output");
     }
@@ -363,7 +365,6 @@ pub(crate) fn spawn_runner_transport(
         }
         Ok(String::from_utf16_lossy(&buffer[..len as usize]))
     }
-
     let (pipe_in_name, pipe_out_name) = pipe_pair();
     let pipe_username = match launch {
         RunnerLaunch::CurrentUser => current_username()?,
@@ -465,11 +466,12 @@ pub(crate) fn spawn_runner_transport(
     unsafe {
         SetErrorMode(previous_error_mode);
     }
-    let direct_output = output_pipes.map(|(stdout_read, stdout_write, stderr_read, stderr_write)| {
-        drop(stdout_write);
-        drop(stderr_write);
-        (stdout_read, stderr_read)
-    });
+    let direct_output =
+        output_pipes.map(|(stdout_read, stdout_write, stderr_read, stderr_write)| {
+            drop(stdout_write);
+            drop(stderr_write);
+            (stdout_read, stderr_read)
+        });
     if spawn_res == 0 {
         let err = unsafe { GetLastError() };
         unsafe {

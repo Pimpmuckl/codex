@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 fn direct_output_receiver(mut file: File) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel(256);
     tokio::task::spawn_blocking(move || {
@@ -32,7 +34,6 @@ fn direct_output_receiver(mut file: File) -> mpsc::Receiver<Vec<u8>> {
     });
     rx
 }
-
 pub async fn spawn_current_user_runner_session(
     codex_home: &Path,
     command: Vec<String>,
@@ -69,8 +70,7 @@ pub async fn spawn_current_user_runner_session(
     })
     .await
     .map_err(|err| anyhow::anyhow!("runner handshake task failed: {err}"))??;
-    let (pipe_write, pipe_read, stdout_file, stderr_file) =
-        transport.into_files_with_output()?;
+    let (pipe_write, pipe_read, stdout_file, stderr_file) = transport.into_files_with_output()?;
     let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let stdout_rx = direct_output_receiver(stdout_file);
     let stderr_rx = direct_output_receiver(stderr_file);

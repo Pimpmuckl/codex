@@ -195,6 +195,8 @@ pub use identity::require_logon_sandbox_creds;
 #[cfg(target_os = "windows")]
 pub use identity::sandbox_setup_is_complete;
 #[cfg(target_os = "windows")]
+pub use ipc_framed::ChildConsoleMode;
+#[cfg(target_os = "windows")]
 pub use ipc_framed::ErrorPayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::ErrorStage;
@@ -211,11 +213,9 @@ pub use ipc_framed::OutputPayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::OutputStream;
 #[cfg(target_os = "windows")]
-pub use ipc_framed::ChildConsoleMode;
+pub use ipc_framed::ResizePayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::RunnerExecutionMode;
-#[cfg(target_os = "windows")]
-pub use ipc_framed::ResizePayload;
 #[cfg(target_os = "windows")]
 pub use ipc_framed::SpawnReady;
 #[cfg(target_os = "windows")]
@@ -249,7 +249,7 @@ pub use process::StderrMode;
 #[cfg(target_os = "windows")]
 pub use process::StdinMode;
 #[cfg(target_os = "windows")]
-pub use process::create_process_as_user;
+pub use process::create_process;
 #[cfg(target_os = "windows")]
 pub use process::read_handle_loop;
 #[cfg(target_os = "windows")]
@@ -359,11 +359,12 @@ pub use stub::run_windows_sandbox_legacy_preflight;
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
+    use super::ChildConsoleMode;
     use super::WindowsSandboxCancellationToken;
     use super::logging::log_failure;
     use super::logging::log_success;
-    use super::ChildConsoleMode;
-    use super::process::create_process_as_user;
+    use super::process::ProcessExecutionMode;
+    use super::process::create_process;
     use super::sandbox_utils::ensure_codex_home_exists;
     use super::spawn_prep::LegacyAclSids;
     use super::spawn_prep::SpawnPrepOptions;
@@ -573,8 +574,8 @@ mod windows_impl {
         let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
         let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (stdin_pair, stdout_pair, stderr_pair);
         let spawn_res = unsafe {
-            create_process_as_user(
-                security.h_token,
+            create_process(
+                ProcessExecutionMode::Token(security.h_token),
                 &command,
                 cwd,
                 &env_map,
