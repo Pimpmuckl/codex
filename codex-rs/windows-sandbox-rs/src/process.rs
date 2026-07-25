@@ -50,8 +50,8 @@ pub enum ProcessExecutionMode {
     Token(HANDLE),
 }
 fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
-    if arg.contains(['\0', '\r', '\n']) {
-        anyhow::bail!("batch file arguments may not contain NUL or newlines");
+    if arg.contains(['\0', '\r', '\n', '"']) {
+        anyhow::bail!("batch file arguments may not contain NUL, quotes, or newlines");
     }
     const UNQUOTED: &str = r"#$*+-./:?@\_";
     let quoted = arg.is_empty()

@@ -178,18 +178,15 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         let probe = codex_home.path().join("runner-probe.exe");
         fs::copy(std::env::current_exe().unwrap(), &probe).unwrap();
         let batch = codex_home.path().join("runner-probe.cmd");
-        fs::write(
-            &batch,
-            "@echo shell-stdout\r\n@echo shell-stderr 1>&2\r\n@set CODEX_BATCH_ARG=%~1\r\n@runner-probe.exe isolates_console_and_closes_descendants --nocapture\r\n",
-        )
-        .unwrap();
+        let script = "@echo shell-stdout\r\n@echo shell-stderr 1>&2\r\n@set CODEX_BATCH_ARG=%~1\r\n@runner-probe.exe isolates_console_and_closes_descendants --nocapture\r\n";
+        fs::write(&batch, script).unwrap();
         let mut env: HashMap<_, _> = std::env::vars().collect();
         env.insert("Path".into(), codex_home.path().display().to_string());
         env.insert("CODEX_RUNNER_PROBE".into(), marker.display().to_string());
         env.insert("CODEX_PARENT_PID".into(), std::process::id().to_string());
         let spawned = spawn_windows_current_user_runner_session(
             codex_home.path(),
-            vec![batch.display().to_string(), r#"C:\dir\"quoted\"#.into()],
+            vec![batch.display().to_string(), r"C:\dir\".into()],
             &sandbox_cwd(),
             env,
             false,
@@ -198,7 +195,7 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         .expect("spawn current-user runner");
         let (output, exit) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
-        assert!(exit == 0 && ["shell-stdout", "shell-stderr", r#"native-stdout:C:\dir\"quoted\"#, "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)), "exit={exit}, output={output:?}");
+        assert!(exit == 0 && ["shell-stdout", "shell-stderr", r"native-stdout:C:\dir\", "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)), "exit={exit}, output={output:?}");
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists());
     });
