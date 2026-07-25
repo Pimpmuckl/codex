@@ -5,12 +5,13 @@ use codex_windows_sandbox::SpawnRequest;
 use codex_windows_sandbox::StderrMode;
 use codex_windows_sandbox::StdinMode;
 use codex_windows_sandbox::spawn_process_with_pipes;
+use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 use windows_sys::Win32::System::Threading::ResumeThread;
 
 use super::super::IpcSpawnedProcess;
 use super::super::assign_process_to_job;
+use super::ProcessTerminationTarget;
 
 pub(in super::super) fn spawn_current_user_process(
     req: &SpawnRequest,
@@ -33,15 +34,26 @@ pub(in super::super) fn spawn_current_user_process(
         req.use_private_desktop,
         Some(req.codex_home.as_path()),
     )?;
-    let job = assign_process_to_job(pipes.process.hProcess)?;
-    if unsafe { ResumeThread(pipes.process.hThread) } == u32::MAX {
-        let _ = unsafe { TerminateJobObject(job.raw(), 1) };
+    let termination_target =
+        match ProcessTerminationTarget::required(pipes.process, assign_process_to_job) {
+            Ok(target) => target,
+            Err(err) => {
+                if let Some(stdin_handle) = pipes.stdin_write {
+                    unsafe { CloseHandle(stdin_handle) };
+                }
+                return Err(err);
+            }
+        };
+    if unsafe { ResumeThread(termination_target.thread()) } == u32::MAX {
+        termination_target.terminate();
+        if let Some(stdin_handle) = pipes.stdin_write {
+            unsafe { CloseHandle(stdin_handle) };
+        }
         return Err(std::io::Error::last_os_error()).context("ResumeThread failed");
     }
     Ok(IpcSpawnedProcess {
         log_dir: req.codex_home.clone(),
-        pi: pipes.process,
-        job,
+        termination_target,
         stdout_handle: INVALID_HANDLE_VALUE,
         stderr_handle: INVALID_HANDLE_VALUE,
         stdin_handle: pipes.stdin_write,

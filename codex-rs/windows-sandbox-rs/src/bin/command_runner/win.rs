@@ -74,13 +74,11 @@ use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
 use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
-use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 use windows_sys::Win32::System::Threading::GetExitCodeProcess;
 use windows_sys::Win32::System::Threading::GetProcessId;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::MUTEX_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::OpenMutexW;
-use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
@@ -92,8 +90,7 @@ const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
 struct IpcSpawnedProcess {
     log_dir: PathBuf,
-    pi: PROCESS_INFORMATION,
-    job: Arc<OwnedWinHandle>,
+    termination_target: Arc<codex_plus_plus::ProcessTerminationTarget>,
     stdout_handle: HANDLE,
     stderr_handle: HANDLE,
     stdin_handle: Option<HANDLE>,
@@ -369,11 +366,11 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
         pipe_handles = Some(spawned_pipes);
         (pi, stdout_handle, stderr_handle, stdin_handle)
     };
-    let job = assign_process_to_job(pi.hProcess)?;
+    let termination_target =
+        codex_plus_plus::ProcessTerminationTarget::restricted(pi, Some(log_dir.as_path()));
     Ok(IpcSpawnedProcess {
         log_dir,
-        pi,
-        job,
+        termination_target,
         stdout_handle,
         stderr_handle,
         stdin_handle,
@@ -425,7 +422,7 @@ fn spawn_input_loop(
     mut reader: File,
     stdin_handle: Option<HANDLE>,
     hpc_handle: Arc<StdMutex<Option<HANDLE>>>,
-    job: Arc<OwnedWinHandle>,
+    termination_target: Arc<codex_plus_plus::ProcessTerminationTarget>,
     log_dir: Option<PathBuf>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -517,9 +514,7 @@ fn spawn_input_loop(
                         }
                     }
                 }
-                Message::Terminate { .. } => unsafe {
-                    let _ = TerminateJobObject(job.raw(), 1);
-                },
+                Message::Terminate { .. } => termination_target.terminate(),
                 Message::SpawnRequest { .. } => {}
                 Message::SpawnReady { .. } => {}
                 Message::Output { .. } => {}
@@ -590,20 +585,19 @@ pub fn main() -> Result<()> {
         }
     };
     let log_dir = Some(ipc_spawn.log_dir.as_path());
-    let pi = ipc_spawn.pi;
+    let termination_target = ipc_spawn.termination_target;
+    let process_handle = termination_target.process();
     let stdout_handle = ipc_spawn.stdout_handle;
     let stderr_handle = ipc_spawn.stderr_handle;
     let mut conpty_owner = ipc_spawn.conpty_owner;
     let stdin_handle = ipc_spawn.stdin_handle;
     let hpc_handle = Arc::new(StdMutex::new(ipc_spawn.hpc_handle));
 
-    let job = ipc_spawn.job;
-
     let msg = FramedMessage {
         version: IPC_PROTOCOL_VERSION,
         message: Message::SpawnReady {
             payload: SpawnReady {
-                process_id: unsafe { GetProcessId(pi.hProcess) },
+                process_id: unsafe { GetProcessId(process_handle) },
             },
         },
     };
@@ -644,12 +638,12 @@ pub fn main() -> Result<()> {
         pipe_read,
         stdin_handle,
         Arc::clone(&hpc_handle),
-        Arc::clone(&job),
+        Arc::clone(&termination_target),
         log_dir_owned,
     );
 
     let timeout = req.timeout_ms.map(|ms| ms as u32).unwrap_or(INFINITE);
-    let wait_res = unsafe { WaitForSingleObject(pi.hProcess, timeout) };
+    let wait_res = unsafe { WaitForSingleObject(process_handle, timeout) };
     let timed_out = wait_res == WAIT_TIMEOUT;
 
     let exit_code: i32;
@@ -658,29 +652,26 @@ pub fn main() -> Result<()> {
             exit_code = 128 + 64;
         } else {
             let mut raw_exit: u32 = 1;
-            GetExitCodeProcess(pi.hProcess, &mut raw_exit);
+            GetExitCodeProcess(process_handle, &mut raw_exit);
             exit_code = raw_exit as i32;
         }
-        let _ = TerminateJobObject(job.raw(), 1);
-        if pi.hThread != 0 {
-            CloseHandle(pi.hThread);
-        }
-        if pi.hProcess != 0 {
-            CloseHandle(pi.hProcess);
-        }
     }
-    drop(job);
+    let wait_for_output = termination_target.terminates_process_tree();
+    termination_target.terminate();
+    drop(termination_target);
 
     if let Ok(mut guard) = hpc_handle.lock() {
         let _ = guard.take();
     }
     drop(conpty_owner.take());
 
-    if let Some(thread) = out_thread {
-        let _ = thread.join();
-    }
-    if let Some(thread) = err_thread {
-        let _ = thread.join();
+    if wait_for_output {
+        if let Some(thread) = out_thread {
+            let _ = thread.join();
+        }
+        if let Some(thread) = err_thread {
+            let _ = thread.join();
+        }
     }
 
     let exit_msg = FramedMessage {
