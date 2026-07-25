@@ -88,7 +88,7 @@ pub async fn spawn_windows_sandbox_session_for_level(
     }
 }
 
-pub use backends::current_user::spawn_current_user_runner_session as spawn_windows_current_user_runner_session;
+pub use backends::codex_plus_plus::non_pty_runner::spawn_current_user_runner_session as spawn_windows_current_user_runner_session;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_windows_sandbox_session_legacy(

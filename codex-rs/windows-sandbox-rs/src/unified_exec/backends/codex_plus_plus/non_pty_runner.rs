@@ -20,7 +20,6 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use tokio::sync::{broadcast, mpsc, oneshot};
-
 fn direct_output_receiver(mut file: File) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel(256);
     tokio::task::spawn_blocking(move || {
