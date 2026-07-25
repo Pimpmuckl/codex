@@ -2,7 +2,7 @@ use super::start_runner_stdout_reader;
 use crate::ipc_framed as ipc;
 use pretty_assertions::assert_eq;
 
-fn collect_control_failure(mut pipe: std::fs::File) -> (Vec<u8>, i32) {
+fn assert_control_failure(mut pipe: std::fs::File, expected_prefix: &str) {
     std::io::Seek::rewind(&mut pipe).unwrap();
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(1);
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
@@ -14,7 +14,8 @@ fn collect_control_failure(mut pipe: std::fs::File) -> (Vec<u8>, i32) {
         exit_tx,
     );
     let diagnostic = output_rx.blocking_recv().unwrap();
-    (diagnostic, exit_rx.blocking_recv().unwrap())
+    assert!(String::from_utf8_lossy(&diagnostic).starts_with(expected_prefix));
+    assert_eq!(exit_rx.blocking_recv().unwrap(), -1);
 }
 
 #[test]
@@ -34,21 +35,13 @@ fn runner_control_failures_are_emitted_on_stderr_before_exit() {
         },
     )
     .unwrap();
-    assert_eq!(
-        collect_control_failure(runner_error),
-        (b"runner error: child failed\n".to_vec(), -1)
-    );
-    assert_eq!(
-        collect_control_failure(tempfile::tempfile().unwrap()),
-        (
-            b"runner error: runner pipe closed before exit\n".to_vec(),
-            -1
-        )
+    assert_control_failure(runner_error, "runner error: child failed\n");
+    assert_control_failure(
+        tempfile::tempfile().unwrap(),
+        "runner error: runner pipe closed before exit\n",
     );
     let mut malformed = tempfile::tempfile().unwrap();
     std::io::Write::write_all(&mut malformed, &1_u32.to_le_bytes()).unwrap();
     std::io::Write::write_all(&mut malformed, b"{").unwrap();
-    let (diagnostic, exit) = collect_control_failure(malformed);
-    assert!(String::from_utf8_lossy(&diagnostic).starts_with("runner error: runner read failed:"));
-    assert_eq!(exit, -1);
+    assert_control_failure(malformed, "runner error: runner read failed:");
 }

@@ -113,9 +113,7 @@ pub(crate) fn prepare_command(
 }
 
 /// # Safety
-///
-/// The supplied startup information and inherited handles must remain valid
-/// for the duration of the call.
+/// Startup information and inherited handles must remain valid for the call.
 pub(crate) unsafe fn create_process_with_stdio(
     application_name: Option<&[u16]>,
     command_line: &mut [u16],

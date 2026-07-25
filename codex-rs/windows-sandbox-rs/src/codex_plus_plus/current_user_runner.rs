@@ -10,7 +10,6 @@ use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::STARTUPINFOW;
 
-#[doc(hidden)]
 pub const CODEX_COMMAND_RUNNER_ARG1: &str = "--codex-run-as-command-runner";
 
 #[derive(Debug, Eq, PartialEq)]
@@ -46,7 +45,6 @@ pub(crate) fn resolve_runner_command(helper: &Path) -> Result<RunnerCommand> {
 }
 
 /// # Safety
-///
 /// All pointers and inherited handles must remain valid for the call.
 pub(crate) unsafe fn create_process(
     executable: &[u16],
