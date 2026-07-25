@@ -161,7 +161,10 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
                 as usize;
         let parent_pid = std::env::var("CODEX_PARENT_PID").unwrap().parse().unwrap();
         assert!(count <= console_pids.len() && !console_pids[..count].contains(&parent_pid));
-        println!("native-stdout");
+        println!(
+            "native-stdout:{}",
+            std::env::var("CODEX_BATCH_ARG").unwrap()
+        );
         eprintln!("native-stderr");
         std::process::Command::new(std::env::var_os("ComSpec").unwrap()).args(["/d", "/c", r#""%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul & echo survived > "%CODEX_RUNNER_PROBE%""#]).spawn().unwrap();
         return;
@@ -174,13 +177,19 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         let marker = codex_home.path().join("descendant-survived");
         let probe = codex_home.path().join("runner-probe.exe");
         fs::copy(std::env::current_exe().unwrap(), &probe).unwrap();
+        let batch = codex_home.path().join("runner-probe.cmd");
+        fs::write(
+            &batch,
+            "@echo shell-stdout\r\n@echo shell-stderr 1>&2\r\n@set CODEX_BATCH_ARG=%~1\r\n@runner-probe.exe isolates_console_and_closes_descendants --nocapture\r\n",
+        )
+        .unwrap();
         let mut env: HashMap<_, _> = std::env::vars().collect();
         env.insert("Path".into(), codex_home.path().display().to_string());
         env.insert("CODEX_RUNNER_PROBE".into(), marker.display().to_string());
         env.insert("CODEX_PARENT_PID".into(), std::process::id().to_string());
         let spawned = spawn_windows_current_user_runner_session(
             codex_home.path(),
-            vec![std::env::var("ComSpec").unwrap(), "/d".into(), "/c".into(), "echo shell-stdout & echo shell-stderr 1>&2 & runner-probe.exe isolates_console_and_closes_descendants --nocapture".into()],
+            vec![batch.display().to_string(), r#"C:\dir\"quoted\"#.into()],
             &sandbox_cwd(),
             env,
             false,
@@ -189,7 +198,7 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         .expect("spawn current-user runner");
         let (output, exit) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
-        assert!(exit == 0 && ["shell-stdout", "shell-stderr", "native-stdout", "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)));
+        assert!(exit == 0 && ["shell-stdout", "shell-stderr", r#"native-stdout:C:\dir\"quoted\"#, "native-stderr"].into_iter().all(|expected| String::from_utf8_lossy(&output).contains(expected)), "exit={exit}, output={output:?}");
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists());
     });

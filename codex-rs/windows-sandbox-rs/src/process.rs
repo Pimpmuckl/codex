@@ -63,18 +63,9 @@ fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
     if quoted {
         command.push('"');
     }
-    let mut backslashes = 0;
     for ch in arg.chars() {
-        if ch == '\\' {
-            backslashes += 1;
-        } else {
-            if ch == '"' {
-                command.extend(std::iter::repeat_n('\\', backslashes));
-                command.push('"');
-            } else if ch == '%' {
-                command.push_str("%%cd:~,%");
-            }
-            backslashes = 0;
+        if ch == '%' {
+            command.push_str("%%cd:~,%");
         }
         command.push(ch);
     }
