@@ -315,18 +315,18 @@ impl ProcessExecManager {
                 &[],
             )
             .await
-        } else if stream_stdin {
-            codex_utils_pty::spawn_pipe_process(program, args, cwd.as_path(), &env, &arg0, &[])
-                .await
         } else {
-            codex_utils_pty::spawn_pipe_process_no_stdin(
-                program,
-                args,
-                cwd.as_path(),
-                &env,
-                &arg0,
-                &[],
-            )
+            codex_sandboxing::spawn_process(codex_sandboxing::SpawnRequest {
+                command: &command,
+                cwd: cwd.as_path(),
+                env: &env,
+                arg0: &arg0,
+                sandbox: codex_sandboxing::SandboxType::None,
+                windows_sandbox: None,
+                tty: false,
+                stdin_open: stream_stdin,
+                inherited_fds: &[],
+            })
             .await
         };
         let spawned = match spawned {
