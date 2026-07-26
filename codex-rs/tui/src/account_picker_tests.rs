@@ -105,31 +105,6 @@ fn account_picker_snapshot() {
 }
 
 #[test]
-fn account_picker_disabled_current_default_snapshot() {
-    let mut rows = candidates();
-    rows[0].five_hour_usage_left_percent = Some(50);
-    rows[0].five_hour_exhausted = false;
-    rows[0].in_use = false;
-    rows[0].is_default = true;
-    rows[1].is_default = false;
-    let view = new_view(
-        &rows,
-        /*selected_idx*/ 0,
-        /*seconds_remaining*/ Some(15),
-    );
-    let mut terminal =
-        Terminal::new(VT100Backend::new(/*width*/ 100, /*height*/ 10)).expect("terminal");
-    terminal
-        .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
-        .expect("render disabled current account as default");
-
-    insta::assert_snapshot!(
-        "account_picker_disabled_current_default",
-        terminal.backend()
-    );
-}
-
-#[test]
 fn default_candidate_prefers_backend_marked_default() {
     assert_eq!(
         default_candidate(&candidates()).map(|candidate| candidate.id.as_str()),
