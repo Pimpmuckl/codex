@@ -169,8 +169,7 @@ async fn maybe_run_startup_account_picker(
             )
         })
         .collect();
-    let automatic_default_idx =
-        automatic_default_index(&candidates, &picker_candidates, current_account_id.as_ref());
+    let automatic_default_idx = automatic_default_index(&candidates, &picker_candidates);
     let manual_default_idx = account_picker::recommended_candidate_index(&picker_candidates);
     let (default_idx, mode) = match (config.automatic_account_selection, automatic_default_idx) {
         (AutomaticAccountSelection::Enabled, Some(default_idx)) => {
@@ -215,22 +214,7 @@ async fn maybe_run_startup_account_picker(
 fn automatic_default_index(
     candidates: &[AccountCandidate],
     picker_candidates: &[account_picker::AccountPickerCandidate],
-    current_account_id: Option<&AccountId>,
 ) -> Option<usize> {
-    if let Some(current_index) = candidates.iter().position(|candidate| {
-        !candidate.automation_enabled && current_account_id == Some(&candidate.id)
-    }) && picker_candidates
-        .get(current_index)
-        .is_some_and(|candidate| {
-            !candidate.blocked
-                && !candidate.in_use
-                && !candidate.five_hour_exhausted
-                && !candidate.weekly_exhausted
-        })
-    {
-        return Some(current_index);
-    }
-
     let automatic_indices = candidates
         .iter()
         .enumerate()

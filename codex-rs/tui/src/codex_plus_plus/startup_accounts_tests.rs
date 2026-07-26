@@ -33,18 +33,18 @@ fn picker_candidate(id: &str, is_current: bool) -> account_picker::AccountPicker
 }
 
 #[test]
-fn automatic_default_preserves_automation_disabled_current_account() {
+fn automatic_default_ignores_automation_disabled_current_account() {
     let current = account_candidate("acct_current", /*automation_enabled*/ false);
     let alternative = account_candidate("acct_alternative", /*automation_enabled*/ true);
-    let candidates = vec![current.clone(), alternative];
+    let candidates = vec![current, alternative];
     let picker_candidates = vec![
         picker_candidate("acct_current", /*is_current*/ true),
         picker_candidate("acct_alternative", /*is_current*/ false),
     ];
 
     assert_eq!(
-        automatic_default_index(&candidates, &picker_candidates, Some(&current.id)),
-        Some(0)
+        automatic_default_index(&candidates, &picker_candidates),
+        Some(1)
     );
 }
 
@@ -52,31 +52,14 @@ fn automatic_default_preserves_automation_disabled_current_account() {
 fn automatic_default_ignores_automation_disabled_alternative() {
     let disabled = account_candidate("acct_disabled", /*automation_enabled*/ false);
     let enabled = account_candidate("acct_enabled", /*automation_enabled*/ true);
-    let candidates = vec![disabled, enabled.clone()];
+    let candidates = vec![disabled, enabled];
     let picker_candidates = vec![
         picker_candidate("acct_disabled", /*is_current*/ false),
         picker_candidate("acct_enabled", /*is_current*/ false),
     ];
 
     assert_eq!(
-        automatic_default_index(&candidates, &picker_candidates, Some(&enabled.id)),
-        Some(1)
-    );
-}
-
-#[test]
-fn automatic_default_avoids_unavailable_disabled_current_account() {
-    let current = account_candidate("acct_current", /*automation_enabled*/ false);
-    let alternative = account_candidate("acct_alternative", /*automation_enabled*/ true);
-    let candidates = vec![current.clone(), alternative];
-    let mut picker_candidates = vec![
-        picker_candidate("acct_current", /*is_current*/ true),
-        picker_candidate("acct_alternative", /*is_current*/ false),
-    ];
-    picker_candidates[0].five_hour_exhausted = true;
-
-    assert_eq!(
-        automatic_default_index(&candidates, &picker_candidates, Some(&current.id)),
+        automatic_default_index(&candidates, &picker_candidates),
         Some(1)
     );
 }
