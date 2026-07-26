@@ -86,6 +86,20 @@ pub async fn spawn_process(request: SpawnRequest<'_>) -> Result<SpawnedProcess> 
         anyhow::bail!("Windows sandbox process spawn is unavailable on this platform");
     }
 
+    #[cfg(target_os = "windows")]
+    if request.sandbox == SandboxType::None && !request.tty {
+        let codex_home = codex_utils_home_dir::find_codex_home()
+            .context("windows runner: failed to resolve codex_home")?;
+        return codex_windows_sandbox::spawn_windows_current_user_runner_session(
+            codex_home.as_path(),
+            request.command.to_vec(),
+            request.cwd,
+            request.env.clone(),
+            request.stdin_open,
+        )
+        .await;
+    }
+
     let (program, args) = request
         .command
         .split_first()
