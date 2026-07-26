@@ -87,10 +87,13 @@ fn dated_unused_window_requires_outward_movement_and_recovers_dropped_dispatch()
     assert_not_due(&store, &id, usage(UNUSED, Some(200)), 103);
     assert_not_due(&store, &id, usage(UNUSED, Some(200)), 104);
     drop(ready(&store, &id, usage(UNUSED, Some(201)), 105));
+}
 
-    let (_home, disabled, id) = test_store(/*automation_enabled*/ false);
-    assert_not_due(&disabled, &id, usage(UNUSED, Some(1)), 1);
-    assert_not_due(&disabled, &id, usage(UNUSED, Some(2)), 2);
+#[test]
+fn automatic_selection_flag_does_not_gate_weekly_window_attempts() {
+    let (_home, store, id) = test_store(/*automation_enabled*/ false);
+    assert_not_due(&store, &id, usage(UNUSED, Some(1)), 1);
+    drop(ready(&store, &id, usage(UNUSED, Some(2)), 2));
 }
 
 #[test]
