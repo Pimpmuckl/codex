@@ -168,6 +168,25 @@ fn exact_weekly_accepts_an_unused_window_without_a_reset_time() {
     assert_eq!(exact_weekly(&usage).unwrap().1.used_percent, 0.0);
 }
 
+#[test]
+fn automatic_selection_flag_does_not_gate_reset_automation() {
+    let home = tempfile::tempdir().unwrap();
+    let id: AccountId = serde_json::from_str("\"acct_test\"").unwrap();
+    let account_home = home.path().join("accounts").join(id.as_str());
+    std::fs::create_dir_all(&account_home).unwrap();
+    std::fs::write(account_home.join("auth.json"), "{}").unwrap();
+    std::fs::write(
+        home.path().join("accounts/index.json"),
+        r#"{"accounts":[{"id":"acct_test","label":"test@example.com","enabled":true,"automation_enabled":false,"auth":{"scope":"file","path":"accounts/acct_test/auth.json"}}]}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        current_account_home(&AccountStore::new(home.path().into()), &id).unwrap(),
+        account_home
+    );
+}
+
 #[tokio::test]
 async fn redemption_flow_consumes_selected_credit_and_finishes_recovery() {
     let home = tempfile::tempdir().unwrap();

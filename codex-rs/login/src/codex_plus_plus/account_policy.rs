@@ -26,43 +26,26 @@ impl AccountStore {
         &self,
         updates: impl IntoIterator<Item = (&'a AccountId, bool)>,
     ) -> std::io::Result<bool> {
-        let mut disabled = Vec::new();
-        {
-            let _index_guard = self.acquire_index_lock()?;
-            let mut index = self.load_index()?;
-            let mut changed = false;
-            for (account_id, automation_enabled) in updates {
-                let Some(account) = index
-                    .accounts
-                    .iter_mut()
-                    .find(|account| &account.id == account_id)
-                else {
-                    return Ok(false);
-                };
-                if account.automation_enabled != automation_enabled {
-                    account.automation_enabled = automation_enabled;
-                    changed = true;
-                    if !automation_enabled {
-                        disabled.push(account_id.clone());
-                    }
-                }
-            }
-            if changed {
-                self.save_index(&index)?;
+        let _index_guard = self.acquire_index_lock()?;
+        let mut index = self.load_index()?;
+        let mut changed = false;
+        for (account_id, automation_enabled) in updates {
+            let Some(account) = index
+                .accounts
+                .iter_mut()
+                .find(|account| &account.id == account_id)
+            else {
+                return Ok(false);
+            };
+            if account.automation_enabled != automation_enabled {
+                account.automation_enabled = automation_enabled;
+                changed = true;
             }
         }
-        for account_id in disabled {
-            self.wait_for_reset_mutation_idle(&account_id)?;
+        if changed {
+            self.save_index(&index)?;
         }
         Ok(true)
-    }
-
-    pub(crate) fn wait_for_reset_mutation_idle(
-        &self,
-        account_id: &AccountId,
-    ) -> std::io::Result<()> {
-        self.wait_for_reset_mutation_home_idle(&self.account_home(account_id))
-            .map(drop)
     }
 
     pub(crate) fn wait_for_reset_mutation_home_idle(

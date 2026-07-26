@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -170,24 +169,8 @@ async fn scan(
             return;
         }
     };
-    let eligible = match store.list() {
-        Ok(accounts) => accounts
-            .into_iter()
-            .filter(|account| {
-                account.enabled && account.automation_enabled && !account.login_required
-            })
-            .map(|account| account.id)
-            .collect::<HashSet<_>>(),
-        Err(err) => {
-            tracing::warn!(%err, "weekly-window scheduler could not read account policy");
-            return;
-        }
-    };
     let accounts = match store.enabled_file_accounts() {
-        Ok(accounts) => accounts
-            .into_iter()
-            .filter(|(account_id, _)| eligible.contains(account_id))
-            .collect::<Vec<_>>(),
+        Ok(accounts) => accounts,
         Err(err) => {
             tracing::warn!(%err, "weekly-window scheduler could not read imported accounts");
             return;

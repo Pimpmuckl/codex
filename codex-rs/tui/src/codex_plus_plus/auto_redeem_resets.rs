@@ -157,20 +157,11 @@ async fn load_reset_account<'a>(
     })
 }
 fn current_account_home(store: &AccountStore, account_id: &AccountId) -> Result<PathBuf> {
-    ensure!(
-        store.list()?.into_iter().any(|profile| {
-            profile.id == *account_id
-                && profile.enabled
-                && profile.automation_enabled
-                && !profile.login_required
-        }),
-        "imported account is no longer eligible for automation"
-    );
     store
         .enabled_file_accounts()?
         .into_iter()
         .find_map(|(id, home)| (id == *account_id).then_some(home))
-        .context("imported account auth home is unavailable")
+        .context("imported account is no longer enabled, signed in, or available")
 }
 fn matches_profile(account_id: &AccountId, auth: &CodexAuth) -> bool {
     auth.is_chatgpt_auth()

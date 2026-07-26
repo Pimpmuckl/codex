@@ -140,12 +140,10 @@ impl AccountStore {
         let Some(lease) = AccountLease::try_acquire(&account_home.join(LOCK_FILE))? else {
             return Ok(WeeklyWindowAttemptDecision::Locked);
         };
-        let eligible = self.list()?.into_iter().any(|profile| {
-            profile.id == *account_id
-                && profile.enabled
-                && !profile.login_required
-                && profile.automation_enabled
-        });
+        let eligible = self
+            .list()?
+            .into_iter()
+            .any(|profile| profile.id == *account_id && profile.enabled && !profile.login_required);
         if !eligible {
             return Ok(WeeklyWindowAttemptDecision::NotDue);
         }
