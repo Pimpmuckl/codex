@@ -13,8 +13,14 @@ const CODEX_LINUX_SANDBOX_EXE_ENV_VAR: &str = "CODEX_TEST_LINUX_SANDBOX_EXE";
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut args = std::env::args_os();
     let _ = args.next();
-    if args.next().as_deref() == Some(OsStr::new(codex_exec_server::CODEX_FS_HELPER_ARG1)) {
+    let argv1 = args.next();
+    if argv1.as_deref() == Some(OsStr::new(codex_exec_server::CODEX_FS_HELPER_ARG1)) {
         codex_exec_server::run_fs_helper_main();
+    }
+    #[cfg(target_os = "windows")]
+    if argv1.as_deref() == Some(OsStr::new(codex_windows_sandbox::CODEX_COMMAND_RUNNER_ARG1)) {
+        codex_windows_sandbox::run_command_runner_main()?;
+        return Ok(());
     }
 
     let current_exe = std::env::current_exe()?;
