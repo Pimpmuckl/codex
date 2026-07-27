@@ -6,7 +6,7 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ✔ Request approved for permission request: Need write access for generated
   report assets.
 
-✔ Request approved for custom_tool: Review report access
+✔ Request approved for Remove-Item -Recurse -Force C:\Temp\codex-cleanup
 
 • Working (0s • esc to interrupt)
 

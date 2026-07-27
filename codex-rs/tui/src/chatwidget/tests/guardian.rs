@@ -262,9 +262,11 @@ async fn guardian_approved_request_permissions_renders_request_summary() {
         rationale: Some("Hook-requested review approved.".into()),
         decision_source: Some(GuardianAssessmentDecisionSource::Agent),
         action: GuardianAssessmentAction::PreToolUse {
-            tool_name: "custom_tool".to_string(),
-            tool_input: serde_json::json!({ "path": "report.txt" }),
-            reason: "Review report access".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_input: serde_json::json!({
+                "command": "Remove-Item -Recurse -Force C:\\Temp\\codex-cleanup"
+            }),
+            reason: "DCG flagged recursive forced deletion".to_string(),
         },
     });
 
