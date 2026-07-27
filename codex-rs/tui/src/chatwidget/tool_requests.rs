@@ -81,10 +81,10 @@ impl ChatWidget {
                         .get("command")
                         .and_then(serde_json::Value::as_str)
                 {
-                    let command = match command.split_once('\n') {
-                        Some((first, _)) => format!("{first} ..."),
-                        None => command.to_string(),
-                    };
+                    let command = command
+                        .replace("\r\n", " ↵ ")
+                        .replace('\n', " ↵ ")
+                        .replace('\r', " ↵ ");
                     Some(truncate_text(&command, /*max_graphemes*/ 80))
                 } else {
                     Some(format!("{tool_name}: {reason}"))

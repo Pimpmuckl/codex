@@ -264,7 +264,7 @@ async fn guardian_approved_request_permissions_renders_request_summary() {
         action: GuardianAssessmentAction::PreToolUse {
             tool_name: "Bash".to_string(),
             tool_input: serde_json::json!({
-                "command": "Remove-Item -Recurse -Force C:\\Temp\\codex-cleanup"
+                "command": "Remove-Item -Recurse -Force C:\\Temp\\codex-cleanup\r\ngit status"
             }),
             reason: "DCG flagged recursive forced deletion".to_string(),
         },

@@ -6,7 +6,8 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ✔ Request approved for permission request: Need write access for generated
   report assets.
 
-✔ Request approved for Remove-Item -Recurse -Force C:\Temp\codex-cleanup
+✔ Request approved for Remove-Item -Recurse -Force C:\Temp\codex-cleanup ↵ git
+  status
 
 • Working (0s • esc to interrupt)
 
