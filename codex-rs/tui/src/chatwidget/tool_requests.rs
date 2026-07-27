@@ -72,8 +72,24 @@ impl ChatWidget {
                 Some(format!("MCP {tool_name} on {label}"))
             }
             GuardianAssessmentAction::PreToolUse {
-                tool_name, reason, ..
-            } => Some(format!("{tool_name}: {reason}")),
+                tool_name,
+                tool_input,
+                reason,
+            } => {
+                if tool_name == "Bash"
+                    && let Some(command) = tool_input
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                {
+                    let command = command
+                        .replace("\r\n", " ↵ ")
+                        .replace('\n', " ↵ ")
+                        .replace('\r', " ↵ ");
+                    Some(truncate_text(&command, /*max_graphemes*/ 80))
+                } else {
+                    Some(format!("{tool_name}: {reason}"))
+                }
+            }
             GuardianAssessmentAction::RequestPermissions { reason, .. } => {
                 Some(permission_request_summary("permission request", reason))
             }
