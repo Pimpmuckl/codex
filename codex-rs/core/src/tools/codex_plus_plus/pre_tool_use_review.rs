@@ -67,7 +67,6 @@ pub(crate) fn review<'a>(
     reason: String,
 ) -> BoxFuture<'a, Result<PreToolUseApprovalReceipt, String>> {
     Box::pin(async move {
-        let review_id = new_guardian_review_id();
         let request = GuardianApprovalRequest::PreToolUse {
             id: invocation.call_id.clone(),
             tool_name: payload.tool_name.name().to_string(),
@@ -80,8 +79,17 @@ pub(crate) fn review<'a>(
             #[allow(deprecated)]
             cwd: invocation.turn.cwd.clone(),
         };
-        let reviewed_action_truncated =
-            format_guardian_action_pretty(&request).map_or(true, |action| action.truncated);
+        let action = format_guardian_action_pretty(&request).map_err(|_| {
+            "The action could not be prepared for an exact automatic approval review. The tool call was blocked."
+                .to_string()
+        })?;
+        if action.truncated {
+            return Err(
+                "The action was too large for an exact automatic approval review. Move long inline scripts into a file or shorten the command, then retry."
+                    .to_string(),
+            );
+        }
+        let review_id = new_guardian_review_id();
         let decision = review_approval_request(
             &invocation.session,
             &invocation.turn,
@@ -98,7 +106,7 @@ pub(crate) fn review<'a>(
                 Ok(PreToolUseApprovalReceipt::for_reviewed(
                     invocation,
                     payload.execution_target.clone(),
-                    reviewed_action_truncated,
+                    /*reviewed_action_truncated*/ false,
                 ))
             }
             ReviewDecision::Denied { rejection } => Err(rejection),

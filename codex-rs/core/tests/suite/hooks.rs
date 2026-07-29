@@ -4374,6 +4374,59 @@ async fn pre_tool_use_blocks_local_function_tool_before_execution() -> Result<()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_tool_use_ask_blocks_oversized_action_before_guardian_review() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "pretooluse-ask-oversized";
+    let args = serde_json::json!({ "large_input": "x".repeat(100_000) });
+    let reason = "This hook-only reason must not reach Guardian";
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parent-tool"),
+                ev_function_call(call_id, "test_sync_tool", &serde_json::to_string(&args)?),
+                ev_completed("resp-parent-tool"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-parent-done"),
+                ev_assistant_message("msg-parent-done", "blocked"),
+                ev_completed("resp-parent-done"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_pre_build_hook(move |home| {
+            write_pre_tool_use_hook(home, Some("^test_sync_tool$"), "ask", reason)
+                .expect("failed to write pre tool use hook test fixture");
+        })
+        .with_config(trust_discovered_hooks);
+    let test = builder.build(&server).await?;
+
+    submit_yolo_hook_review_turn(&test, "try the oversized generic function tool").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let output = requests[1]
+        .function_call_output_text(call_id)
+        .expect("expected blocked tool output");
+    assert!(output.contains(
+        "The action was too large for an exact automatic approval review. Move long inline scripts into a file or shorten the command, then retry."
+    ));
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.body_contains_text(reason))
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_tool_use_ask_reviews_generic_tool_under_yolo() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
