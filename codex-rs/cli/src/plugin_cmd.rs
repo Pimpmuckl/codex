@@ -611,7 +611,7 @@ pub(crate) async fn load_cli_auth_mode(config: &Config) -> Option<AuthMode> {
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
         config.automatic_account_selection,
     )
     .await

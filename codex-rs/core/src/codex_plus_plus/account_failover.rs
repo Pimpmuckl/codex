@@ -67,11 +67,10 @@ pub(crate) async fn switch_and_report(
         attempted_account_ids.insert(account_id.to_string());
     }
 
-    if auth_manager
+    let outcome = auth_manager
         .switch_to_next_imported_account(attempted_account_ids)
-        .await
-        != ImportedAccountSwitchOutcome::ReadyToRetry
-    {
+        .await;
+    if outcome != ImportedAccountSwitchOutcome::ReadyToRetry {
         return UsageLimitFailoverOutcome::Unavailable;
     }
 

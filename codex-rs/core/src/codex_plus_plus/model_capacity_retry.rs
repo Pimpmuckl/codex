@@ -5,6 +5,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_config::ModelCapacityRetryMode;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::WarningEvent;
@@ -19,7 +20,7 @@ const RETRY_SCHEDULE: [(Duration, &str); 4] = [
 ];
 
 pub(crate) fn applies_to_sampling(err: &CodexErr, session_source: &SessionSource) -> bool {
-    matches!(err, CodexErr::ServerOverloaded)
+    matches!(err.details(), CodexErrorDetails::ServerOverloaded)
         && !crate::guardian::is_guardian_reviewer_source(session_source)
 }
 

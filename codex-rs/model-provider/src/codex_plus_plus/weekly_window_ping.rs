@@ -19,7 +19,7 @@ use codex_http_client::StreamResponse;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CodexAuth;
-use codex_login::default_client::build_reqwest_client;
+use codex_login::default_client::create_client;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::ModelsManager as _;
@@ -51,7 +51,7 @@ pub struct WeeklyWindowPingRequest {
     pub model_provider_id: String,
     pub model_provider: ModelProviderInfo,
     pub chatgpt_base_url: String,
-    pub auth_route_config: Option<AuthRouteConfig>,
+    pub auth_route_config: AuthRouteConfig,
     pub forced_chatgpt_workspace_id: Option<Vec<String>>,
     pub http_client_factory: HttpClientFactory,
 }
@@ -209,9 +209,9 @@ async fn send_once(
         retry_5xx: false,
         retry_transport: false,
     };
-    let client = build_reqwest_client();
+    let client = create_client();
     let auth = auth_provider_from_auth_manager(Arc::clone(auth_manager), expected_auth);
-    let transport = DeadlineTransport(ReqwestTransport::new(client), deadline);
+    let transport = DeadlineTransport(ReqwestTransport::from_http_client(client), deadline);
     let client = ResponsesClient::new(transport, provider, auth);
     let body = json!({
         "model": model,

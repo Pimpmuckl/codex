@@ -13,4 +13,4 @@ expression: terminal.backend().to_string()
 
 
 
-  Press space to toggle; enter to save; esc to cancel
+  Press space to toggle; enter to save or manage; esc to cancel

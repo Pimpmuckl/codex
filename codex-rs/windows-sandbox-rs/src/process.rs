@@ -9,10 +9,13 @@ use crate::winutil::to_wide;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_utils_pty::JobObject;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr;
+use std::sync::Arc;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
@@ -37,6 +40,7 @@ use windows_sys::Win32::System::Threading::STARTUPINFOW;
 pub struct CreatedProcess {
     pub process_info: PROCESS_INFORMATION,
     pub startup_info: STARTUPINFOW,
+    pub(crate) job: Arc<JobObject>,
     _desktop: LaunchDesktop,
 }
 
@@ -91,7 +95,7 @@ unsafe fn ensure_inheritable_stdio(si: &mut STARTUPINFOW) -> Result<()> {
 // Low-level CreateProcessAsUserW wrapper mirrors the Windows API shape.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn create_process(
-    user: ProcessExecutionMode,
+    execution_mode: ProcessExecutionMode,
     argv: &[String],
     cwd: &Path,
     env_map: &HashMap<String, String>,
@@ -100,7 +104,7 @@ pub unsafe fn create_process(
     console_mode: ChildConsoleMode,
     use_private_desktop: bool,
 ) -> Result<CreatedProcess> {
-    let (cmdline_str, application_name) = match user {
+    let (cmdline_str, application_name) = match execution_mode {
         ProcessExecutionMode::CurrentUser => {
             current_user_process::prepare_command(argv, cwd, env_map)?
         }
@@ -109,17 +113,28 @@ pub unsafe fn create_process(
     let mut cmdline: Vec<u16> = to_wide(&cmdline_str);
     let env_block = make_env_block(env_map);
     let desktop = LaunchDesktop::prepare(use_private_desktop, logs_base_dir)?;
+    let job = Arc::new(JobObject::create().context("create process job")?);
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     let cwd_wide = to_wide(cwd);
     let env_block_len = env_block.len();
+    let console_flags = match (&stdio, console_mode) {
+        (Some(_), ChildConsoleMode::NoWindow) => CREATE_NO_WINDOW,
+        (Some(_), ChildConsoleMode::Inherit)
+        | (None, ChildConsoleMode::Inherit)
+        | (None, ChildConsoleMode::NoWindow) => 0,
+    };
+    let attr_count = if stdio.is_some() { 2 } else { 1 };
+    let mut attrs = ProcThreadAttributeList::new(attr_count)?;
+    attrs.set_job(job.as_raw_handle() as HANDLE)?;
+
+    let mut si: STARTUPINFOEXW = std::mem::zeroed();
+    si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    // Some processes (e.g., PowerShell) can fail with STATUS_DLL_INIT_FAILED
+    // if lpDesktop is not set when launching with a restricted token.
+    // Point explicitly at the interactive desktop or a private desktop.
+    si.StartupInfo.lpDesktop = desktop.startup_info_desktop();
     match stdio {
         Some((stdin_h, stdout_h, stderr_h)) => {
-            let mut si: STARTUPINFOEXW = std::mem::zeroed();
-            si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-            // Some processes (e.g., PowerShell) can fail with STATUS_DLL_INIT_FAILED
-            // if lpDesktop is not set when launching with a restricted token.
-            // Point explicitly at the interactive desktop or a private desktop.
-            si.StartupInfo.lpDesktop = desktop.startup_info_desktop();
             si.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
             si.StartupInfo.hStdInput = stdin_h;
             si.StartupInfo.hStdOutput = stdout_h;
@@ -136,114 +151,72 @@ pub unsafe fn create_process(
                     ));
                 }
             }
-            let mut attrs = ProcThreadAttributeList::new(/*attr_count*/ 1)?;
             attrs.set_handle_list(inherited_handles)?;
-            si.lpAttributeList = attrs.as_mut_ptr();
-
-            let (ok, creation_flags) = match user {
-                ProcessExecutionMode::CurrentUser => {
-                    current_user_process::create_process_with_stdio(
-                        application_name.as_deref(),
-                        &mut cmdline,
-                        &env_block,
-                        &cwd_wide,
-                        &si.StartupInfo,
-                        &mut pi,
-                        console_mode,
-                    )
-                }
-                ProcessExecutionMode::Token(h_token) => {
-                    let creation_flags = CREATE_UNICODE_ENVIRONMENT
-                        | EXTENDED_STARTUPINFO_PRESENT
-                        | match console_mode {
-                            ChildConsoleMode::Inherit => 0,
-                            ChildConsoleMode::NoWindow => CREATE_NO_WINDOW,
-                        };
-                    (
-                        CreateProcessAsUserW(
-                            h_token,
-                            std::ptr::null(),
-                            cmdline.as_mut_ptr(),
-                            std::ptr::null_mut(),
-                            std::ptr::null_mut(),
-                            1,
-                            creation_flags,
-                            env_block.as_ptr() as *mut c_void,
-                            cwd_wide.as_ptr(),
-                            &si.StartupInfo,
-                            &mut pi,
-                        ),
-                        creation_flags,
-                    )
-                }
-            };
-            if ok == 0 {
-                let err = GetLastError() as i32;
-                let msg = format!(
-                    "CreateProcessAsUserW failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
-                    err,
-                    format_last_error(err),
-                    cwd.display(),
-                    cmdline_str,
-                    env_block_len,
-                    si.StartupInfo.dwFlags,
-                    creation_flags,
-                );
-                logging::debug_log(&msg, logs_base_dir);
-                return Err(std::io::Error::from_raw_os_error(err)).context(msg);
-            }
-            Ok(CreatedProcess {
-                process_info: pi,
-                startup_info: si.StartupInfo,
-                _desktop: desktop,
-            })
         }
         None => {
-            let mut si: STARTUPINFOW = std::mem::zeroed();
-            si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-            si.lpDesktop = desktop.startup_info_desktop();
-            ensure_inheritable_stdio(&mut si)?;
-
-            let creation_flags = CREATE_UNICODE_ENVIRONMENT;
-            let ProcessExecutionMode::Token(h_token) = user else {
+            if matches!(execution_mode, ProcessExecutionMode::CurrentUser) {
                 anyhow::bail!("current-user process creation requires explicit stdio");
-            };
-            let ok = CreateProcessAsUserW(
-                h_token,
-                std::ptr::null(),
-                cmdline.as_mut_ptr(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                1,
-                creation_flags,
-                env_block.as_ptr() as *mut c_void,
-                cwd_wide.as_ptr(),
-                &si,
-                &mut pi,
-            );
-            if ok == 0 {
-                let err = GetLastError() as i32;
-                let msg = format!(
-                    "CreateProcessAsUserW failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
-                    err,
-                    format_last_error(err),
-                    cwd.display(),
-                    cmdline_str,
-                    env_block_len,
-                    si.dwFlags,
-                    creation_flags,
-                );
-                logging::debug_log(&msg, logs_base_dir);
-                return Err(std::io::Error::from_raw_os_error(err)).context(msg);
             }
-            Ok(CreatedProcess {
-                process_info: pi,
-                startup_info: si,
-                _desktop: desktop,
-            })
+            ensure_inheritable_stdio(&mut si.StartupInfo)?;
         }
     }
+    si.lpAttributeList = attrs.as_mut_ptr();
+
+    let (ok, creation_flags) = match execution_mode {
+        ProcessExecutionMode::CurrentUser => current_user_process::create_process_with_stdio(
+            application_name.as_deref(),
+            &mut cmdline,
+            &env_block,
+            &cwd_wide,
+            &si.StartupInfo,
+            &mut pi,
+            console_mode,
+        ),
+        ProcessExecutionMode::Token(h_token) => {
+            let creation_flags =
+                CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console_flags;
+            (
+                CreateProcessAsUserW(
+                    h_token,
+                    std::ptr::null(),
+                    cmdline.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    1,
+                    creation_flags,
+                    env_block.as_ptr() as *mut c_void,
+                    cwd_wide.as_ptr(),
+                    &si.StartupInfo,
+                    &mut pi,
+                ),
+                creation_flags,
+            )
+        }
+    };
+    if ok == 0 {
+        let err = GetLastError() as i32;
+        let msg = format!(
+            "CreateProcessAsUserW failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
+            err,
+            format_last_error(err),
+            cwd.display(),
+            cmdline_str,
+            env_block_len,
+            si.StartupInfo.dwFlags,
+            creation_flags,
+        );
+        logging::debug_log(&msg, logs_base_dir);
+        return Err(std::io::Error::from_raw_os_error(err)).context(msg);
+    }
+
+    Ok(CreatedProcess {
+        process_info: pi,
+        startup_info: si.StartupInfo,
+        job,
+        _desktop: desktop,
+    })
 }
+
 /// Controls whether the child's stdin handle is kept open for writing.
 #[allow(dead_code)]
 pub enum StdinMode {
@@ -263,10 +236,18 @@ pub enum StderrMode {
 #[allow(dead_code)]
 pub struct PipeSpawnHandles {
     pub process: PROCESS_INFORMATION,
+    job: Arc<JobObject>,
     pub stdin_write: Option<HANDLE>,
     pub stdout_read: HANDLE,
     pub stderr_read: Option<HANDLE>,
     pub(crate) desktop: LaunchDesktop,
+}
+
+impl PipeSpawnHandles {
+    /// Returns the Job Object containing the spawned process.
+    pub fn job(&self) -> Arc<JobObject> {
+        Arc::clone(&self.job)
+    }
 }
 
 /// Spawns a process with anonymous pipes and returns the relevant handles.
@@ -354,6 +335,7 @@ pub fn spawn_process_with_pipes(
     };
     let CreatedProcess {
         process_info: pi,
+        job,
         _desktop: desktop,
         ..
     } = created;
@@ -373,6 +355,7 @@ pub fn spawn_process_with_pipes(
 
     Ok(PipeSpawnHandles {
         process: pi,
+        job,
         stdin_write: match stdin_mode {
             StdinMode::Open => Some(in_w),
             StdinMode::Closed => None,
@@ -389,6 +372,10 @@ pub fn spawn_process_with_pipes(
         desktop,
     })
 }
+
+#[cfg(test)]
+#[path = "process_tests.rs"]
+mod tests;
 
 /// Reads a HANDLE until EOF and invokes `on_chunk` for each read.
 pub fn read_handle_loop<F>(handle: HANDLE, mut on_chunk: F) -> std::thread::JoinHandle<()>
@@ -418,6 +405,3 @@ where
         }
     })
 }
-#[cfg(test)]
-#[path = "process_tests.rs"]
-mod tests;

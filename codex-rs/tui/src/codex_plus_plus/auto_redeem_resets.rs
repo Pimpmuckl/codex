@@ -119,13 +119,14 @@ async fn load_reset_account<'a>(
     account_id: &'a AccountId,
 ) -> Result<ResetAccount<'a>> {
     let account_home = current_account_home(store, account_id)?;
+    let auth_route_config = config.auth_route_config();
     let auth = match refresh_auth_from_storage(
         &account_home,
         AuthCredentialsStoreMode::File,
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
-        config.auth_route_config().as_ref(),
+        &auth_route_config,
     )
     .await
     {
@@ -153,7 +154,11 @@ async fn load_reset_account<'a>(
         store,
         id: account_id,
         home: account_home,
-        client: BackendClient::from_auth(&config.chatgpt_base_url, &auth)?,
+        client: BackendClient::from_auth(
+            &config.chatgpt_base_url,
+            &auth,
+            auth_route_config.http_client_factory().clone(),
+        ),
     })
 }
 fn current_account_home(store: &AccountStore, account_id: &AccountId) -> Result<PathBuf> {

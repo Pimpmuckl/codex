@@ -9,6 +9,7 @@ use codex_login::AccountId;
 use codex_login::AccountStore;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
+use codex_login::AuthRouteConfig;
 use codex_login::CodexAuth;
 use codex_login::refresh_auth_from_storage;
 use codex_protocol::auth::RefreshTokenFailedError;
@@ -127,14 +128,14 @@ async fn fetch(
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
     )
     .await
     .map_err(AccountUsageFetchError::new)?
     .context("imported account is not authenticated")
     .map_err(AccountUsageFetchError::new)?;
 
-    match fetch_with_auth(&auth, &config.chatgpt_base_url).await {
+    match fetch_with_auth(&auth, &config.chatgpt_base_url, &auth_route_config).await {
         Err(err) if is_unauthorized(&err) => {
             let auth = match refresh_auth_from_storage(
                 &account_home,
@@ -142,7 +143,7 @@ async fn fetch(
                 config.forced_chatgpt_workspace_id.as_deref(),
                 Some(&config.chatgpt_base_url),
                 config.auth_keyring_backend_kind(),
-                auth_route_config.as_ref(),
+                &auth_route_config,
             )
             .await
             {
@@ -157,7 +158,7 @@ async fn fetch(
             }
             .context("imported account is not authenticated")
             .map_err(AccountUsageFetchError::new)?;
-            fetch_with_auth(&auth, &config.chatgpt_base_url)
+            fetch_with_auth(&auth, &config.chatgpt_base_url, &auth_route_config)
                 .await
                 .map_err(AccountUsageFetchError::new)
         }
@@ -165,10 +166,18 @@ async fn fetch(
     }
 }
 
-async fn fetch_with_auth(auth: &CodexAuth, chatgpt_base_url: &str) -> Result<AccountUsage> {
-    let response = BackendClient::from_auth(chatgpt_base_url, auth)?
-        .get_rate_limits_with_reset_credits()
-        .await?;
+async fn fetch_with_auth(
+    auth: &CodexAuth,
+    chatgpt_base_url: &str,
+    auth_route_config: &AuthRouteConfig,
+) -> Result<AccountUsage> {
+    let response = BackendClient::from_auth(
+        chatgpt_base_url,
+        auth,
+        auth_route_config.http_client_factory().clone(),
+    )
+    .get_rate_limits_with_reset_credits()
+    .await?;
     Ok(account_usage(&response))
 }
 

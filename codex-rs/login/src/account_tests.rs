@@ -613,7 +613,7 @@ async fn direct_marker_auth_resolution_honors_forced_workspace() {
         Some(&forced_workspaces),
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        &crate::test_support::transport_default_auth_route_config(),
     )
     .await
     .expect("load marker auth")
@@ -663,7 +663,7 @@ async fn disabled_automatic_selection_keeps_login_required_account() {
         /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        crate::test_support::transport_default_auth_route_config(),
         AutomaticAccountSelection::Disabled,
     )
     .await;
@@ -972,7 +972,7 @@ async fn test_auth_manager_with_forced_workspace(
         forced_chatgpt_workspace_id,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        crate::test_support::transport_default_auth_route_config(),
     )
     .await
 }

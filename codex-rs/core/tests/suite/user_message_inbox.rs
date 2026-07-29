@@ -20,10 +20,13 @@ use serde_json::json;
 const CALL_ID: &str = "call-message-1";
 const ENVELOPE: &str = "[Message for you]\nCheck the deployment.";
 fn enable_inbox(config: &mut codex_core::config::Config) {
-    config.config_layer_stack = config.config_layer_stack.with_user_config(
-        &config.codex_home.join(CONFIG_TOML_FILE),
-        toml::toml! { user_message_inbox = "enabled" }.into(),
-    );
+    config.config_layer_stack = config
+        .config_layer_stack
+        .with_user_config(
+            &config.codex_home.join(CONFIG_TOML_FILE),
+            toml::toml! { user_message_inbox = "enabled" }.into(),
+        )
+        .expect("inbox user config should be valid");
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_message_tool_preserves_responses_order_without_synthetic_model_message() -> Result<()>
@@ -100,6 +103,7 @@ fn user_message_history_mode_keeps_the_readable_note_in_both_formats() {
         thread_id: ThreadId::new(),
         turn_id: "turn-1".to_string(),
         item: item.clone(),
+        started_at_ms: None,
         completed_at_ms: 1,
     }));
     let legacy = RolloutItem::EventMsg(item.as_legacy_events(false).pop().unwrap());

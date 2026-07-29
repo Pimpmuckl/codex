@@ -210,6 +210,8 @@ pub fn set_modes() -> Result<()> {
     keyboard_modes::enable_keyboard_enhancement();
     #[cfg(not(windows))]
     let _ = execute!(stdout(), EnableFocusChange);
+    #[cfg(windows)]
+    let _ = execute!(stdout(), DisableFocusChange);
     Ok(())
 }
 
@@ -306,6 +308,7 @@ fn restore_common(
 
 /// Restore the terminal to its original state.
 /// Inverse of `set_modes`.
+#[cfg(unix)]
 pub fn restore() -> Result<()> {
     restore_common(RawModeRestore::Disable, KeyboardRestore::PopStack)
 }
@@ -324,7 +327,7 @@ pub(super) fn reapply_raw_mode_after_resume() -> Result<()> {
 
 /// Restore the terminal after Codex is exiting.
 ///
-/// Uses a stronger keyboard reset than [`restore`] so the parent shell recovers even if a
+/// Uses a stronger keyboard reset than `restore` so the parent shell recovers even if a
 /// terminal missed the stack pop that normally pairs with [`set_modes`].
 pub fn restore_after_exit() -> Result<()> {
     let mut first_error =
@@ -342,22 +345,6 @@ pub fn restore_after_exit() -> Result<()> {
 /// Restore the terminal to its original state, but keep raw mode enabled.
 pub fn restore_keep_raw() -> Result<()> {
     restore_common(RawModeRestore::Keep, KeyboardRestore::PopStack)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestoreMode {
-    #[allow(dead_code)]
-    Full, // Fully restore the terminal (disables raw mode).
-    KeepRaw, // Restore the terminal but keep raw mode enabled.
-}
-
-impl RestoreMode {
-    fn restore(self) -> Result<()> {
-        match self {
-            RestoreMode::Full => restore(),
-            RestoreMode::KeepRaw => restore_keep_raw(),
-        }
-    }
 }
 
 /// Flush the underlying stdin buffer to clear any input that may be buffered at the terminal level.
@@ -670,9 +657,9 @@ impl Tui {
     /// Temporarily restore terminal state to run an external interactive program `f`.
     ///
     /// This pauses crossterm's stdin polling by dropping the underlying event stream, restores
-    /// terminal modes and stderr (optionally keeping raw mode enabled), then re-applies Codex TUI
-    /// modes and stderr suppression before resuming events.
-    pub async fn with_restored<R, F, Fut>(&mut self, mode: RestoreMode, f: F) -> R
+    /// terminal modes and stderr while keeping raw mode enabled, then re-applies Codex TUI modes
+    /// and stderr suppression before resuming events.
+    pub async fn with_restored<R, F, Fut>(&mut self, f: F) -> R
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
@@ -686,7 +673,7 @@ impl Tui {
             let _ = self.leave_alt_screen();
         }
 
-        if let Err(err) = mode.restore() {
+        if let Err(err) = restore_keep_raw() {
             tracing::warn!("failed to restore terminal modes before external program: {err}");
         }
         if let Err(err) = terminal_stderr::pause() {

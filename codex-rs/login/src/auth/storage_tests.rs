@@ -667,20 +667,7 @@ fn secrets_keyring_auth_storage_save_persists_and_removes_fallback_file() -> any
     std::fs::write(&auth_file, "stale")?;
     let marker = FileAuthorityMarker::new(codex_home.path());
     marker.activate()?;
-    let auth = AuthDotJson {
-        auth_mode: Some(AuthMode::Chatgpt),
-        openai_api_key: None,
-        tokens: Some(TokenData {
-            id_token: Default::default(),
-            access_token: "access".to_string(),
-            refresh_token: "refresh".to_string(),
-            account_id: Some("account".to_string()),
-        }),
-        last_refresh: Some(Utc::now()),
-        agent_identity: None,
-        personal_access_token: None,
-        bedrock_api_key: None,
-    };
+    let auth = auth_with_prefix("secrets-save");
 
     storage.save(&auth)?;
 

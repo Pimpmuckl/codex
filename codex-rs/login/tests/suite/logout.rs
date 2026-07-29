@@ -62,7 +62,7 @@ async fn logout_with_revoke_revokes_refresh_token_then_removes_auth() -> Result<
         codex_home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        &codex_login::test_support::transport_default_auth_route_config(),
     )
     .await?;
 
@@ -121,7 +121,7 @@ async fn logout_with_revoke_uses_stored_auth_when_access_token_env_is_set() -> R
         codex_home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        &codex_login::test_support::transport_default_auth_route_config(),
     )
     .await?;
 
@@ -165,7 +165,7 @@ async fn logout_with_revoke_does_not_revoke_imported_account_marker() -> Result<
             codex_home.path(),
             AuthCredentialsStoreMode::File,
             AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
+            &codex_login::test_support::transport_default_auth_route_config(),
         )
         .await?
     );
@@ -216,7 +216,7 @@ async fn logout_with_revoke_removes_auth_when_revoke_fails() -> Result<()> {
         codex_home.path(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        &codex_login::test_support::transport_default_auth_route_config(),
     )
     .await?;
 
@@ -260,7 +260,7 @@ async fn auth_manager_logout_with_revoke_uses_cached_and_stored_auth() -> Result
         /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        codex_login::test_support::transport_default_auth_route_config(),
     )
     .await;
     save_auth(
@@ -352,7 +352,7 @@ async fn auth_manager_logout_with_revoke_revokes_all_imported_accounts() -> Resu
         /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        codex_login::test_support::transport_default_auth_route_config(),
     )
     .await;
 

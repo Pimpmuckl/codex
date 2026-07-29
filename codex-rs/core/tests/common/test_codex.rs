@@ -42,7 +42,6 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeConversationVersion as RealtimeWsVersion;
 use codex_protocol::protocol::SandboxPolicy;
@@ -630,7 +629,10 @@ impl TestCodexBuilder {
                     config.codex_home.clone(),
                 ))
             });
-        let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
+        let auth_manager = self
+            .auth_manager
+            .clone()
+            .unwrap_or_else(|| codex_core::test_support::auth_manager_from_auth(auth.clone()));
         let thread_manager = ThreadManager::new(
             &config,
             auth_manager.clone(),
@@ -657,6 +659,7 @@ impl TestCodexBuilder {
             codex_core::test_support::with_code_mode_host_program(
                 thread_manager,
                 code_mode_host_program,
+                &config,
             )
         } else {
             thread_manager
@@ -702,24 +705,11 @@ impl TestCodexBuilder {
                 .await?
             }
             (None, None) => {
-                let environments = thread_manager
-                    .default_environment_selections(&config.cwd, &config.workspace_roots);
-                Box::pin(
-                    thread_manager.start_thread_with_options(StartThreadOptions {
-                        config: config.clone(),
-                        allow_provider_model_fallback: false,
-                        initial_history: InitialHistory::New,
-                        history_mode: self.history_mode,
-                        session_source: None,
-                        thread_source: None,
-                        dynamic_tools: Vec::new(),
-                        metrics_service_name: None,
-                        parent_trace: None,
-                        environments,
-                        thread_extension_init: Default::default(),
-                        supports_openai_form_elicitation: self.supports_openai_form_elicitation,
-                    }),
-                )
+                Box::pin(thread_manager.start_thread(StartThreadOptions {
+                    history_mode: self.history_mode,
+                    supports_openai_form_elicitation: self.supports_openai_form_elicitation,
+                    ..StartThreadOptions::new(config.clone())
+                }))
                 .await?
             }
         };

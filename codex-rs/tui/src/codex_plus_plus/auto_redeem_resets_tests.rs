@@ -242,7 +242,11 @@ async fn redemption_flow_consumes_selected_credit_and_finishes_recovery() {
         store: &store,
         id: &id,
         home: home.path().to_path_buf(),
-        client: BackendClient::from_auth(&config.chatgpt_base_url, &auth).unwrap(),
+        client: BackendClient::from_auth(
+            &config.chatgpt_base_url,
+            &auth,
+            config.auth_route_config().http_client_factory().clone(),
+        ),
     };
 
     let usage = account

@@ -73,7 +73,7 @@ use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::auth::ImportedAccountSwitchOutcome;
 use codex_login::default_client::add_originator_header;
-use codex_login::default_client::build_default_reqwest_client_for_route;
+use codex_login::default_client::create_client_for_route;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::auth::AuthMode;
@@ -92,6 +92,7 @@ use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
+use codex_tools::create_tools_raw_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -135,6 +136,7 @@ use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::extract_response_debug_context_from_api_error;
@@ -210,7 +212,6 @@ struct ModelClientState {
     enable_request_compression: bool,
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
-    item_ids_enabled: bool,
     concurrent_reasoning_summaries_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
@@ -365,6 +366,21 @@ fn responses_request_properties_match(
         && previous_text == current_text
 }
 
+fn response_items_equal_ignoring_internal_metadata(
+    previous: &ResponseItem,
+    current: &ResponseItem,
+) -> bool {
+    if previous == current {
+        return true;
+    }
+
+    let mut previous = previous.clone();
+    previous.clear_internal_chat_message_metadata_passthrough();
+    let mut current = current.clone();
+    current.clear_internal_chat_message_metadata_passthrough();
+    previous == current
+}
+
 impl WebsocketSession {
     fn set_connection_reused(&self, connection_reused: bool) {
         *self
@@ -427,7 +443,6 @@ impl ModelClient {
         enable_request_compression: bool,
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
-        item_ids_enabled: bool,
         concurrent_reasoning_summaries_enabled: bool,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         http_client_factory: HttpClientFactory,
@@ -451,7 +466,6 @@ impl ModelClient {
                 enable_request_compression,
                 include_timing_metrics,
                 beta_features_header,
-                item_ids_enabled,
                 concurrent_reasoning_summaries_enabled,
                 include_attestation,
                 attestation_provider,
@@ -591,7 +605,7 @@ impl ModelClient {
             text,
             ..
         } = request;
-        self.prepare_response_items_for_request(&mut input, /*store*/ false);
+        self.prepare_response_items_for_request(&mut input);
         let payload = ApiCompactionInput {
             model: &model,
             input: &input,
@@ -847,8 +861,8 @@ impl ModelClient {
                 .iter_mut()
                 .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
         }
-        let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let (instructions, tools) = if model_info.use_responses_lite {
+            let tools = create_tools_json_for_responses_api(&prompt.tools)?;
             let mut prefix = vec![ResponseItem::AdditionalTools {
                 id: None,
                 role: "developer".to_string(),
@@ -868,7 +882,10 @@ impl ModelClient {
             input.splice(0..0, prefix);
             (String::new(), None)
         } else {
-            (prompt.base_instructions.text.clone(), Some(tools))
+            (
+                prompt.base_instructions.text.clone(),
+                Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into()),
+            )
         };
         let reasoning = Self::build_reasoning(model_info, effort, summary);
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled
@@ -916,19 +933,11 @@ impl ModelClient {
         Ok(request)
     }
 
-    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
-        for item in input.iter_mut() {
+    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
+        for item in input {
             if item.id().is_some_and(|id| !id.is_prefixed()) {
                 item.set_id(/*new_id*/ None);
             }
-        }
-
-        if self.state.item_ids_enabled || store {
-            return;
-        }
-
-        for item in input {
-            item.set_id(/*new_id*/ None);
         }
     }
 
@@ -981,13 +990,13 @@ impl ModelClient {
         endpoint: &str,
     ) -> Result<ReqwestTransport> {
         let request_url = api_provider.url_for_path(endpoint);
-        let client = build_default_reqwest_client_for_route(
+        let client = create_client_for_route(
             &self.http_client_factory,
             &request_url,
             ClientRouteClass::Api,
         )
         .map_err(std::io::Error::from)?;
-        Ok(ReqwestTransport::new(client))
+        Ok(ReqwestTransport::from_http_client(client))
     }
 
     pub(crate) async fn prewarm_auth(&self) -> Result<()> {
@@ -1213,29 +1222,25 @@ impl ModelClientSession {
             return None;
         }
 
-        // To compare the inputs, we concatenate the previous request items with the response items,
-        // then compare that against the equivalent slice of request items, ignoring metadata. If
-        // they match, we can consider the remaining items the incremental request.
-        let mut previous_items = previous_request.input.clone();
-        if let Some(response) = last_response {
-            previous_items.extend_from_slice(&response.items_added);
-        }
-        previous_items
-            .iter_mut()
-            .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
-
+        let response_items =
+            last_response.map_or(&[][..], |response| response.items_added.as_slice());
+        let previous_items_len = previous_request
+            .input
+            .len()
+            .checked_add(response_items.len())?;
         let Some((request_items_to_compare, incremental_items)) =
-            request.input.split_at_checked(previous_items.len())
+            request.input.split_at_checked(previous_items_len)
         else {
             trace!("incremental request failed, incompatible request length");
             return None;
         };
-        let mut request_prefix = request_items_to_compare.to_vec();
-        request_prefix
-            .iter_mut()
-            .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
-
-        if previous_items != request_prefix {
+        let previous_items = previous_request.input.iter().chain(response_items);
+        if !previous_items
+            .zip(request_items_to_compare)
+            .all(|(previous, current)| {
+                response_items_equal_ignoring_internal_metadata(previous, current)
+            })
+        {
             trace!("incremental request failed, items didn't match");
             return None;
         }
@@ -1482,9 +1487,8 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
-            let store = request.store;
             self.client
-                .prepare_response_items_for_request(&mut request.input, store);
+                .prepare_response_items_for_request(&mut request.input);
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1538,50 +1542,46 @@ impl ModelClientSession {
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
-                    match err {
-                        CodexErr::UsageLimitReached(usage_limit) => {
-                            if let Some(manager) = auth_manager.as_ref() {
-                                if let Some(account_id) = request_account_id.as_ref() {
-                                    if let Some(resets_at) = usage_limit.resets_at.as_ref()
-                                        && let Err(err) = manager
-                                            .record_imported_account_usage_limit_resets_at(
-                                                account_id,
-                                                resets_at.timestamp(),
-                                            )
-                                    {
-                                        tracing::warn!(
-                                            "failed to record account usage limit reset: {err}"
-                                        );
-                                    }
-                                    attempted_account_ids.insert(account_id.to_string());
-                                    self.usage_limit_failover_tracking
-                                        .attempted_account_ids
-                                        .insert(account_id.to_string());
-                                }
-                                match manager
-                                    .switch_to_next_imported_account(&attempted_account_ids)
-                                    .await
+                    if let CodexErrorDetails::UsageLimitReached(usage_limit) = err.details() {
+                        if let Some(manager) = auth_manager.as_ref() {
+                            if let Some(account_id) = request_account_id.as_ref() {
+                                if let Some(resets_at) = usage_limit.resets_at.as_ref()
+                                    && let Err(err) = manager
+                                        .record_imported_account_usage_limit_resets_at(
+                                            account_id,
+                                            resets_at.timestamp(),
+                                        )
                                 {
-                                    ImportedAccountSwitchOutcome::ReadyToRetry => {
-                                        if let Some(account_id) = manager.active_account_id() {
-                                            self.usage_limit_failover_tracking
-                                                .selected_account_ids
-                                                .push(account_id);
-                                        }
-                                        auth_recovery = Some(manager.unauthorized_recovery());
-                                        pending_retry = PendingUnauthorizedRetry::default();
-                                        continue;
-                                    }
-                                    ImportedAccountSwitchOutcome::SelectedBlockedUntil {
-                                        ..
-                                    }
-                                    | ImportedAccountSwitchOutcome::NoCandidate => {}
+                                    tracing::warn!(
+                                        "failed to record account usage limit reset: {err}"
+                                    );
                                 }
+                                attempted_account_ids.insert(account_id.to_string());
+                                self.usage_limit_failover_tracking
+                                    .attempted_account_ids
+                                    .insert(account_id.to_string());
                             }
-                            return Err(CodexErr::UsageLimitReached(usage_limit));
+                            match manager
+                                .switch_to_next_imported_account(&attempted_account_ids)
+                                .await
+                            {
+                                ImportedAccountSwitchOutcome::ReadyToRetry => {
+                                    if let Some(account_id) = manager.active_account_id() {
+                                        self.usage_limit_failover_tracking
+                                            .selected_account_ids
+                                            .push(account_id);
+                                    }
+                                    auth_recovery = Some(manager.unauthorized_recovery());
+                                    pending_retry = PendingUnauthorizedRetry::default();
+                                    continue;
+                                }
+                                ImportedAccountSwitchOutcome::SelectedBlockedUntil { .. }
+                                | ImportedAccountSwitchOutcome::NoCandidate => {}
+                            }
                         }
-                        err => return Err(err),
+                        return Err(err);
                     }
+                    return Err(err);
                 }
             }
         }
@@ -1706,10 +1706,9 @@ impl ModelClientSession {
                 Some((response_id, items)) => (Some(response_id), Some(items)),
                 None => (None, None),
             };
-            let store = request.store;
             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
                 self.client
-                    .prepare_response_items_for_request(incremental_items, store);
+                    .prepare_response_items_for_request(incremental_items);
                 None
             } else {
                 let original_item_ids = request
@@ -1718,7 +1717,7 @@ impl ModelClientSession {
                     .map(|item| item.id().cloned())
                     .collect::<Vec<_>>();
                 self.client
-                    .prepare_response_items_for_request(&mut request.input, store);
+                    .prepare_response_items_for_request(&mut request.input);
                 Some(original_item_ids)
             };
             let ws_payload = ResponseCreateWsRequest {

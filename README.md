@@ -79,7 +79,7 @@ Local builds default to Cargo's `release-fast` profile for iteration. Public Git
 Publishing is triggered only by manually pushing a tag named `codex-plus-plus-v<upstream>-fork.N` at the exact commit to release:
 
 ```sh
-tag=codex-plus-plus-v0.145.0-fork.1 # use the current upstream version and next fork number
+tag=codex-plus-plus-v0.146.0-fork.1 # use the current upstream version and next fork number
 git tag "$tag"
 git push origin "$tag"
 ```

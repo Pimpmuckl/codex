@@ -42,6 +42,7 @@ pub async fn spawn_current_user_runner_session(
         codex_home: codex_home.clone(),
         real_codex_home: codex_home.clone(),
         cap_sids: Vec::new(),
+        network_proxy_restricting_sid: None,
         timeout_ms: None,
         tty: false,
         stdin_open,

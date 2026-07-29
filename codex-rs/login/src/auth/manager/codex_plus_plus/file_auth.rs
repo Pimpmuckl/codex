@@ -21,7 +21,7 @@ pub(in crate::auth::manager) async fn new_manager(
     codex_home: PathBuf,
     forced_chatgpt_workspace_id: Option<Vec<String>>,
     chatgpt_base_url: Option<String>,
-    auth_route_config: Option<AuthRouteConfig>,
+    auth_route_config: AuthRouteConfig,
 ) -> std::io::Result<Option<AuthManager>> {
     let agent_identity_authapi_base_url =
         agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
@@ -32,7 +32,7 @@ pub(in crate::auth::manager) async fn new_manager(
         chatgpt_base_url.as_deref(),
         AuthKeyringBackendKind::default(),
         agent_identity_authapi_base_url.as_deref(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
     )
     .await?
     .filter(|auth| {
@@ -64,7 +64,7 @@ pub(in crate::auth::manager) async fn load(
         manager.chatgpt_base_url.as_deref(),
         manager.active_keyring_backend_kind(),
         manager.agent_identity_authapi_base_url.as_deref(),
-        manager.auth_route_config.as_ref(),
+        &manager.auth_route_config,
         guard,
     )
     .await

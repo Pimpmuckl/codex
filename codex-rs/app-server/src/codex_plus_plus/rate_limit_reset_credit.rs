@@ -37,8 +37,11 @@ pub(super) async fn consume(
             "chatgpt authentication required for rate limit reset credits",
         ));
     }
-    let client = BackendClient::from_auth(processor.config.chatgpt_base_url.clone(), &auth)
-        .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
+    let client = BackendClient::from_auth(
+        processor.config.chatgpt_base_url.clone(),
+        &auth,
+        processor.config.http_client_factory(),
+    );
     let store = AccountStore::new(processor.config.codex_home.to_path_buf());
     let _lease = store
         .acquire_reset_mutation_lease_for_auth(&auth, deadline)

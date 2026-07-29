@@ -121,7 +121,7 @@ async fn clear_existing_auth_before_login(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     auth_keyring_backend_kind: AuthKeyringBackendKind,
-    auth_route_config: Option<&AuthRouteConfig>,
+    auth_route_config: &AuthRouteConfig,
 ) {
     if let Err(err) = logout_with_revoke(
         codex_home,
@@ -140,13 +140,13 @@ pub async fn login_with_chatgpt(
     forced_chatgpt_workspace_id: Option<Vec<String>>,
     cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
     auth_keyring_backend_kind: AuthKeyringBackendKind,
-    auth_route_config: Option<AuthRouteConfig>,
+    auth_route_config: AuthRouteConfig,
 ) -> std::io::Result<()> {
     clear_existing_auth_before_login(
         &codex_home,
         cli_auth_credentials_store_mode,
         auth_keyring_backend_kind,
-        auth_route_config.as_ref(),
+        &auth_route_config,
     )
     .await;
 
@@ -251,7 +251,7 @@ pub async fn run_login_with_access_token(
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
     )
     .await
     {
@@ -325,7 +325,7 @@ pub async fn run_login_with_device_code(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
     )
     .await;
     let forced_chatgpt_workspace_id = config.forced_chatgpt_workspace_id.clone();
@@ -373,7 +373,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
         &config.codex_home,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
     )
     .await;
 
@@ -436,7 +436,7 @@ pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
         config.forced_chatgpt_workspace_id.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
-        auth_route_config.as_ref(),
+        &auth_route_config,
         config.automatic_account_selection,
     )
     .await
@@ -558,7 +558,7 @@ mod tests {
             codex_home.path(),
             AuthCredentialsStoreMode::File,
             AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
+            &codex_login::test_support::transport_default_auth_route_config(),
         )
         .await;
 

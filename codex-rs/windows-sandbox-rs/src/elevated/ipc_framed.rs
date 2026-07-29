@@ -67,6 +67,9 @@ pub struct SpawnRequest {
     pub codex_home: PathBuf,
     pub real_codex_home: PathBuf,
     pub cap_sids: Vec<String>,
+    /// Optional managed-network identity added only to the child's restricting SID set.
+    #[serde(default)]
+    pub network_proxy_restricting_sid: Option<String>,
     pub timeout_ms: Option<u64>,
     pub tty: bool,
     #[serde(default)]
@@ -240,6 +243,7 @@ mod tests {
                     codex_home: PathBuf::from(r"C:\codex"),
                     real_codex_home: PathBuf::from(r"C:\Users\codex"),
                     cap_sids: vec!["S-1-15-3-1024-1".to_string()],
+                    network_proxy_restricting_sid: Some("S-1-5-21-100-200-300-400".to_string()),
                     timeout_ms: Some(1000),
                     tty: false,
                     stdin_open: false,
@@ -261,6 +265,10 @@ mod tests {
         };
         assert_eq!(PermissionProfile::read_only(), payload.permission_profile);
         assert_eq!(workspace_roots, payload.workspace_roots);
+        assert_eq!(
+            Some("S-1-5-21-100-200-300-400"),
+            payload.network_proxy_restricting_sid.as_deref()
+        );
     }
 
     #[test]

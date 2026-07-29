@@ -8,6 +8,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::auth::PlanType;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
@@ -23,15 +24,24 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::UsageLimitReached {
             plan_type,
             resets_at,
-        } => CodexErr::UsageLimitReached(UsageLimitReachedError {
-            plan_type: plan_type.as_deref().map(PlanType::from_raw_value),
-            resets_at: resets_at.and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0)),
-            rate_limits: None,
-            promo_message: None,
-            rate_limit_reached_type: None,
-        }),
-        ApiError::Retryable { message, delay } => CodexErr::Stream(message, delay),
-        ApiError::Stream(msg) => CodexErr::Stream(msg, None),
+        } => CodexErr::new(CodexErrorDetails::UsageLimitReached(
+            UsageLimitReachedError {
+                plan_type: plan_type.as_deref().map(PlanType::from_raw_value),
+                resets_at: resets_at
+                    .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0)),
+                rate_limits: None,
+                promo_message: None,
+                rate_limit_reached_type: None,
+            },
+        )),
+        ApiError::Retryable { message, delay } => {
+            let error = CodexErr::Stream(message);
+            match delay {
+                Some(delay) => error.with_retry_delay(delay),
+                None => error,
+            }
+        }
+        ApiError::Stream(msg) => CodexErr::Stream(msg),
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => {
             let user_message = api_error_user_message(status, &message);
@@ -47,7 +57,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             })
         }
         ApiError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
-        ApiError::CyberPolicy { message } => CodexErr::CyberPolicy { message },
+        ApiError::CyberPolicy { message } => {
+            CodexErr::new(CodexErrorDetails::CyberPolicy { message })
+        }
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -82,7 +94,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                             .filter(|message| !message.trim().is_empty())
                             .map(str::to_string)
                             .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
-                        CodexErr::CyberPolicy { message }
+                        CodexErr::new(CodexErrorDetails::CyberPolicy { message })
                     } else if body_text
                         .contains("The image data you provided does not represent a valid image")
                     {
@@ -149,11 +161,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 request_id: None,
             }),
             TransportError::Timeout => CodexErr::RequestTimeout,
-            TransportError::Network(msg) | TransportError::Build(msg) => {
-                CodexErr::Stream(msg, None)
-            }
+            TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
         },
-        ApiError::RateLimit(msg) => CodexErr::Stream(msg, None),
+        ApiError::RateLimit(msg) => CodexErr::Stream(msg),
     }
 }
 
