@@ -220,7 +220,11 @@ fn cache_auto_redeem_settings(config: &mut Config, settings: Option<AutoRedeemRe
             table.remove("auto_redeem_resets");
         }
     }
-    config.config_layer_stack = config
+    match config
         .config_layer_stack
-        .with_user_config(&config_toml, TomlValue::Table(table));
+        .with_user_config(&config_toml, TomlValue::Table(table))
+    {
+        Ok(config_layer_stack) => config.config_layer_stack = config_layer_stack,
+        Err(err) => tracing::warn!(%err, "failed to update cached Codex++ settings"),
+    }
 }

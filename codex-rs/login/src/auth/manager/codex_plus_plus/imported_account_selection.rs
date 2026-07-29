@@ -102,7 +102,7 @@ impl AuthManager {
             forced_chatgpt_workspace_id.as_deref(),
             self.chatgpt_base_url.as_deref(),
             self.agent_identity_authapi_base_url.as_deref(),
-            self.auth_route_config.as_ref(),
+            &self.auth_route_config,
         )
         .await
         .ok_or_else(|| {
@@ -191,7 +191,7 @@ impl AuthManager {
                 forced_chatgpt_workspace_id.as_deref(),
                 self.chatgpt_base_url.as_deref(),
                 self.agent_identity_authapi_base_url.as_deref(),
-                self.auth_route_config.as_ref(),
+                &self.auth_route_config,
             )
             .await
             else {

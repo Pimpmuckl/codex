@@ -107,7 +107,7 @@ async fn maybe_run_startup_account_picker(
                 config.forced_chatgpt_workspace_id.as_deref(),
                 Some(&config.chatgpt_base_url),
                 config.auth_keyring_backend_kind(),
-                auth_route_config.as_ref(),
+                &auth_route_config,
             )
             .await
             .ok()

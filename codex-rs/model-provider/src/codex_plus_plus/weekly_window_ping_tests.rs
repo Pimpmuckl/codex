@@ -55,14 +55,17 @@ impl TestAccount {
     }
 
     fn request(&self, server: &MockServer) -> WeeklyWindowPingRequest {
+        let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
         WeeklyWindowPingRequest {
             account_codex_home: self.account_home.clone(),
             model_provider_id: OPENAI_PROVIDER_ID.to_string(),
             model_provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             chatgpt_base_url: server.uri(),
-            auth_route_config: None,
+            auth_route_config: AuthRouteConfig::from_http_client_factory(
+                http_client_factory.clone(),
+            ),
             forced_chatgpt_workspace_id: None,
-            http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            http_client_factory,
         }
     }
 }
@@ -160,7 +163,9 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
         /*forced_chatgpt_workspace_id*/ None,
         Some(server.uri()),
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
+            OutboundProxyPolicy::ReqwestDefault,
+        )),
     )
     .await;
     let foreground_id = foreground.active_account_id();

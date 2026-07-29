@@ -8,7 +8,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AutomaticAccountSelection;
 
 use super::super::CodexAuth;
-use super::super::load_auth;
+use super::super::load_auth_from_storage;
 use crate::account::AccountId;
 use crate::account::AccountProfile;
 use crate::account::AccountStore;
@@ -23,7 +23,7 @@ pub(in crate::auth::manager) async fn load_initial_imported_account_auth(
     forced_chatgpt_workspace_id: Option<&[String]>,
     chatgpt_base_url: Option<&str>,
     agent_identity_authapi_base_url: Option<&str>,
-    auth_route_config: Option<&AuthRouteConfig>,
+    auth_route_config: &AuthRouteConfig,
 ) -> Option<(AccountId, PathBuf, CodexAuth)> {
     let store = AccountStore::new(codex_home.to_path_buf());
     let accounts: Vec<_> = store
@@ -106,11 +106,10 @@ pub(in crate::auth::manager) async fn load_imported_account_auth(
     forced_chatgpt_workspace_id: Option<&[String]>,
     chatgpt_base_url: Option<&str>,
     agent_identity_authapi_base_url: Option<&str>,
-    auth_route_config: Option<&AuthRouteConfig>,
+    auth_route_config: &AuthRouteConfig,
 ) -> Option<CodexAuth> {
-    load_auth(
+    load_auth_from_storage(
         account_home,
-        /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         forced_chatgpt_workspace_id,
         chatgpt_base_url,

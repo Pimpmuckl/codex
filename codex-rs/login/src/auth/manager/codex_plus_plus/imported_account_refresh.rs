@@ -199,8 +199,7 @@ impl AuthManager {
             if !revoked_tokens.insert(token.to_string()) {
                 continue;
             }
-            if let Err(err) = revoke_auth_tokens(Some(&auth), self.auth_route_config.as_ref()).await
-            {
+            if let Err(err) = revoke_auth_tokens(Some(&auth), &self.auth_route_config).await {
                 tracing::warn!("failed to revoke auth tokens during logout: {err}");
             }
         }

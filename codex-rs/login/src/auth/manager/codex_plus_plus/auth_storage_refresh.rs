@@ -42,7 +42,7 @@ pub async fn refresh_auth_from_storage(
     forced_chatgpt_workspace_id: Option<&[String]>,
     chatgpt_base_url: Option<&str>,
     keyring_backend_kind: AuthKeyringBackendKind,
-    auth_route_config: Option<&AuthRouteConfig>,
+    auth_route_config: &AuthRouteConfig,
 ) -> Result<Option<CodexAuth>, RefreshAuthFromStorageError> {
     let manager = AuthManager::new(
         codex_home.to_path_buf(),
@@ -51,7 +51,7 @@ pub async fn refresh_auth_from_storage(
         forced_chatgpt_workspace_id.map(<[String]>::to_vec),
         chatgpt_base_url.map(str::to_string),
         keyring_backend_kind,
-        auth_route_config.cloned(),
+        auth_route_config.clone(),
     )
     .await;
     if let Err(err) = manager.refresh_token().await {
