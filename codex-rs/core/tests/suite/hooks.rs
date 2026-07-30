@@ -4560,15 +4560,29 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         ("approved", "allow", serde_json::json!({})),
     ];
     match surface {
-        BashRewriteSurface::ExecCommand => cases.extend([
-            ("interactive", "allow", serde_json::json!({ "tty": true })),
-            ("login", "allow", serde_json::json!({ "login": true })),
-            (
+        BashRewriteSurface::ExecCommand => {
+            cases.extend([
+                ("interactive", "allow", serde_json::json!({ "tty": true })),
+                ("login", "allow", serde_json::json!({ "login": true })),
+            ]);
+            if !is_remote {
+                let relative_shell = std::path::Path::new(&custom_shell)
+                    .file_name()
+                    .expect("local shell path should have an executable name")
+                    .to_string_lossy()
+                    .into_owned();
+                cases.push((
+                    "relative-shell",
+                    "allow",
+                    serde_json::json!({ "shell": relative_shell }),
+                ));
+            }
+            cases.push((
                 "custom-shell",
                 "allow",
                 serde_json::json!({ "shell": custom_shell }),
-            ),
-        ]),
+            ));
+        }
         BashRewriteSurface::ShellCommand => {
             cases.push(("login", "allow", serde_json::json!({ "login": true })))
         }
