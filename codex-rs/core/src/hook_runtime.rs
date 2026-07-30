@@ -210,8 +210,10 @@ pub(crate) async fn run_pre_tool_use_hooks(
         };
     };
 
-    if (tool_name.name() == "Bash" || tool_name.name() == "apply_patch")
-        && let Some(command) = tool_input.get("command").and_then(Value::as_str)
+    if (matches!(
+        tool_name.name(),
+        "Bash" | "PowerShell" | "cmd.exe" | "apply_patch"
+    )) && let Some(command) = tool_input.get("command").and_then(Value::as_str)
     {
         PreToolUseHookResult::Blocked(format!(
             "Command blocked by PreToolUse hook: {reason}. Command: {command}"
