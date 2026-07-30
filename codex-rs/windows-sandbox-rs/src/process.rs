@@ -125,7 +125,9 @@ pub unsafe fn create_process(
     };
     let attr_count = if stdio.is_some() { 2 } else { 1 };
     let mut attrs = ProcThreadAttributeList::new(attr_count)?;
-    attrs.set_job(job.as_raw_handle() as HANDLE)?;
+    if matches!(execution_mode, ProcessExecutionMode::Token(_)) {
+        attrs.set_job(job.as_raw_handle() as HANDLE)?;
+    }
 
     let mut si: STARTUPINFOEXW = std::mem::zeroed();
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
@@ -162,7 +164,7 @@ pub unsafe fn create_process(
     }
     si.lpAttributeList = attrs.as_mut_ptr();
 
-    let (ok, creation_flags) = match execution_mode {
+    let (create_result, creation_flags) = match execution_mode {
         ProcessExecutionMode::CurrentUser => current_user_process::create_process_with_stdio(
             application_name.as_deref(),
             &mut cmdline,
@@ -170,33 +172,36 @@ pub unsafe fn create_process(
             &cwd_wide,
             &si.StartupInfo,
             &mut pi,
+            job.as_raw_handle() as HANDLE,
             console_mode,
         ),
         ProcessExecutionMode::Token(h_token) => {
             let creation_flags =
                 CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console_flags;
-            (
-                CreateProcessAsUserW(
-                    h_token,
-                    std::ptr::null(),
-                    cmdline.as_mut_ptr(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    1,
-                    creation_flags,
-                    env_block.as_ptr() as *mut c_void,
-                    cwd_wide.as_ptr(),
-                    &si.StartupInfo,
-                    &mut pi,
-                ),
+            let ok = CreateProcessAsUserW(
+                h_token,
+                std::ptr::null(),
+                cmdline.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
                 creation_flags,
-            )
+                env_block.as_ptr() as *mut c_void,
+                cwd_wide.as_ptr(),
+                &si.StartupInfo,
+                &mut pi,
+            );
+            let result = if ok == 0 {
+                Err((GetLastError() as i32, "CreateProcessAsUserW"))
+            } else {
+                Ok(())
+            };
+            (result, creation_flags)
         }
     };
-    if ok == 0 {
-        let err = GetLastError() as i32;
+    if let Err((err, failure_operation)) = create_result {
         let msg = format!(
-            "CreateProcessAsUserW failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
+            "{failure_operation} failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
             err,
             format_last_error(err),
             cwd.display(),

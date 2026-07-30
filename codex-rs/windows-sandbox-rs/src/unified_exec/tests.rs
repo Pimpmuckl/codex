@@ -25,6 +25,7 @@ use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -271,6 +272,7 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         let script = "@echo shell-stdout\r\n@echo shell-stderr 1>&2\r\n@set CODEX_BATCH_ARG=%~1\r\n@runner-probe.exe isolates_console_and_closes_descendants --nocapture\r\n";
         fs::write(&batch, script).unwrap();
         let mut env: HashMap<_, _> = std::env::vars().collect();
+        env.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
         env.insert("Path".into(), codex_home.path().display().to_string());
         env.insert("CODEX_RUNNER_PROBE".into(), marker.display().to_string());
         env.insert("CODEX_PARENT_PID".into(), std::process::id().to_string());
@@ -325,9 +327,11 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
                 stderr.iter().filter(|&&byte| byte == 2).count(),
             ),
             (0, DIRECT_OUTPUT_BURST_BYTES, DIRECT_OUTPUT_BURST_BYTES),
-            "stdout_len={}, stderr_len={}",
+            "stdout_len={}, stderr_len={}, stdout={:?}, stderr={:?}",
             stdout.len(),
-            stderr.len()
+            stderr.len(),
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
         );
         assert!(
             ["shell-stdout", r"native-stdout:C:\dir\"]
@@ -345,6 +349,56 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
         );
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists());
+    });
+}
+
+#[test]
+fn current_user_runner_starts_installed_msix_pwsh_alias() {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let pwsh = PathBuf::from(local_app_data).join(r"Microsoft\WindowsApps\pwsh.exe");
+    let Some(system_root) = std::env::var_os("SystemRoot") else {
+        return;
+    };
+    let Ok(found) = Command::new(PathBuf::from(system_root).join(r"System32\where.exe"))
+        .arg("pwsh")
+        .output()
+    else {
+        return;
+    };
+    let expected = pwsh.to_string_lossy();
+    if !found.status.success()
+        || !String::from_utf8_lossy(&found.stdout)
+            .lines()
+            .any(|path| path.eq_ignore_ascii_case(expected.as_ref()))
+    {
+        return;
+    }
+    current_thread_runtime().block_on(async move {
+        let codex_home = sandbox_home("current-user-msix-pwsh");
+        let spawned = spawn_windows_current_user_runner_session(
+            codex_home.path(),
+            vec![
+                pwsh.display().to_string(),
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "[Console]::Out.Write('msix-alias-ok')".into(),
+            ],
+            &sandbox_cwd(),
+            std::env::vars().collect(),
+            /*stdin_open*/ false,
+        )
+        .await
+        .expect("spawn installed MSIX pwsh alias");
+        let (output, exit_code) =
+            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
+        assert_eq!(
+            (exit_code, String::from_utf8(output).unwrap()),
+            (0, "msix-alias-ok".into())
+        );
     });
 }
 
