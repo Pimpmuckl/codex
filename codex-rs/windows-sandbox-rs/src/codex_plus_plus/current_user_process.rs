@@ -8,7 +8,11 @@ use std::ffi::OsStr;
 use std::ffi::c_void;
 use std::path::Path;
 use std::ptr;
+use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::MAX_PATH;
+use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
@@ -17,6 +21,7 @@ use windows_sys::Win32::System::Threading::CreateProcessW;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::STARTUPINFOW;
+use windows_sys::Win32::System::Threading::TerminateProcess;
 
 fn append_batch_arg(command: &mut String, arg: &str) -> Result<()> {
     if arg.contains(['\0', '\r', '\n', '"']) {
@@ -121,8 +126,9 @@ pub(crate) unsafe fn create_process_with_stdio(
     cwd: &[u16],
     startup_info: &STARTUPINFOW,
     process_info: &mut PROCESS_INFORMATION,
+    job: HANDLE,
     console_mode: ChildConsoleMode,
-) -> (i32, u32) {
+) -> (std::result::Result<(), i32>, u32) {
     let flags = CREATE_UNICODE_ENVIRONMENT
         | EXTENDED_STARTUPINFO_PRESENT
         | CREATE_SUSPENDED
@@ -142,7 +148,18 @@ pub(crate) unsafe fn create_process_with_stdio(
         startup_info,
         process_info,
     );
-    (ok, flags)
+    if ok == 0 {
+        return (Err(GetLastError() as i32), flags);
+    }
+    if AssignProcessToJobObject(job, process_info.hProcess) == 0 {
+        let err = GetLastError() as i32;
+        TerminateProcess(process_info.hProcess, /*uExitCode*/ 1);
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        *process_info = std::mem::zeroed();
+        return (Err(err), flags);
+    }
+    (Ok(()), flags)
 }
 
 #[cfg(test)]
