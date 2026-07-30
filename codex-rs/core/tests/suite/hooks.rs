@@ -4552,6 +4552,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         BashRewriteSurface::ShellCommand => builder.build(&server).await?,
         BashRewriteSurface::ExecCommand => builder.build_with_auto_env(&server).await?,
     };
+    let is_remote = test.executor_environment().environment().is_remote();
     let environment_info = test.executor_environment().environment().info().await?;
     let custom_shell = environment_info.shell.path;
     let mut cases = vec![
@@ -4628,7 +4629,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
             .await?;
         submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
-        if *label == "custom-shell" {
+        if *label == "custom-shell" && !is_remote {
             assert_eq!(
                 test.fs().read_file(&counter, /*sandbox*/ None).await?,
                 b"xx"

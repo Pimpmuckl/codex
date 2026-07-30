@@ -89,7 +89,7 @@ async fn exact_review_receipt_allows_default_handler() -> anyhow::Result<()> {
     let handler = TestHandler { tool_name };
     assert!(handler.pre_tool_use_approval_matches(&invocation, &receipt));
     let result = handle_any_tool(
-        &handler, invocation, /*exact_pre_tool_use_approval*/ false,
+        &handler, invocation, /*exact_pre_tool_use_approval*/ None,
     )
     .await?;
 

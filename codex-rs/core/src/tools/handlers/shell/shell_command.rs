@@ -166,7 +166,7 @@ impl ShellCommandHandler {
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let exact_pre_tool_use_approval =
-            crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
+            crate::tools::codex_plus_plus::pre_tool_use_approval_store::take().is_some();
         let ToolInvocation {
             session,
             turn,

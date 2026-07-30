@@ -110,7 +110,7 @@ impl ExecCommandHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let exact_pre_tool_use_approval =
+        let pre_tool_use_approval =
             crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
         let ToolInvocation {
             session,
@@ -194,7 +194,7 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
-        let exact_pre_tool_use_approval = exact_pre_tool_use_approval
+        let exact_pre_tool_use_approval = pre_tool_use_approval.is_some()
             && !args
                 .login
                 .unwrap_or(turn.config.permissions.allow_login_shell);
@@ -248,6 +248,24 @@ impl ExecCommandHandler {
             turn.config.permissions.allow_login_shell,
         )
         .map_err(FunctionCallError::RespondToModel)?;
+        let resolved_shell_target = if environment.is_remote() {
+            None
+        } else {
+            resolved_command
+                .command
+                .first()
+                .map(|executable_path| ExecCommandShellTarget {
+                    shell_type: resolved_command.shell_type,
+                    executable_path: PathBuf::from(executable_path),
+                })
+        };
+        let exact_pre_tool_use_approval = exact_pre_tool_use_approval
+            && pre_tool_use_approval.as_ref().is_some_and(|approval| {
+                approval
+                    .execution_target
+                    .as_ref()
+                    .is_some_and(|target| target.exec_command_shell == resolved_shell_target)
+            });
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
         let command_for_display = codex_shell_command::parse_command::shlex_join(&command);

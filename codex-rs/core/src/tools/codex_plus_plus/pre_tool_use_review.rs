@@ -70,6 +70,10 @@ impl PreToolUseApprovalReceipt {
             && &self.payload == payload
             && self.execution_target.as_ref() == execution_target
     }
+
+    pub(crate) fn execution_target(&self) -> Option<&PreToolUseExecutionTarget> {
+        self.execution_target.as_ref()
+    }
 }
 
 pub(crate) fn review<'a>(

@@ -15,6 +15,7 @@ use crate::memory_usage::shell_script_for_invocation;
 use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use crate::session::turn_context::TurnContext;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::ExactPreToolUseApproval;
 use crate::tools::codex_plus_plus::pre_tool_use_review;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseApprovalReceipt;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
@@ -624,7 +625,12 @@ impl ToolRegistry {
             .await;
             return Err(err);
         }
-        let exact_pre_tool_use_approval = pre_tool_use_approval.is_some();
+        let exact_pre_tool_use_approval =
+            pre_tool_use_approval
+                .as_ref()
+                .map(|receipt| ExactPreToolUseApproval {
+                    execution_target: receipt.execution_target().cloned(),
+                });
 
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);
@@ -796,7 +802,7 @@ async fn notify_tool_finish_if_unclaimed(
 async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
-    exact_pre_tool_use_approval: bool,
+    exact_pre_tool_use_approval: Option<ExactPreToolUseApproval>,
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
