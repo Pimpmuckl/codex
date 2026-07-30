@@ -625,12 +625,9 @@ impl ToolRegistry {
             .await;
             return Err(err);
         }
-        let exact_pre_tool_use_approval =
-            pre_tool_use_approval
-                .as_ref()
-                .map(|receipt| ExactPreToolUseApproval {
-                    execution_target: receipt.execution_target().cloned(),
-                });
+        let exact_pre_tool_use_approval = pre_tool_use_approval
+            .as_ref()
+            .map(|receipt| ExactPreToolUseApproval::new(receipt.execution_target().cloned()));
 
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);
