@@ -1,11 +1,26 @@
 use std::cell::RefCell;
 use std::future::Future;
 
+use super::pre_tool_use_review::ExecCommandShellTarget;
 use super::pre_tool_use_review::PreToolUseExecutionTarget;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ExactPreToolUseApproval {
     pub(crate) execution_target: Option<PreToolUseExecutionTarget>,
+}
+
+impl ExactPreToolUseApproval {
+    pub(crate) fn matches_local_exec_command_shell(
+        &self,
+        resolved_shell: &ExecCommandShellTarget,
+    ) -> bool {
+        resolved_shell.executable_path.is_absolute()
+            && self
+                .execution_target
+                .as_ref()
+                .and_then(|target| target.exec_command_shell.as_ref())
+                == Some(resolved_shell)
+    }
 }
 
 tokio::task_local! {

@@ -261,10 +261,18 @@ impl ExecCommandHandler {
         };
         let exact_pre_tool_use_approval = exact_pre_tool_use_approval
             && pre_tool_use_approval.as_ref().is_some_and(|approval| {
-                approval
-                    .execution_target
-                    .as_ref()
-                    .is_some_and(|target| target.exec_command_shell == resolved_shell_target)
+                if environment.is_remote() {
+                    approval
+                        .execution_target
+                        .as_ref()
+                        .is_some_and(|target| target.exec_command_shell == resolved_shell_target)
+                } else {
+                    resolved_shell_target
+                        .as_ref()
+                        .is_some_and(|resolved_shell| {
+                            approval.matches_local_exec_command_shell(resolved_shell)
+                        })
+                }
             });
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
