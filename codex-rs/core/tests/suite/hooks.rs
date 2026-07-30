@@ -4555,34 +4555,30 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     let is_remote = test.executor_environment().environment().is_remote();
     let environment_info = test.executor_environment().environment().info().await?;
     let custom_shell = environment_info.shell.path;
+    let relative_shell = custom_shell
+        .rsplit(['/', '\\'])
+        .next()
+        .expect("shell path should have an executable name")
+        .to_owned();
     let mut cases = vec![
         ("denied", "deny", serde_json::json!({})),
         ("approved", "allow", serde_json::json!({})),
     ];
     match surface {
-        BashRewriteSurface::ExecCommand => {
-            cases.extend([
-                ("interactive", "allow", serde_json::json!({ "tty": true })),
-                ("login", "allow", serde_json::json!({ "login": true })),
-            ]);
-            if !is_remote {
-                let relative_shell = std::path::Path::new(&custom_shell)
-                    .file_name()
-                    .expect("local shell path should have an executable name")
-                    .to_string_lossy()
-                    .into_owned();
-                cases.push((
-                    "relative-shell",
-                    "allow",
-                    serde_json::json!({ "shell": relative_shell }),
-                ));
-            }
-            cases.push((
+        BashRewriteSurface::ExecCommand => cases.extend([
+            ("interactive", "allow", serde_json::json!({ "tty": true })),
+            ("login", "allow", serde_json::json!({ "login": true })),
+            (
+                "relative-shell",
+                "allow",
+                serde_json::json!({ "shell": relative_shell }),
+            ),
+            (
                 "custom-shell",
                 "allow",
                 serde_json::json!({ "shell": custom_shell }),
-            ));
-        }
+            ),
+        ]),
         BashRewriteSurface::ShellCommand => {
             cases.push(("login", "allow", serde_json::json!({ "login": true })))
         }
