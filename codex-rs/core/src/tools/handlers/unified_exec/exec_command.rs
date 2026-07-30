@@ -197,7 +197,11 @@ impl ExecCommandHandler {
         let exact_pre_tool_use_approval = pre_tool_use_approval.is_some()
             && !args
                 .login
-                .unwrap_or(turn.config.permissions.allow_login_shell);
+                .unwrap_or(turn.config.permissions.allow_login_shell)
+            && args
+                .shell
+                .as_ref()
+                .is_none_or(|shell| Path::new(shell).is_absolute());
         let has_explicit_shell = args.shell.is_some();
         let hook_command = args.cmd.clone();
         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
