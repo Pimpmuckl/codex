@@ -4572,7 +4572,6 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             cases.push(("login", "allow", serde_json::json!({ "login": true })))
         }
     }
-    let unreviewed_count = cases.len() - 2;
     let mut sequence = Vec::new();
     for (label, verdict, overrides) in &cases {
         let tool_response_id = format!("resp-parent-{label}-tool");
@@ -4595,7 +4594,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             ]),
         ]);
     }
-    let responses = mount_sse_sequence(&server, sequence).await;
+    let _responses = mount_sse_sequence(&server, sequence).await;
     let cwd = test.executor_environment().selection().cwd;
     let counter = cwd.join(&counter_name)?;
     let target = cwd.join(&target_name)?;
@@ -4624,22 +4623,30 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .is_err(),
         "approved command should remove its target"
     );
-    for _ in 0..unreviewed_count {
+    for (label, _, _) in cases.iter().skip(2) {
         test.fs()
             .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
             .await?;
         submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
-        assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
-        assert_eq!(
-            test.fs().read_file(&target, /*sandbox*/ None).await?,
-            b"seed"
-        );
-    }
-    if matches!(surface, BashRewriteSurface::ExecCommand) {
-        let output = responses
-            .function_call_output_text("custom-shell")
-            .expect("custom shell output should reach the parent");
-        assert!(output.contains("rejected: blocked by policy"), "{output}");
+        if *label == "custom-shell" {
+            assert_eq!(
+                test.fs().read_file(&counter, /*sandbox*/ None).await?,
+                b"xx"
+            );
+            assert!(
+                test.fs()
+                    .read_file(&target, /*sandbox*/ None)
+                    .await
+                    .is_err(),
+                "approved custom shell should remove its target"
+            );
+        } else {
+            assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+            assert_eq!(
+                test.fs().read_file(&target, /*sandbox*/ None).await?,
+                b"seed"
+            );
+        }
     }
 
     Ok(())

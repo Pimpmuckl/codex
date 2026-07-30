@@ -3,6 +3,7 @@ use crate::guardian::format_guardian_action_pretty;
 use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::review_approval_request;
+use crate::shell::ShellType;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -11,11 +12,20 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use serde::Serialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct PreToolUseExecutionTarget {
     environment_id: String,
     cwd: PathUri,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) exec_command_shell: Option<ExecCommandShellTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct ExecCommandShellTarget {
+    pub(crate) shell_type: ShellType,
+    pub(crate) executable_path: PathBuf,
 }
 
 impl From<TurnEnvironmentSelection> for PreToolUseExecutionTarget {
@@ -23,6 +33,7 @@ impl From<TurnEnvironmentSelection> for PreToolUseExecutionTarget {
         Self {
             environment_id: selection.environment_id,
             cwd: selection.cwd,
+            exec_command_shell: None,
         }
     }
 }
@@ -117,3 +128,7 @@ pub(crate) fn review<'a>(
         }
     })
 }
+
+#[cfg(test)]
+#[path = "pre_tool_use_review_tests.rs"]
+mod tests;

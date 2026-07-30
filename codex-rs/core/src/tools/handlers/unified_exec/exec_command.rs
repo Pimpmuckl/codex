@@ -1,8 +1,10 @@
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
+use crate::tools::codex_plus_plus::pre_tool_use_review::ExecCommandShellTarget;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolInvocation;
@@ -193,10 +195,10 @@ impl ExecCommandHandler {
             }
         };
         let exact_pre_tool_use_approval = exact_pre_tool_use_approval
-            && args.shell.is_none()
             && !args
                 .login
                 .unwrap_or(turn.config.permissions.allow_login_shell);
+        let has_explicit_shell = args.shell.is_some();
         let hook_command = args.cmd.clone();
         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
         if let Some(native_cwd) = native_cwd.as_ref() {
@@ -236,6 +238,8 @@ impl ExecCommandHandler {
                 )));
             }
         }
+        let exact_pre_tool_use_approval =
+            exact_pre_tool_use_approval && !(environment.is_remote() && has_explicit_shell);
         let process_id = manager.allocate_process_id().await;
         let resolved_command = get_command(
             &args,
@@ -437,10 +441,36 @@ impl CoreToolRuntime for ExecCommandHandler {
             )?;
         let mut execution_target = turn_environment.selection();
         execution_target.cwd = cwd;
+        let mut execution_target = PreToolUseExecutionTarget::from(execution_target);
+        let tool_name = if turn_environment.environment.is_remote() {
+            HookToolName::bash()
+        } else {
+            let shell_mode = shell_mode_for_environment(
+                &invocation.turn.unified_exec_shell_mode,
+                turn_environment.environment.as_ref(),
+            );
+            let shell = turn_environment
+                .shell
+                .clone()
+                .map(Arc::new)
+                .unwrap_or_else(|| invocation.session.user_shell());
+            let resolved_command = get_command(
+                &args,
+                shell,
+                &shell_mode,
+                invocation.turn.config.permissions.allow_login_shell,
+            )
+            .ok()?;
+            execution_target.exec_command_shell = Some(ExecCommandShellTarget {
+                shell_type: resolved_command.shell_type,
+                executable_path: PathBuf::from(resolved_command.command.first()?),
+            });
+            HookToolName::shell(resolved_command.shell_type)
+        };
         Some(PreToolUsePayload {
-            tool_name: HookToolName::bash(),
+            tool_name,
             tool_input: serde_json::json!({ "command": args.cmd }),
-            execution_target: Some(PreToolUseExecutionTarget::from(execution_target)),
+            execution_target: Some(execution_target),
         })
     }
 
