@@ -119,6 +119,8 @@ pub(crate) fn prepare_command(
 
 /// # Safety
 /// Startup information and inherited handles must remain valid for the call.
+// Low-level CreateProcessW wrapper mirrors the Windows API shape.
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn create_process_with_stdio(
     application_name: Option<&[u16]>,
     command_line: &mut [u16],
@@ -128,7 +130,7 @@ pub(crate) unsafe fn create_process_with_stdio(
     process_info: &mut PROCESS_INFORMATION,
     job: HANDLE,
     console_mode: ChildConsoleMode,
-) -> (std::result::Result<(), i32>, u32) {
+) -> (std::result::Result<(), (i32, &'static str)>, u32) {
     let flags = CREATE_UNICODE_ENVIRONMENT
         | EXTENDED_STARTUPINFO_PRESENT
         | CREATE_SUSPENDED
@@ -149,7 +151,7 @@ pub(crate) unsafe fn create_process_with_stdio(
         process_info,
     );
     if ok == 0 {
-        return (Err(GetLastError() as i32), flags);
+        return (Err((GetLastError() as i32, "CreateProcessW")), flags);
     }
     if AssignProcessToJobObject(job, process_info.hProcess) == 0 {
         let err = GetLastError() as i32;
@@ -157,7 +159,10 @@ pub(crate) unsafe fn create_process_with_stdio(
         CloseHandle(process_info.hThread);
         CloseHandle(process_info.hProcess);
         *process_info = std::mem::zeroed();
-        return (Err(err), flags);
+        return (
+            Err((err, "CreateProcessW succeeded; AssignProcessToJobObject")),
+            flags,
+        );
     }
     (Ok(()), flags)
 }

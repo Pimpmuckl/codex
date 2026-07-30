@@ -164,20 +164,17 @@ pub unsafe fn create_process(
     }
     si.lpAttributeList = attrs.as_mut_ptr();
 
-    let (create_result, creation_flags, create_process_name) = match execution_mode {
-        ProcessExecutionMode::CurrentUser => {
-            let (result, creation_flags) = current_user_process::create_process_with_stdio(
-                application_name.as_deref(),
-                &mut cmdline,
-                &env_block,
-                &cwd_wide,
-                &si.StartupInfo,
-                &mut pi,
-                job.as_raw_handle() as HANDLE,
-                console_mode,
-            );
-            (result, creation_flags, "CreateProcessW")
-        }
+    let (create_result, creation_flags) = match execution_mode {
+        ProcessExecutionMode::CurrentUser => current_user_process::create_process_with_stdio(
+            application_name.as_deref(),
+            &mut cmdline,
+            &env_block,
+            &cwd_wide,
+            &si.StartupInfo,
+            &mut pi,
+            job.as_raw_handle() as HANDLE,
+            console_mode,
+        ),
         ProcessExecutionMode::Token(h_token) => {
             let creation_flags =
                 CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console_flags;
@@ -195,16 +192,16 @@ pub unsafe fn create_process(
                 &mut pi,
             );
             let result = if ok == 0 {
-                Err(GetLastError() as i32)
+                Err((GetLastError() as i32, "CreateProcessAsUserW"))
             } else {
                 Ok(())
             };
-            (result, creation_flags, "CreateProcessAsUserW")
+            (result, creation_flags)
         }
     };
-    if let Err(err) = create_result {
+    if let Err((err, failure_operation)) = create_result {
         let msg = format!(
-            "{create_process_name} failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
+            "{failure_operation} failed: {} ({}) | cwd={} | cmd={} | env_u16_len={} | si_flags={} | creation_flags={}",
             err,
             format_last_error(err),
             cwd.display(),
