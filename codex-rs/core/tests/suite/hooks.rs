@@ -442,7 +442,7 @@ fn write_pre_tool_use_hook(
 ) -> Result<()> {
     let script_path = home.join("pre_tool_use_hook.py");
     let hook_command = if cfg!(windows) {
-        format!("python {}; exit $LASTEXITCODE", script_path.display())
+        format!("python '{}'; exit $LASTEXITCODE", script_path.display())
     } else {
         format!("python3 {}", script_path.display())
     };
