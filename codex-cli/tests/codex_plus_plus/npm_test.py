@@ -267,6 +267,7 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
     tags:
       - "codex-plus-plus-v*"
     paths:
+      - ".github/workflows/codex-plus-plus-release.yml"
       - "codex-rs/**/Cargo.toml"
       - "codex-rs/Cargo.lock"
       - "codex-rs/rust-toolchain.toml"''',
@@ -276,6 +277,22 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             warm_dependencies,
         )
         self.assertIn("- name: Warm full-release dependencies", warm_dependencies)
+        build = workflow[workflow.index("\n  build:") : workflow.index("\n  stage-npm:")]
+        for job, build_step in (
+            (warm_dependencies, "- name: Warm full-release dependencies"),
+            (build, "- name: Build package archive"),
+        ):
+            self.assertLess(
+                job.index("rustup toolchain uninstall stable"),
+                job.index("Swatinem/rust-cache@"),
+            )
+            self.assertLess(
+                job.index("uses: ./.github/actions/setup-msvc-env"),
+                job.index("Swatinem/rust-cache@"),
+            )
+            self.assertLess(job.index("Swatinem/rust-cache@"), job.index(build_step))
+        self.assertEqual(workflow.count("rustup toolchain uninstall stable"), 2)
+        self.assertEqual(workflow.count("uses: ./.github/actions/setup-msvc-env"), 2)
         self.assertNotIn("  warm-cache:", workflow)
         self.assertIn("      - publish-npm", github_job)
         self.assertIn("      id-token: write", workflow)

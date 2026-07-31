@@ -17,6 +17,7 @@ on:
     tags:
       - "codex-plus-plus-v*"
     paths:
+      - ".github/workflows/codex-plus-plus-release.yml"
       - "codex-rs/**/Cargo.toml"
       - "codex-rs/Cargo.lock"
       - "codex-rs/rust-toolchain.toml"
@@ -146,13 +147,23 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Remove runner-provided Rust toolchain
+        shell: bash
+        run: rustup toolchain uninstall stable
+
+      - name: Configure LLVM linker
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+
       - name: Restore and save Codex++ dependency cache
         continue-on-error: true
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: codex-rs -> target
           shared-key: codex-plus-plus-${{ env.TARGET }}-release
-          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER LIBSQLITE3_FLAGS TARGET
           cache-bin: false
           cache-workspace-crates: false
 
@@ -244,13 +255,23 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Remove runner-provided Rust toolchain
+        shell: bash
+        run: rustup toolchain uninstall stable
+
+      - name: Configure LLVM linker
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+
       - name: Restore Codex++ dependency cache
         continue-on-error: true
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: codex-rs -> target
           shared-key: codex-plus-plus-${{ env.TARGET }}-release
-          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY LIBSQLITE3_FLAGS TARGET
+          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER LIBSQLITE3_FLAGS TARGET
           cache-bin: false
           cache-workspace-crates: false
           save-if: false
