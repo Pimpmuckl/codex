@@ -498,6 +498,8 @@ elif mode == "ask":
 elif mode == "exit_2":
     sys.stderr.write(reason + "\n")
     raise SystemExit(2)
+elif mode == "create_shell":
+    Path(reason).write_text("", encoding="utf-8")
 "#,
         log_path = log_path.display(),
         mode_json = mode_json,
@@ -4066,14 +4068,16 @@ async fn pre_tool_use_merges_hooks_json_and_config_toml() -> Result<()> {
 }
 
 #[tokio::test]
-async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
+async fn pre_tool_use_blocks_exec_command_if_shell_changes_after_hook() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
     let call_id = "pretooluse-exec-command";
     let marker = std::env::temp_dir().join("pretooluse-exec-command-marker");
+    let shell_dir = tempfile::tempdir()?;
+    let shell_path = shell_dir.path().join("pwsh");
     let command = format!("printf blocked > {}", marker.display());
-    let args = serde_json::json!({ "cmd": command });
+    let args = serde_json::json!({ "cmd": command, "shell": shell_path.clone() });
     let responses = mount_sse_sequence(
         &server,
         vec![
@@ -4095,10 +4099,16 @@ async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
     )
     .await;
 
+    let shell_path_text = shell_path.to_string_lossy().into_owned();
     let mut builder = test_codex()
-        .with_pre_build_hook(|home| {
-            write_pre_tool_use_hook(home, Some("^Bash$"), "exit_2", "blocked exec command")
-                .expect("failed to write pre tool use hook test fixture");
+        .with_pre_build_hook(move |home| {
+            write_pre_tool_use_hook(
+                home,
+                /*matcher*/ None,
+                "create_shell",
+                &shell_path_text,
+            )
+            .expect("failed to write pre tool use hook test fixture");
         })
         .with_config(|config| {
             config.use_experimental_unified_exec_tool = true;
@@ -4124,12 +4134,12 @@ async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
         .and_then(Value::as_str)
         .expect("exec command output string");
     assert!(
-        output.contains("Command blocked by PreToolUse hook: blocked exec command"),
-        "blocked exec command output should surface the hook reason",
+        output.contains("exec_command shell identity changed after PreToolUse hooks"),
+        "{output}",
     );
     assert!(
-        output.contains(&format!("Command: {command}")),
-        "blocked exec command output should surface the blocked command",
+        shell_path.exists(),
+        "hook should create the requested shell"
     );
     assert!(!marker.exists(), "blocked exec command should not execute");
 

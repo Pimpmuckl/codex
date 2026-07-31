@@ -15,8 +15,6 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnEnvironment;
-use crate::tools::codex_plus_plus::pre_tool_use_approval_store::exec_command_shell_matches_review;
-use crate::tools::codex_plus_plus::pre_tool_use_review::ExecCommandShellTarget;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -24,8 +22,6 @@ use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use codex_shell_command::shell_detect::DetectedShell;
-use codex_shell_command::shell_detect::get_shell_by_model_provided_path;
 use tokio::sync::Mutex;
 
 const TEST_TRUNCATION_POLICY: TruncationPolicy = TruncationPolicy::Tokens(10_000);
@@ -132,25 +128,6 @@ fn test_get_command_respects_explicit_powershell_shell() -> anyhow::Result<()> {
 
     assert_eq!(command[2], "echo hello");
     assert_eq!(resolved.shell_type, ShellType::PowerShell);
-    Ok(())
-}
-
-#[test]
-fn exec_shell_review_rejects_path_created_during_hooks() -> anyhow::Result<()> {
-    let temp_dir = tempfile::tempdir()?;
-    let shell_path = temp_dir.path().join("pwsh");
-    let reviewed = get_shell_by_model_provided_path(&shell_path);
-    std::fs::write(&shell_path, "")?;
-    let resolved = get_shell_by_model_provided_path(&shell_path);
-    let target = |shell: DetectedShell| ExecCommandShellTarget {
-        shell_type: shell.shell_type,
-        executable_path: shell.shell_path,
-    };
-
-    assert!(!exec_command_shell_matches_review(
-        Some(&target(reviewed)),
-        Some(&target(resolved)),
-    ));
     Ok(())
 }
 
