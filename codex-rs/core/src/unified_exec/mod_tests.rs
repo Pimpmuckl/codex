@@ -133,7 +133,6 @@ async fn exec_command_with_tty(
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
             process_id,
-            shell_type: ShellType::Bash,
             cwd: cwd.clone().into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hook_command: cmd.to_string(),
@@ -369,9 +368,6 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
     )
     .await?;
     let process_id = open_shell.process_id.expect("expected process_id");
-    let manager = &session.services.unified_exec_manager;
-    let shell_type = manager.process_shell_type(process_id).await;
-    assert_eq!(shell_type, Some(ShellType::Bash));
     assert_eq!(
         session.list_background_terminals().await,
         vec![BackgroundTerminalInfo {
@@ -620,7 +616,6 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
             process,
             call_id: "call".to_string(),
             process_id,
-            shell_type: ShellType::Bash,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hook_command: "sleep 60".to_string(),
@@ -694,7 +689,6 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
             process: Arc::clone(&process),
             call_id: "call".to_string(),
             process_id,
-            shell_type: ShellType::Bash,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hook_command: "sleep 60".to_string(),

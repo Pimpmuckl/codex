@@ -3,7 +3,6 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -71,9 +70,9 @@ impl WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
-        let manager = &session.services.unified_exec_manager;
-        let shell_type = manager.process_shell_type(args.session_id).await;
-        let response = manager
+        let response = session
+            .services
+            .unified_exec_manager
             .write_stdin(WriteStdinRequest {
                 process_id: args.session_id,
                 input: &args.chars,
@@ -89,11 +88,6 @@ impl WriteStdinHandler {
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
-        if let Some(shell_type) = shell_type {
-            crate::tools::codex_plus_plus::pre_tool_use_approval_store::set_post_tool_use_shell_type(
-                shell_type,
-            );
-        }
 
         Ok(boxed_tool_output(response))
     }
@@ -116,8 +110,8 @@ impl CoreToolRuntime for WriteStdinHandler {
         invocation: &ToolInvocation,
         result: &dyn crate::tools::context::ToolOutput,
     ) -> Option<PostToolUsePayload> {
-        let tool_name = crate::tools::codex_plus_plus::pre_tool_use_approval_store::post_tool_use_exec_command_hook_tool_name()
-            .unwrap_or_else(HookToolName::bash);
-        post_unified_exec_tool_use_payload(invocation, result, tool_name)
+        // A `write_stdin` poll can observe final completion for the original
+        // `exec_command`; emit that command's matching Bash PostToolUse.
+        post_unified_exec_tool_use_payload(invocation, result)
     }
 }

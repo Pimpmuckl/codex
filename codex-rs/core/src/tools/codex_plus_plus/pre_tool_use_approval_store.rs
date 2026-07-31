@@ -127,39 +127,28 @@ pub(crate) fn exact_exec_command_approval(
 
 tokio::task_local! {
     static EXACT_APPROVAL: Cell<Option<ExactPreToolUseApproval>>;
-    static REVIEWED_EXEC_COMMAND_SHELL: Option<ExecCommandShellTarget>;
-    static POST_TOOL_USE_HOOK_TOOL_NAME: Cell<Option<HookToolName>>;
+    static REVIEWED_EXEC_COMMAND_SHELL: Cell<Option<ExecCommandShellTarget>>;
 }
 
 pub(crate) async fn scope<T>(
     approval: Option<ExactPreToolUseApproval>,
-    reviewed_shell: Option<ExecCommandShellTarget>,
+    reviewed_exec_command_shell: Option<ExecCommandShellTarget>,
     future: impl Future<Output = T>,
 ) -> T {
-    let hook_tool_name = reviewed_shell
-        .as_ref()
-        .map(|shell| exec_command_hook_tool_name(shell.shell_type));
-    let future = EXACT_APPROVAL.scope(Cell::new(approval), future);
-    let future = REVIEWED_EXEC_COMMAND_SHELL.scope(reviewed_shell, future);
-    POST_TOOL_USE_HOOK_TOOL_NAME
-        .scope(Cell::new(hook_tool_name), future)
+    REVIEWED_EXEC_COMMAND_SHELL
+        .scope(
+            Cell::new(reviewed_exec_command_shell),
+            EXACT_APPROVAL.scope(Cell::new(approval), future),
+        )
         .await
 }
 
 pub(crate) fn take() -> Option<ExactPreToolUseApproval> {
     EXACT_APPROVAL.try_with(Cell::take).unwrap_or(None)
 }
-pub(crate) fn reviewed_exec_command_shell_target() -> Option<ExecCommandShellTarget> {
+
+pub(crate) fn take_reviewed_exec_command_shell() -> Option<ExecCommandShellTarget> {
     REVIEWED_EXEC_COMMAND_SHELL
-        .try_with(Clone::clone)
-        .unwrap_or(None)
-}
-pub(crate) fn set_post_tool_use_shell_type(shell_type: ShellType) {
-    let tool_name = exec_command_hook_tool_name(shell_type);
-    let _ = POST_TOOL_USE_HOOK_TOOL_NAME.try_with(|current| current.set(Some(tool_name)));
-}
-pub(crate) fn post_tool_use_exec_command_hook_tool_name() -> Option<HookToolName> {
-    POST_TOOL_USE_HOOK_TOOL_NAME
         .try_with(Cell::take)
         .unwrap_or(None)
 }

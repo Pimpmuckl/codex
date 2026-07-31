@@ -811,18 +811,12 @@ async fn handle_any_tool(
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
-    let (output, post_tool_use_payload) =
-        crate::tools::codex_plus_plus::pre_tool_use_approval_store::scope(
-            exact_pre_tool_use_approval,
-            reviewed_exec_command_shell,
-            async {
-                let output = tool.handle(invocation.clone()).await?;
-                let post_tool_use_payload =
-                    CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
-                Ok::<_, FunctionCallError>((output, post_tool_use_payload))
-            },
-        )
-        .await?;
+    let output = crate::tools::codex_plus_plus::pre_tool_use_approval_store::scope(
+        exact_pre_tool_use_approval,
+        reviewed_exec_command_shell,
+        async { tool.handle(invocation.clone()).await },
+    )
+    .await?;
     if output.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {
@@ -833,6 +827,8 @@ async fn handle_any_tool(
         )
         .await;
     }
+    let post_tool_use_payload =
+        CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
     Ok(AnyToolResult {
         call_id,
         payload,

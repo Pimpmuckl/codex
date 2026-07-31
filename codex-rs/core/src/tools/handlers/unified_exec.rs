@@ -78,7 +78,6 @@ pub(crate) struct ResolvedCommand {
 fn post_unified_exec_tool_use_payload(
     invocation: &ToolInvocation,
     result: &dyn ToolOutput,
-    tool_name: HookToolName,
 ) -> Option<PostToolUsePayload> {
     let ToolPayload::Function { .. } = &invocation.payload else {
         return None;
@@ -88,7 +87,7 @@ fn post_unified_exec_tool_use_payload(
     let tool_use_id = result.post_tool_use_id(&invocation.call_id);
     let tool_response = result.post_tool_use_response(&tool_use_id, &invocation.payload)?;
     Some(PostToolUsePayload {
-        tool_name,
+        tool_name: HookToolName::bash(),
         tool_use_id,
         tool_input,
         tool_response,

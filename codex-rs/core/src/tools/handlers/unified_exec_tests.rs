@@ -15,7 +15,6 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnEnvironment;
-use crate::tools::codex_plus_plus::pre_tool_use_review::ExecCommandShellTarget;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -294,6 +293,75 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
 }
 
 #[tokio::test]
+async fn exec_command_pre_tool_use_payload_resolves_local_shell_identity() -> anyhow::Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let cases: [(&str, ShellType, &str, &[&str]); 5] = [
+        ("bash", ShellType::Bash, "Bash", &[]),
+        ("sh", ShellType::Sh, "Bash", &[]),
+        ("zsh", ShellType::Zsh, "Bash", &[]),
+        (
+            "powershell.exe",
+            ShellType::PowerShell,
+            "PowerShell",
+            &["Bash"],
+        ),
+        ("cmd.exe", ShellType::Cmd, "cmd.exe", &["Bash"]),
+    ];
+
+    for (shell_name, shell_type, hook_name, matcher_aliases) in cases {
+        let shell_path = temp_dir.path().join(shell_name);
+        std::fs::write(&shell_path, "")?;
+        let payload = ToolPayload::Function {
+            arguments: serde_json::json!({
+                "cmd": "echo exact shell",
+                "shell": shell_path,
+            })
+            .to_string(),
+        };
+        let (session, turn) = make_session_and_context().await;
+        let turn = Arc::new(turn);
+        let step_context = StepContext::for_test(Arc::clone(&turn));
+        let environment = step_context.environments.primary().unwrap();
+        let mut expected_target =
+            crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget::from(
+                environment.selection(),
+            );
+        expected_target.exec_command_shell = Some(
+            crate::tools::codex_plus_plus::pre_tool_use_review::ExecCommandShellTarget {
+                shell_type,
+                executable_path: shell_path.clone(),
+            },
+        );
+        let hook_payload = ExecCommandHandler::default()
+            .pre_tool_use_payload(&ToolInvocation {
+                session: session.into(),
+                step_context,
+                turn,
+                cancellation_token: tokio_util::sync::CancellationToken::new(),
+                tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+                call_id: format!("call-{shell_name}"),
+                tool_name: codex_tools::ToolName::plain("exec_command"),
+                source: ToolCallSource::Direct,
+                payload,
+            })
+            .expect("local shell should resolve before PreToolUse");
+
+        assert_eq!(hook_payload.tool_name.name(), hook_name);
+        assert_eq!(
+            hook_payload
+                .tool_name
+                .matcher_aliases()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            matcher_aliases
+        );
+        assert_eq!(hook_payload.execution_target, Some(expected_target));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
     let payload = ToolPayload::Function {
         arguments: serde_json::json!({ "chars": "echo hi" }).to_string(),
@@ -338,20 +406,10 @@ async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_s
     };
     let invocation = invocation_for_payload("exec_command", "call-43", payload).await;
     let handler = ExecCommandHandler::default();
-    let reviewed_shell = ExecCommandShellTarget {
-        shell_type: ShellType::PowerShell,
-        executable_path: "pwsh".into(),
-    };
-    let post_tool_use_payload = crate::tools::codex_plus_plus::pre_tool_use_approval_store::scope(
-        Option::default(),
-        Some(reviewed_shell),
-        async { handler.post_tool_use_payload(&invocation, &output) },
-    )
-    .await;
     assert_eq!(
-        post_tool_use_payload,
+        handler.post_tool_use_payload(&invocation, &output),
         Some(crate::tools::registry::PostToolUsePayload {
-            tool_name: HookToolName::new("PowerShell").with_matcher_alias("Bash"),
+            tool_name: HookToolName::bash(),
             tool_use_id: "call-43".to_string(),
             tool_input: serde_json::json!({ "command": "echo three" }),
             tool_response: serde_json::json!("three"),

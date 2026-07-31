@@ -22,7 +22,6 @@ use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
-use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -115,7 +114,7 @@ impl ExecCommandHandler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let pre_tool_use_approval =
             crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
-        let reviewed_exec_command_shell = crate::tools::codex_plus_plus::pre_tool_use_approval_store::reviewed_exec_command_shell_target();
+        let reviewed_exec_command_shell = crate::tools::codex_plus_plus::pre_tool_use_approval_store::take_reviewed_exec_command_shell();
         let ToolInvocation {
             session,
             turn,
@@ -519,9 +518,7 @@ impl CoreToolRuntime for ExecCommandHandler {
         invocation: &ToolInvocation,
         result: &dyn crate::tools::context::ToolOutput,
     ) -> Option<PostToolUsePayload> {
-        let tool_name = crate::tools::codex_plus_plus::pre_tool_use_approval_store::post_tool_use_exec_command_hook_tool_name()
-            .unwrap_or_else(HookToolName::bash);
-        post_unified_exec_tool_use_payload(invocation, result, tool_name)
+        post_unified_exec_tool_use_payload(invocation, result)
     }
 }
 
