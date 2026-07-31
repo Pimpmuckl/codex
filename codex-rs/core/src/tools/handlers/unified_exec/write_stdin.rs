@@ -3,6 +3,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -112,6 +113,6 @@ impl CoreToolRuntime for WriteStdinHandler {
     ) -> Option<PostToolUsePayload> {
         // A `write_stdin` poll can observe final completion for the original
         // `exec_command`; emit that command's matching Bash PostToolUse.
-        post_unified_exec_tool_use_payload(invocation, result)
+        post_unified_exec_tool_use_payload(invocation, result, HookToolName::bash())
     }
 }

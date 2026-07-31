@@ -22,6 +22,7 @@ use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -114,7 +115,7 @@ impl ExecCommandHandler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let pre_tool_use_approval =
             crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
-        let reviewed_exec_command_shell = crate::tools::codex_plus_plus::pre_tool_use_approval_store::take_reviewed_exec_command_shell();
+        let reviewed_exec_command_shell = crate::tools::codex_plus_plus::pre_tool_use_approval_store::reviewed_exec_command_shell_target();
         let ToolInvocation {
             session,
             turn,
@@ -240,7 +241,6 @@ impl ExecCommandHandler {
                 )));
             }
         }
-        let process_id = manager.allocate_process_id().await;
         let resolved_command = get_command(
             &args,
             shell,
@@ -265,6 +265,7 @@ impl ExecCommandHandler {
                 "exec_command shell identity changed after PreToolUse hooks".to_string(),
             ));
         }
+        let process_id = manager.allocate_process_id().await;
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
         let command_for_display = codex_shell_command::parse_command::shlex_join(&command);
@@ -518,7 +519,9 @@ impl CoreToolRuntime for ExecCommandHandler {
         invocation: &ToolInvocation,
         result: &dyn crate::tools::context::ToolOutput,
     ) -> Option<PostToolUsePayload> {
-        post_unified_exec_tool_use_payload(invocation, result)
+        let tool_name = crate::tools::codex_plus_plus::pre_tool_use_approval_store::reviewed_exec_command_hook_tool_name()
+            .unwrap_or_else(HookToolName::bash);
+        post_unified_exec_tool_use_payload(invocation, result, tool_name)
     }
 }
 

@@ -127,7 +127,7 @@ pub(crate) fn exact_exec_command_approval(
 
 tokio::task_local! {
     static EXACT_APPROVAL: Cell<Option<ExactPreToolUseApproval>>;
-    static REVIEWED_EXEC_COMMAND_SHELL: Cell<Option<ExecCommandShellTarget>>;
+    static REVIEWED_EXEC_COMMAND_SHELL: Option<ExecCommandShellTarget>;
 }
 
 pub(crate) async fn scope<T>(
@@ -137,7 +137,7 @@ pub(crate) async fn scope<T>(
 ) -> T {
     REVIEWED_EXEC_COMMAND_SHELL
         .scope(
-            Cell::new(reviewed_exec_command_shell),
+            reviewed_exec_command_shell,
             EXACT_APPROVAL.scope(Cell::new(approval), future),
         )
         .await
@@ -147,10 +147,14 @@ pub(crate) fn take() -> Option<ExactPreToolUseApproval> {
     EXACT_APPROVAL.try_with(Cell::take).unwrap_or(None)
 }
 
-pub(crate) fn take_reviewed_exec_command_shell() -> Option<ExecCommandShellTarget> {
+pub(crate) fn reviewed_exec_command_shell_target() -> Option<ExecCommandShellTarget> {
     REVIEWED_EXEC_COMMAND_SHELL
-        .try_with(Cell::take)
+        .try_with(Clone::clone)
         .unwrap_or(None)
+}
+
+pub(crate) fn reviewed_exec_command_hook_tool_name() -> Option<HookToolName> {
+    reviewed_exec_command_shell_target().map(|shell| exec_command_hook_tool_name(shell.shell_type))
 }
 
 #[cfg(test)]
