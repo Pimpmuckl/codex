@@ -519,7 +519,7 @@ impl CoreToolRuntime for ExecCommandHandler {
         invocation: &ToolInvocation,
         result: &dyn crate::tools::context::ToolOutput,
     ) -> Option<PostToolUsePayload> {
-        let tool_name = crate::tools::codex_plus_plus::pre_tool_use_approval_store::reviewed_exec_command_hook_tool_name()
+        let tool_name = crate::tools::codex_plus_plus::pre_tool_use_approval_store::post_tool_use_exec_command_hook_tool_name()
             .unwrap_or_else(HookToolName::bash);
         post_unified_exec_tool_use_payload(invocation, result, tool_name)
     }

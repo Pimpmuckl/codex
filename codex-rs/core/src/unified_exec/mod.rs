@@ -169,6 +169,7 @@ struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     call_id: String,
     process_id: i32,
+    shell_type: ShellType,
     cwd: PathUri,
     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
     hook_command: String,

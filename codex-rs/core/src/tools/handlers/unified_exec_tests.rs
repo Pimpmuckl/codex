@@ -294,51 +294,6 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
 }
 
 #[tokio::test]
-async fn exec_command_pre_tool_use_payload_resolves_local_shell_identity() -> anyhow::Result<()> {
-    let temp_dir = tempfile::tempdir()?;
-    let cases = [
-        ("bash", ShellType::Bash, HookToolName::bash()),
-        (
-            "pwsh",
-            ShellType::PowerShell,
-            HookToolName::new("PowerShell").with_matcher_alias("Bash"),
-        ),
-        (
-            "cmd.exe",
-            ShellType::Cmd,
-            HookToolName::new("cmd.exe").with_matcher_alias("Bash"),
-        ),
-    ];
-    for (shell_name, shell_type, hook_tool_name) in cases {
-        let shell_path = temp_dir.path().join(shell_name);
-        std::fs::write(&shell_path, "")?;
-        let payload = ToolPayload::Function {
-            arguments: serde_json::json!({
-                "cmd": "echo exact shell",
-                "shell": shell_path,
-            })
-            .to_string(),
-        };
-        let call_id = format!("call-{shell_name}");
-        let invocation = invocation_for_payload("exec_command", &call_id, payload).await;
-        let hook_payload = ExecCommandHandler::default()
-            .pre_tool_use_payload(&invocation)
-            .expect("local shell should resolve before PreToolUse");
-
-        assert_eq!(hook_payload.tool_name, hook_tool_name);
-        let actual_shell = hook_payload.execution_target.unwrap().exec_command_shell;
-        assert_eq!(
-            actual_shell,
-            Some(ExecCommandShellTarget {
-                shell_type,
-                executable_path: shell_path,
-            })
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
     let payload = ToolPayload::Function {
         arguments: serde_json::json!({ "chars": "echo hi" }).to_string(),

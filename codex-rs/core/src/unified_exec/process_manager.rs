@@ -22,6 +22,7 @@ use crate::exec_policy::ExecApprovalRequest;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
+use crate::shell::ShellType;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
@@ -419,6 +420,14 @@ impl UnifiedExecProcessManager {
         }
     }
 
+    pub(crate) async fn process_shell_type(&self, process_id: i32) -> Option<ShellType> {
+        let store = self.process_store.lock().await;
+        store
+            .processes
+            .get(&process_id)
+            .map(|entry| entry.shell_type)
+    }
+
     pub(crate) async fn exec_command(
         &self,
         request: ExecCommandRequest,
@@ -483,6 +492,7 @@ impl UnifiedExecProcessManager {
                 plugin_attribution.clone(),
                 start,
                 request.process_id,
+                request.shell_type,
                 request.tty,
                 deferred_network_approval.clone(),
                 network_denial_monitor,
@@ -951,6 +961,7 @@ impl UnifiedExecProcessManager {
         plugin_attribution: Option<PluginCommandAttribution>,
         started_at: Instant,
         process_id: i32,
+        shell_type: ShellType,
         tty: bool,
         network_approval: Option<DeferredNetworkApproval>,
         network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
@@ -961,6 +972,7 @@ impl UnifiedExecProcessManager {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
             process_id,
+            shell_type,
             cwd: cwd.clone(),
             initial_exec_command_active,
             hook_command,

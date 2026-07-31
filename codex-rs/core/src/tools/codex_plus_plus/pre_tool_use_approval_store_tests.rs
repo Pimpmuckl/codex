@@ -9,6 +9,9 @@ async fn exact_approval_is_one_shot_and_task_scoped() {
     let (approved, unapproved) = tokio::join!(
         scope(Some(approval.clone()), Option::default(), async {
             yield_now().await;
+            super::set_post_tool_use_shell_type(crate::shell::ShellType::PowerShell);
+            let hook_name = super::post_tool_use_exec_command_hook_tool_name().unwrap();
+            assert_eq!(hook_name.name(), "PowerShell");
             (take(), take())
         }),
         scope(Option::default(), Option::default(), async {

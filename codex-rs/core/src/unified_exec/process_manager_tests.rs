@@ -543,6 +543,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 },
                 call_id: format!("call-{process_id}"),
                 process_id,
+                shell_type: crate::shell::ShellType::Bash,
                 cwd: cwd.clone(),
                 initial_exec_command_active: Arc::new(AtomicBool::new(false)),
                 hook_command: format!("command-{process_id}"),
