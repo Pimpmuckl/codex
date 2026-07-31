@@ -5,6 +5,7 @@ use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::tools::codex_plus_plus::pre_tool_use_approval_store::ExecCommandApprovalContext;
 use crate::tools::codex_plus_plus::pre_tool_use_approval_store::exact_exec_command_approval;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::exec_command_shell_matches_review;
 use crate::tools::codex_plus_plus::pre_tool_use_approval_store::resolved_exec_command_shell;
 use crate::tools::codex_plus_plus::pre_tool_use_approval_store::reviewed_exec_command_shell;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
@@ -113,6 +114,7 @@ impl ExecCommandHandler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let pre_tool_use_approval =
             crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
+        let reviewed_exec_command_shell = crate::tools::codex_plus_plus::pre_tool_use_approval_store::take_reviewed_exec_command_shell();
         let ToolInvocation {
             session,
             turn,
@@ -252,6 +254,17 @@ impl ExecCommandHandler {
                 resolved_command.command.first()?.clone(),
             ))
         });
+        let resolved_shell_target = resolved_shell
+            .as_ref()
+            .and_then(|shell| shell.execution_target.as_ref());
+        if !exec_command_shell_matches_review(
+            reviewed_exec_command_shell.as_ref(),
+            resolved_shell_target,
+        ) {
+            return Err(FunctionCallError::RespondToModel(
+                "exec_command shell identity changed after PreToolUse hooks".to_string(),
+            ));
+        }
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
         let command_for_display = codex_shell_command::parse_command::shlex_join(&command);
@@ -273,9 +286,7 @@ impl ExecCommandHandler {
                 requested_shell: requested_shell.as_deref(),
                 use_login_shell,
                 tty,
-                resolved_shell: resolved_shell
-                    .as_ref()
-                    .and_then(|shell| shell.execution_target.as_ref()),
+                resolved_shell: resolved_shell_target,
             },
         );
 

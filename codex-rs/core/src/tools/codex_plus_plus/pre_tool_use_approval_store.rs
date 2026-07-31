@@ -39,6 +39,14 @@ pub(crate) struct ResolvedExecCommandShell {
     pub(crate) execution_target: Option<ExecCommandShellTarget>,
 }
 
+fn exec_command_hook_tool_name(shell_type: ShellType) -> HookToolName {
+    match shell_type {
+        ShellType::Bash | ShellType::Sh | ShellType::Zsh => HookToolName::bash(),
+        ShellType::PowerShell => HookToolName::new("PowerShell").with_matcher_alias("Bash"),
+        ShellType::Cmd => HookToolName::new("cmd.exe").with_matcher_alias("Bash"),
+    }
+}
+
 pub(crate) fn resolved_exec_command_shell(
     environment: &Environment,
     resolve_local: impl FnOnce() -> Option<(ShellType, String)>,
@@ -51,7 +59,7 @@ pub(crate) fn resolved_exec_command_shell(
     }
     let (shell_type, executable_path) = resolve_local()?;
     Some(ResolvedExecCommandShell {
-        hook_tool_name: HookToolName::shell(shell_type),
+        hook_tool_name: exec_command_hook_tool_name(shell_type),
         execution_target: Some(ExecCommandShellTarget {
             shell_type,
             executable_path: PathBuf::from(executable_path),
@@ -73,6 +81,13 @@ pub(crate) fn reviewed_exec_command_shell(
             resolved_command.command.first()?.clone(),
         ))
     })
+}
+
+pub(crate) fn exec_command_shell_matches_review(
+    reviewed_shell: Option<&ExecCommandShellTarget>,
+    resolved_shell: Option<&ExecCommandShellTarget>,
+) -> bool {
+    reviewed_shell.is_none_or(|reviewed_shell| Some(reviewed_shell) == resolved_shell)
 }
 
 pub(crate) struct ExecCommandApprovalContext<'a> {
@@ -112,17 +127,30 @@ pub(crate) fn exact_exec_command_approval(
 
 tokio::task_local! {
     static EXACT_APPROVAL: Cell<Option<ExactPreToolUseApproval>>;
+    static REVIEWED_EXEC_COMMAND_SHELL: Cell<Option<ExecCommandShellTarget>>;
 }
 
 pub(crate) async fn scope<T>(
     approval: Option<ExactPreToolUseApproval>,
+    reviewed_exec_command_shell: Option<ExecCommandShellTarget>,
     future: impl Future<Output = T>,
 ) -> T {
-    EXACT_APPROVAL.scope(Cell::new(approval), future).await
+    REVIEWED_EXEC_COMMAND_SHELL
+        .scope(
+            Cell::new(reviewed_exec_command_shell),
+            EXACT_APPROVAL.scope(Cell::new(approval), future),
+        )
+        .await
 }
 
 pub(crate) fn take() -> Option<ExactPreToolUseApproval> {
     EXACT_APPROVAL.try_with(Cell::take).unwrap_or(None)
+}
+
+pub(crate) fn take_reviewed_exec_command_shell() -> Option<ExecCommandShellTarget> {
+    REVIEWED_EXEC_COMMAND_SHELL
+        .try_with(Cell::take)
+        .unwrap_or(None)
 }
 
 #[cfg(test)]

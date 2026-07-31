@@ -5,8 +5,6 @@
 //! concepts together prevents handlers from accidentally serializing a
 //! compatibility alias, such as `Write`, as the stable hook payload name.
 
-use crate::shell::ShellType;
-
 /// Identifies a tool in hook payloads and hook matcher selection.
 ///
 /// `name` is the canonical value serialized into hook stdin. Matcher aliases are
@@ -25,6 +23,11 @@ impl HookToolName {
             name: name.into(),
             matcher_aliases: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_matcher_alias(mut self, matcher_alias: impl Into<String>) -> Self {
+        self.matcher_aliases.push(matcher_alias.into());
+        self
     }
 
     /// Returns the hook identity for file edits performed through `apply_patch`.
@@ -55,21 +58,6 @@ impl HookToolName {
     /// Returns the hook identity historically used for shell-like tools.
     pub(crate) fn bash() -> Self {
         Self::new("Bash")
-    }
-
-    /// Returns the canonical hook identity for a resolved shell.
-    pub(crate) fn shell(shell_type: ShellType) -> Self {
-        match shell_type {
-            ShellType::Bash | ShellType::Sh | ShellType::Zsh => Self::bash(),
-            ShellType::PowerShell => Self {
-                name: "PowerShell".to_string(),
-                matcher_aliases: vec!["Bash".to_string()],
-            },
-            ShellType::Cmd => Self {
-                name: "cmd.exe".to_string(),
-                matcher_aliases: vec!["Bash".to_string()],
-            },
-        }
     }
 
     /// Returns the canonical hook name serialized into hook stdin.
