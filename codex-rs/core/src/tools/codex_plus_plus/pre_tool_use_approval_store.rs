@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
@@ -111,20 +111,18 @@ pub(crate) fn exact_exec_command_approval(
 }
 
 tokio::task_local! {
-    static EXACT_APPROVAL: RefCell<Option<ExactPreToolUseApproval>>;
+    static EXACT_APPROVAL: Cell<Option<ExactPreToolUseApproval>>;
 }
 
 pub(crate) async fn scope<T>(
     approval: Option<ExactPreToolUseApproval>,
     future: impl Future<Output = T>,
 ) -> T {
-    EXACT_APPROVAL.scope(RefCell::new(approval), future).await
+    EXACT_APPROVAL.scope(Cell::new(approval), future).await
 }
 
 pub(crate) fn take() -> Option<ExactPreToolUseApproval> {
-    EXACT_APPROVAL
-        .try_with(|approval| approval.borrow_mut().take())
-        .unwrap_or(None)
+    EXACT_APPROVAL.try_with(Cell::take).unwrap_or(None)
 }
 
 #[cfg(test)]
