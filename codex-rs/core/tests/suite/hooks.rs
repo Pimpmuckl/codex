@@ -36,6 +36,7 @@ use core_test_support::TestTargetOs;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::hooks::trust_hooks;
 use core_test_support::managed_network_requirements_loader;
+use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_apply_patch_custom_tool_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -89,7 +90,7 @@ async fn submit_yolo_hook_review_turn(test: &TestCodex, prompt: &str) -> Result<
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
                     test.config.cwd.clone(),
-                    vec![test.executor_environment().selection()],
+                    vec![test.executor_environment().selection().clone()],
                 )),
                 approval_policy: Some(AskForApproval::Never),
                 approvals_reviewer: Some(ApprovalsReviewer::User),
@@ -104,6 +105,16 @@ async fn submit_yolo_hook_review_turn(test: &TestCodex, prompt: &str) -> Result<
     })
     .await;
     Ok(())
+}
+
+async fn wait_for_response_request_count(response_mock: &ResponseMock, expected_count: usize) {
+    timeout(Duration::from_secs(5), async {
+        while response_mock.requests().len() < expected_count {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for Responses API request");
 }
 
 fn guardian_review_sse(response_id: &str, outcome: &str, rationale: &str) -> String {
@@ -430,6 +441,11 @@ fn write_pre_tool_use_hook(
     reason: &str,
 ) -> Result<()> {
     let script_path = home.join("pre_tool_use_hook.py");
+    let hook_command = if cfg!(windows) {
+        format!("python '{}'; exit $LASTEXITCODE", script_path.display())
+    } else {
+        format!("python3 {}", script_path.display())
+    };
     let log_path = home.join("pre_tool_use_hook_log.jsonl");
     let mode_json = serde_json::to_string(mode).context("serialize pre tool use mode")?;
     let reason_json = serde_json::to_string(reason).context("serialize pre tool use reason")?;
@@ -482,6 +498,8 @@ elif mode == "ask":
 elif mode == "exit_2":
     sys.stderr.write(reason + "\n")
     raise SystemExit(2)
+elif mode == "create_shell":
+    Path(reason).write_text("", encoding="utf-8")
 "#,
         log_path = log_path.display(),
         mode_json = mode_json,
@@ -491,7 +509,7 @@ elif mode == "exit_2":
     let mut group = serde_json::json!({
         "hooks": [{
             "type": "command",
-            "command": format!("python3 {}", script_path.display()),
+            "command": hook_command,
             "statusMessage": "running pre tool use hook",
         }]
     });
@@ -4050,14 +4068,16 @@ async fn pre_tool_use_merges_hooks_json_and_config_toml() -> Result<()> {
 }
 
 #[tokio::test]
-async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
+async fn pre_tool_use_blocks_exec_command_if_shell_changes_after_hook() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
     let call_id = "pretooluse-exec-command";
     let marker = std::env::temp_dir().join("pretooluse-exec-command-marker");
+    let shell_dir = tempfile::tempdir()?;
+    let shell_path = shell_dir.path().join("pwsh");
     let command = format!("printf blocked > {}", marker.display());
-    let args = serde_json::json!({ "cmd": command });
+    let args = serde_json::json!({ "cmd": command, "shell": shell_path.clone() });
     let responses = mount_sse_sequence(
         &server,
         vec![
@@ -4079,10 +4099,16 @@ async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
     )
     .await;
 
+    let shell_path_text = shell_path.to_string_lossy().into_owned();
     let mut builder = test_codex()
-        .with_pre_build_hook(|home| {
-            write_pre_tool_use_hook(home, Some("^Bash$"), "exit_2", "blocked exec command")
-                .expect("failed to write pre tool use hook test fixture");
+        .with_pre_build_hook(move |home| {
+            write_pre_tool_use_hook(
+                home,
+                /*matcher*/ None,
+                "create_shell",
+                &shell_path_text,
+            )
+            .expect("failed to write pre tool use hook test fixture");
         })
         .with_config(|config| {
             config.use_experimental_unified_exec_tool = true;
@@ -4108,12 +4134,12 @@ async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
         .and_then(Value::as_str)
         .expect("exec command output string");
     assert!(
-        output.contains("Command blocked by PreToolUse hook: blocked exec command"),
-        "blocked exec command output should surface the hook reason",
+        output.contains("exec_command shell identity changed after PreToolUse hooks"),
+        "{output}",
     );
     assert!(
-        output.contains(&format!("Command: {command}")),
-        "blocked exec command output should surface the blocked command",
+        shell_path.exists(),
+        "hook should create the requested shell"
     );
     assert!(!marker.exists(), "blocked exec command should not execute");
 
@@ -4528,13 +4554,16 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     let slug = surface.slug();
     let counter_name = format!("{slug}-guardian-counter");
     let target_name = format!("{slug}-guardian-target");
+    let executed_shell_name = format!("{slug}-guardian-executed-shell");
     let uses_windows_shell = match surface {
         BashRewriteSurface::ExecCommand => test_target_os() == TestTargetOs::Windows,
         BashRewriteSurface::ShellCommand => cfg!(windows),
     };
     let command = if uses_windows_shell {
         format!(
-            "Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
+            "Set-Content -NoNewline -LiteralPath {executed_shell_name} \
+             -Value (Get-Process -Id $PID).Path; \
+             Add-Content -NoNewline -LiteralPath {counter_name} -Value x; \
              rm {target_name} -Recurse -Force"
         )
     } else {
@@ -4554,6 +4583,11 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     };
     let environment_info = test.executor_environment().environment().info().await?;
     let custom_shell = environment_info.shell.path;
+    let relative_shell = custom_shell
+        .rsplit(['/', '\\'])
+        .next()
+        .expect("shell path should have an executable name")
+        .to_owned();
     let mut cases = vec![
         ("denied", "deny", serde_json::json!({})),
         ("approved", "allow", serde_json::json!({})),
@@ -4563,16 +4597,20 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             ("interactive", "allow", serde_json::json!({ "tty": true })),
             ("login", "allow", serde_json::json!({ "login": true })),
             (
+                "relative-shell",
+                "allow",
+                serde_json::json!({ "shell": relative_shell }),
+            ),
+            (
                 "custom-shell",
                 "allow",
-                serde_json::json!({ "shell": custom_shell }),
+                serde_json::json!({ "shell": custom_shell.clone() }),
             ),
         ]),
         BashRewriteSurface::ShellCommand => {
             cases.push(("login", "allow", serde_json::json!({ "login": true })))
         }
     }
-    let unreviewed_count = cases.len() - 2;
     let mut sequence = Vec::new();
     for (label, verdict, overrides) in &cases {
         let tool_response_id = format!("resp-parent-{label}-tool");
@@ -4596,9 +4634,10 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         ]);
     }
     let responses = mount_sse_sequence(&server, sequence).await;
-    let cwd = test.executor_environment().selection().cwd;
+    let cwd = test.executor_environment().selection().cwd.clone();
     let counter = cwd.join(&counter_name)?;
     let target = cwd.join(&target_name)?;
+    let executed_shell = cwd.join(&executed_shell_name)?;
     test.fs()
         .write_file(&counter, Vec::new(), /*sandbox*/ None)
         .await?;
@@ -4607,6 +4646,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         .await?;
 
     submit_yolo_hook_review_turn(&test, "deny the dangerous command").await?;
+    wait_for_response_request_count(&responses, /*expected_count*/ 3).await;
 
     assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"");
     assert_eq!(
@@ -4615,7 +4655,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     );
 
     submit_yolo_hook_review_turn(&test, "approve the dangerous command").await?;
-
+    wait_for_response_request_count(&responses, /*expected_count*/ 6).await;
     assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
     assert!(
         test.fs()
@@ -4624,22 +4664,56 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .is_err(),
         "approved command should remove its target"
     );
-    for _ in 0..unreviewed_count {
+    for (index, (label, _, _)) in cases.iter().skip(2).enumerate() {
         test.fs()
             .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
             .await?;
         submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
-        assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
-        assert_eq!(
-            test.fs().read_file(&target, /*sandbox*/ None).await?,
-            b"seed"
-        );
+        wait_for_response_request_count(&responses, /*expected_count*/ (index + 3) * 3).await;
+        if *label == "custom-shell" && !test.executor_environment().environment().is_remote() {
+            assert_eq!(
+                test.fs().read_file(&counter, /*sandbox*/ None).await?,
+                b"xx"
+            );
+            assert!(
+                test.fs()
+                    .read_file(&target, /*sandbox*/ None)
+                    .await
+                    .is_err(),
+                "approved custom shell should remove its target"
+            );
+            if uses_windows_shell {
+                let executed_shell_path = String::from_utf8(
+                    test.fs()
+                        .read_file(&executed_shell, /*sandbox*/ None)
+                        .await?,
+                )?;
+                assert_eq!(
+                    std::fs::canonicalize(executed_shell_path.trim())?,
+                    std::fs::canonicalize(&custom_shell)?
+                );
+            }
+        } else {
+            assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+            assert_eq!(
+                test.fs().read_file(&target, /*sandbox*/ None).await?,
+                b"seed"
+            );
+        }
     }
     if matches!(surface, BashRewriteSurface::ExecCommand) {
-        let output = responses
-            .function_call_output_text("custom-shell")
-            .expect("custom shell output should reach the parent");
-        assert!(output.contains("rejected: blocked by policy"), "{output}");
+        let requests = responses.requests();
+        let serialized_custom_shell = custom_shell.replace('\\', "\\\\");
+        let guardian_request = requests
+            .iter()
+            .find(|request| {
+                request.message_input_texts("user").iter().any(|text| {
+                    text.contains(r#""shell":"#) && text.contains(&serialized_custom_shell)
+                })
+            })
+            .expect("expected Guardian review request for the custom shell");
+        assert!(guardian_request.body_contains_text(reason));
+        assert!(guardian_request.body_contains_text("exec_command_shell"));
     }
 
     Ok(())

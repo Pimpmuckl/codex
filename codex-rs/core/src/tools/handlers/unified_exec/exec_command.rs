@@ -3,6 +3,11 @@ use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::ExecCommandApprovalContext;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::exact_exec_command_approval;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::exec_command_shell_matches_review;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::resolved_exec_command_shell;
+use crate::tools::codex_plus_plus::pre_tool_use_approval_store::reviewed_exec_command_shell;
 use crate::tools::codex_plus_plus::pre_tool_use_review::PreToolUseExecutionTarget;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolInvocation;
@@ -17,7 +22,6 @@ use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
-use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -108,8 +112,9 @@ impl ExecCommandHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let exact_pre_tool_use_approval =
+        let pre_tool_use_approval =
             crate::tools::codex_plus_plus::pre_tool_use_approval_store::take();
+        let reviewed_exec_command_shell = crate::tools::codex_plus_plus::pre_tool_use_approval_store::take_reviewed_exec_command_shell();
         let ToolInvocation {
             session,
             turn,
@@ -192,11 +197,10 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
-        let exact_pre_tool_use_approval = exact_pre_tool_use_approval
-            && args.shell.is_none()
-            && !args
-                .login
-                .unwrap_or(turn.config.permissions.allow_login_shell);
+        let requested_shell = args.shell.clone();
+        let use_login_shell = args
+            .login
+            .unwrap_or(turn.config.permissions.allow_login_shell);
         let hook_command = args.cmd.clone();
         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
         if let Some(native_cwd) = native_cwd.as_ref() {
@@ -236,7 +240,6 @@ impl ExecCommandHandler {
                 )));
             }
         }
-        let process_id = manager.allocate_process_id().await;
         let resolved_command = get_command(
             &args,
             shell,
@@ -244,6 +247,24 @@ impl ExecCommandHandler {
             turn.config.permissions.allow_login_shell,
         )
         .map_err(FunctionCallError::RespondToModel)?;
+        let resolved_shell = resolved_exec_command_shell(environment.as_ref(), || {
+            Some((
+                resolved_command.shell_type,
+                resolved_command.command.first()?.clone(),
+            ))
+        });
+        let resolved_shell_target = resolved_shell
+            .as_ref()
+            .and_then(|shell| shell.execution_target.as_ref());
+        if !exec_command_shell_matches_review(
+            reviewed_exec_command_shell.as_ref(),
+            resolved_shell_target,
+        ) {
+            return Err(FunctionCallError::RespondToModel(
+                "exec_command shell identity changed after PreToolUse hooks".to_string(),
+            ));
+        }
+        let process_id = manager.allocate_process_id().await;
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
         let command_for_display = codex_shell_command::parse_command::shlex_join(&command);
@@ -258,7 +279,16 @@ impl ExecCommandHandler {
             prefix_rule,
             ..
         } = args;
-        let exact_pre_tool_use_approval = exact_pre_tool_use_approval && !tty;
+        let exact_pre_tool_use_approval = exact_exec_command_approval(
+            pre_tool_use_approval.as_ref(),
+            ExecCommandApprovalContext {
+                environment: environment.as_ref(),
+                requested_shell: requested_shell.as_deref(),
+                use_login_shell,
+                tty,
+                resolved_shell: resolved_shell_target,
+            },
+        );
 
         let exec_permission_approvals_enabled =
             session.features().enabled(Feature::ExecPermissionApprovals);
@@ -437,10 +467,28 @@ impl CoreToolRuntime for ExecCommandHandler {
             )?;
         let mut execution_target = turn_environment.selection();
         execution_target.cwd = cwd;
+        let mut execution_target = PreToolUseExecutionTarget::from(execution_target);
+        let shell_mode = shell_mode_for_environment(
+            &invocation.turn.unified_exec_shell_mode,
+            turn_environment.environment.as_ref(),
+        );
+        let shell = turn_environment
+            .shell
+            .clone()
+            .map(Arc::new)
+            .unwrap_or_else(|| invocation.session.user_shell());
+        let resolved_shell = reviewed_exec_command_shell(
+            turn_environment.environment.as_ref(),
+            &args,
+            shell,
+            &shell_mode,
+            invocation.turn.config.permissions.allow_login_shell,
+        )?;
+        execution_target.exec_command_shell = resolved_shell.execution_target;
         Some(PreToolUsePayload {
-            tool_name: HookToolName::bash(),
+            tool_name: resolved_shell.hook_tool_name,
             tool_input: serde_json::json!({ "command": args.cmd }),
-            execution_target: Some(PreToolUseExecutionTarget::from(execution_target)),
+            execution_target: Some(execution_target),
         })
     }
 

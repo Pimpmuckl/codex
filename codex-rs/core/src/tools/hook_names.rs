@@ -25,6 +25,11 @@ impl HookToolName {
         }
     }
 
+    pub(crate) fn with_matcher_alias(mut self, matcher_alias: impl Into<String>) -> Self {
+        self.matcher_aliases.push(matcher_alias.into());
+        self
+    }
+
     /// Returns the hook identity for file edits performed through `apply_patch`.
     ///
     /// The serialized name remains `apply_patch` so logs and policies can key
