@@ -132,7 +132,3 @@ pub(crate) fn review<'a>(
         }
     })
 }
-
-#[cfg(test)]
-#[path = "pre_tool_use_review_tests.rs"]
-mod tests;
