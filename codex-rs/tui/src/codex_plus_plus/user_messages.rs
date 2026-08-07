@@ -6,8 +6,6 @@ use std::collections::VecDeque;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
-use codex_protocol::items::AgentMessageContent;
-use codex_protocol::items::AgentMessageItem;
 
 use super::App;
 
@@ -91,13 +89,7 @@ impl App {
         else {
             return;
         };
-        let item = AgentMessageItem {
-            id: id.clone(),
-            content: vec![AgentMessageContent::Text { text: text.clone() }],
-            phase: phase.clone(),
-            memory_citation: None,
-        };
-        if crate::codex_plus_plus::recognize_user_message(&item).is_some() {
+        if crate::codex_plus_plus::recognize_user_message_text(id, text, phase.as_ref()).is_some() {
             self.user_message_unread.record(
                 thread_id,
                 id,

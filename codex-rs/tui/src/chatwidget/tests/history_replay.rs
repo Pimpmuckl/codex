@@ -1196,6 +1196,7 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
             app_context: None,
             mcp_app_resource_uri: None,
             plugin_id: None,
+            read_only_hint: None,
             result: None,
             error: None,
             duration_ms: None,
@@ -1229,6 +1230,7 @@ async fn deferred_mcp_lifecycle_events_keep_fifo_after_stream_finishes() {
         app_context: None,
         mcp_app_resource_uri: None,
         plugin_id: None,
+        read_only_hint: None,
         result: None,
         error: None,
         duration_ms: None,
@@ -1245,6 +1247,7 @@ async fn deferred_mcp_lifecycle_events_keep_fifo_after_stream_finishes() {
         app_context: None,
         mcp_app_resource_uri: None,
         plugin_id: None,
+        read_only_hint: None,
         result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
             content: vec![json!({"type": "text", "text": "deferred result"})],
             structured_content: None,

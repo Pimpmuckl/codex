@@ -6,10 +6,12 @@ use std::time::Duration;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::AccountStore;
+use codex_login::AuthConfig;
 use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
+use codex_login::AuthRouteConfig;
 use codex_login::save_auth;
 use codex_model_provider_info::ModelProviderInfo;
 use pretty_assertions::assert_eq;
@@ -57,14 +59,22 @@ impl TestAccount {
     fn request(&self, server: &MockServer) -> WeeklyWindowPingRequest {
         let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
         WeeklyWindowPingRequest {
-            account_codex_home: self.account_home.clone(),
+            auth_config: AuthConfig {
+                codex_home: self.account_home.clone(),
+                auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+                keyring_backend_kind: AuthKeyringBackendKind::default(),
+                automatic_account_selection: Default::default(),
+                forced_login_method: None,
+                chatgpt_base_url: Some(server.uri()),
+                forced_chatgpt_workspace_id: None,
+                managed_auth_policy: Default::default(),
+                auth_route_config: AuthRouteConfig::from_http_client_factory(
+                    http_client_factory.clone(),
+                ),
+            },
             model_provider_id: OPENAI_PROVIDER_ID.to_string(),
             model_provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             chatgpt_base_url: server.uri(),
-            auth_route_config: AuthRouteConfig::from_http_client_factory(
-                http_client_factory.clone(),
-            ),
-            forced_chatgpt_workspace_id: None,
             http_client_factory,
         }
     }
@@ -201,8 +211,14 @@ async fn sends_exact_request_without_mutating_auth_or_exposing_it_to_custom_prov
     let mut override_request = account.request(&server);
     override_request.model_provider.base_url = Some(server.uri());
     let mut invalid_auth_request = account.request(&server);
-    invalid_auth_request.account_codex_home = account.root.join("invalid-auth");
-    std::fs::create_dir_all(invalid_auth_request.account_codex_home.join("auth.json")).unwrap();
+    invalid_auth_request.auth_config.codex_home = account.root.join("invalid-auth");
+    std::fs::create_dir_all(
+        invalid_auth_request
+            .auth_config
+            .codex_home
+            .join("auth.json"),
+    )
+    .unwrap();
     for request in [custom_request, override_request] {
         assert_eq!(
             ping_weekly_window(request).await,

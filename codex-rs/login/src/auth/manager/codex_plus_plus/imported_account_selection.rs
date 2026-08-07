@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AutomaticAccountSelection;
+use codex_protocol::config_types::ForcedLoginMethod;
 
 use super::super::AuthManager;
 use super::super::CodexAuth;
@@ -80,6 +81,12 @@ impl AuthManager {
         if self.active_account_id().as_ref() == Some(account_id) {
             return Ok(());
         }
+        if !self.is_login_method_allowed(ForcedLoginMethod::Chatgpt) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "managed authentication policy does not permit ChatGPT accounts",
+            ));
+        }
         let (account, account_home) = AccountStore::new(self.codex_home.clone())
             .file_account_profiles()?
             .into_iter()
@@ -96,10 +103,10 @@ impl AuthManager {
             self.set_cached_auth(/*new_auth*/ None);
             return Ok(());
         }
-        let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
+        let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
         let auth = load_imported_account_auth(
             &account_home,
-            forced_chatgpt_workspace_id.as_deref(),
+            effective_chatgpt_workspaces.as_deref(),
             self.chatgpt_base_url.as_deref(),
             self.agent_identity_authapi_base_url.as_deref(),
             &self.auth_route_config,
@@ -143,6 +150,9 @@ impl AuthManager {
         &self,
         attempted_account_ids: &HashSet<String>,
     ) -> ImportedAccountSwitchOutcome {
+        if !self.is_login_method_allowed(ForcedLoginMethod::Chatgpt) {
+            return ImportedAccountSwitchOutcome::NoCandidate;
+        }
         let store = AccountStore::new(self.codex_home.clone());
         let accounts = store.enabled_file_account_profiles().unwrap_or_default();
         let active_account_id = self.active_account_id();
@@ -184,11 +194,11 @@ impl AuthManager {
             )
         });
 
+        let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
         for ((account, account_home), blocked, _) in candidates {
-            let forced_chatgpt_workspace_id = self.forced_chatgpt_workspace_id();
             let Some(auth) = load_imported_account_auth(
                 account_home,
-                forced_chatgpt_workspace_id.as_deref(),
+                effective_chatgpt_workspaces.as_deref(),
                 self.chatgpt_base_url.as_deref(),
                 self.agent_identity_authapi_base_url.as_deref(),
                 &self.auth_route_config,

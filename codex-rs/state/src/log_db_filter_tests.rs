@@ -25,6 +25,16 @@ async fn sqlite_sink_default_filter_drops_trace_and_debug() {
     tracing::trace!(target: "opentelemetry_sdk", "dropped-trace");
     tracing::debug!(target: "opentelemetry_sdk", "dropped-debug");
     tracing::info!(target: "opentelemetry_sdk", "retained-info");
+    tracing::debug!(target: "rmcp::transport", "dropped-rmcp-debug");
+    tracing::info!(target: "rmcp::transport", "retained-rmcp-info");
+    tracing::debug!(
+        target: "codex_rmcp_client::oauth",
+        "dropped-codex-rmcp-client-debug"
+    );
+    tracing::info!(
+        target: "codex_rmcp_client::oauth",
+        "retained-codex-rmcp-client-info"
+    );
     tracing::trace!(target: "codex_state", "dropped-trace");
     tracing::trace!(
         target: "codex_api::responses_websocket_timing",
@@ -47,7 +57,15 @@ async fn sqlite_sink_default_filter_drops_trace_and_debug() {
                 row.message.as_deref()
             ))
             .collect::<Vec<_>>(),
-        vec![("INFO", "opentelemetry_sdk", Some("retained-info"))]
+        vec![
+            ("INFO", "opentelemetry_sdk", Some("retained-info")),
+            ("INFO", "rmcp::transport", Some("retained-rmcp-info")),
+            (
+                "INFO",
+                "codex_rmcp_client::oauth",
+                Some("retained-codex-rmcp-client-info")
+            ),
+        ]
     );
 
     let _ = tokio::fs::remove_dir_all(codex_home).await;

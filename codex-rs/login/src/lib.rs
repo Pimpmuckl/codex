@@ -5,6 +5,7 @@ pub mod auth_env_telemetry;
 pub mod test_support;
 pub mod token_data;
 
+mod callback_params;
 mod device_code_auth;
 mod outbound_proxy;
 mod pkce;
@@ -30,6 +31,8 @@ pub use account::weekly_window_state::WeeklyWindowRetryableError;
 pub use account::weekly_window_state::WeeklyWindowScanLease;
 pub use account::weekly_window_state::WeeklyWindowStatus;
 pub use account::weekly_window_state::WeeklyWindowUsage;
+pub use callback_params::LoginCallbackResult;
+pub use callback_params::LoginOnboardingEntrypoint;
 pub use codex_config::types::AuthCredentialsStoreMode;
 pub use codex_http_client::BuildCustomCaTransportError as BuildLoginHttpClientError;
 pub use device_code_auth::DeviceCode;

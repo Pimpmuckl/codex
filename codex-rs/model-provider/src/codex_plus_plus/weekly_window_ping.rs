@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,8 +15,8 @@ use codex_http_client::Request;
 use codex_http_client::ReqwestTransport;
 use codex_http_client::Response;
 use codex_http_client::StreamResponse;
+use codex_login::AuthConfig;
 use codex_login::AuthManager;
-use codex_login::AuthRouteConfig;
 use codex_login::CodexAuth;
 use codex_login::default_client::create_client;
 use codex_model_provider_info::ModelProviderInfo;
@@ -47,12 +46,10 @@ impl HttpTransport for DeadlineTransport {
 }
 
 pub struct WeeklyWindowPingRequest {
-    pub account_codex_home: PathBuf,
+    pub auth_config: AuthConfig,
     pub model_provider_id: String,
     pub model_provider: ModelProviderInfo,
     pub chatgpt_base_url: String,
-    pub auth_route_config: AuthRouteConfig,
-    pub forced_chatgpt_workspace_id: Option<Vec<String>>,
     pub http_client_factory: HttpClientFactory,
 }
 
@@ -119,14 +116,7 @@ async fn ping_weekly_window_inner(
     request: WeeklyWindowPingRequest,
     deadline: Instant,
 ) -> WeeklyWindowPingOutcome {
-    let auth_manager = match AuthManager::new_from_file_auth(
-        request.account_codex_home.clone(),
-        request.forced_chatgpt_workspace_id.clone(),
-        Some(request.chatgpt_base_url.clone()),
-        request.auth_route_config.clone(),
-    )
-    .await
-    {
+    let auth_manager = match AuthManager::new_from_file_auth(request.auth_config.clone()).await {
         Ok(Some(manager)) => Arc::new(manager),
         Ok(None) => return WeeklyWindowPingOutcome::LoginRequired,
         Err(_) => return WeeklyWindowPingOutcome::LocalSetup,

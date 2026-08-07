@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::TurnEnvironmentState;
+use crate::function_tool::FunctionCallError;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnEnvironment;
@@ -21,6 +22,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use tokio::sync::Mutex;
 
@@ -172,6 +174,46 @@ fn test_get_command_rejects_explicit_login_when_disallowed() -> anyhow::Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn exec_command_rejects_login_when_selected_environment_disallows_it() {
+    let (session, mut turn) = make_session_and_context().await;
+    assert!(turn.config.permissions.allow_login_shell);
+    let TurnEnvironmentState::Ready(environment) = turn
+        .environments
+        .environments
+        .first_mut()
+        .expect("primary environment")
+    else {
+        panic!("primary environment should be ready");
+    };
+    environment.config.allow_login_shell = false;
+
+    let turn = Arc::new(turn);
+    let invocation = ToolInvocation {
+        session: session.into(),
+        step_context: StepContext::for_test(Arc::clone(&turn)),
+        turn,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: "login-disallowed".to_string(),
+        tool_name: codex_tools::ToolName::plain("exec_command"),
+        source: ToolCallSource::Direct,
+        payload: ToolPayload::Function {
+            arguments: serde_json::json!({ "cmd": "echo hello", "login": true }).to_string(),
+        },
+    };
+
+    let Err(FunctionCallError::RespondToModel(message)) =
+        ExecCommandHandler::default().handle(invocation).await
+    else {
+        panic!("expected login-shell rejection");
+    };
+    assert_eq!(
+        message,
+        "login shell is disabled by config; omit `login` or set it to false."
+    );
+}
+
 #[test]
 fn test_get_command_rejects_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<()> {
     let json = r#"{"cmd": "echo hello", "shell": "/bin/bash"}"#;
@@ -249,6 +291,7 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
         .to_string(),
     };
     let (session, mut turn) = make_session_and_context().await;
+    let environment_config = turn.environments.primary().unwrap().config.clone();
     turn.environments = TurnEnvironmentSnapshot {
         environments: vec![TurnEnvironmentState::Ready(TurnEnvironment::new(
             "remote".to_string(),
@@ -258,6 +301,7 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
             remote_cwd.clone(),
             vec![remote_cwd.clone()],
             /*shell*/ None,
+            environment_config,
         ))],
     };
     let turn = Arc::new(turn);

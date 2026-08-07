@@ -58,12 +58,6 @@ pub(crate) fn enabled(config_layer_stack: &ConfigLayerStack) -> bool {
 }
 
 pub(crate) fn recognize(item: &AgentMessageItem) -> Option<UserMessage> {
-    if item.phase != Some(MessagePhase::Commentary)
-        || !item.id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX)
-    {
-        return None;
-    }
-
     let message = item
         .content
         .iter()
@@ -71,11 +65,31 @@ pub(crate) fn recognize(item: &AgentMessageItem) -> Option<UserMessage> {
             AgentMessageContent::Text { text } => text.as_str(),
         })
         .collect::<String>();
+    recognize_text(&item.id, &message, item.phase.as_ref())
+}
+
+pub(crate) fn recognize_text(
+    id: &str,
+    message: &str,
+    phase: Option<&MessagePhase>,
+) -> Option<UserMessage> {
+    if phase != Some(&MessagePhase::Commentary) || !id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX) {
+        return None;
+    }
+
     let body = message.strip_prefix(USER_MESSAGE_ENVELOPE_PREFIX)?.trim();
     (!body.is_empty()).then(|| UserMessage {
-        id: item.id.clone(),
+        id: id.to_string(),
         body: body.to_string(),
     })
+}
+
+impl UserMessage {
+    pub(crate) fn history_cell(&self) -> UserMessageHistoryCell {
+        UserMessageHistoryCell {
+            body: self.body.clone(),
+        }
+    }
 }
 
 impl UserMessageInboxState {
@@ -84,9 +98,7 @@ impl UserMessageInboxState {
             return None;
         }
 
-        let cell = UserMessageHistoryCell {
-            body: message.body.clone(),
-        };
+        let cell = message.history_cell();
         self.messages.push_front(StoredUserMessage {
             id: message.id,
             body: message.body,

@@ -131,7 +131,9 @@ async fn run_startup_account_picker_with_events(
                             draw_view(tui, &view)?;
                         }
                     }
-                    TuiEvent::Draw | TuiEvent::Resize => draw_view(tui, &view)?,
+                    TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
+                        draw_view(tui, &view)?
+                    }
                 }
             }
             _ = tokio::time::sleep_until(deadline), if auto_pick => {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::AuthConfig;
 use crate::AuthManager;
 use crate::CodexAuth;
 use crate::auth::ImportedAccountSwitchOutcome;
@@ -7,8 +8,10 @@ use crate::token_data::IdTokenInfo;
 use crate::token_data::TokenData;
 use base64::Engine;
 use chrono::Utc;
+use codex_config::ManagedAuthPolicy;
 use codex_config::types::AutomaticAccountSelection;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::config_types::ForcedLoginMethod;
 use pretty_assertions::assert_eq;
 use serde::Serialize;
 use sha2::Digest;
@@ -646,6 +649,50 @@ async fn switch_to_next_imported_account_skips_attempted_local_account_ids() {
         ImportedAccountSwitchOutcome::NoCandidate
     );
     assert_eq!(manager.active_account_id(), Some(second.id));
+}
+
+#[tokio::test]
+async fn managed_api_only_policy_blocks_imported_account_switches() {
+    let codex_home = tempdir().expect("tempdir");
+    let store = AccountStore::new(codex_home.path().to_path_buf());
+    let first = import_test_account(&store, codex_home.path(), "first", "account-a");
+    let second = import_test_account(&store, codex_home.path(), "second", "account-b");
+    save_root_test_auth(codex_home.path(), "account-a");
+    let managed_auth_policy = ManagedAuthPolicy {
+        allowed_login_methods: Some(vec![ForcedLoginMethod::Api]),
+        ..Default::default()
+    };
+    let manager = AuthManager::shared_from_auth_config(
+        AuthConfig {
+            codex_home: codex_home.path().to_path_buf(),
+            auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            keyring_backend_kind: AuthKeyringBackendKind::default(),
+            automatic_account_selection: AutomaticAccountSelection::Enabled,
+            forced_login_method: None,
+            chatgpt_base_url: None,
+            forced_chatgpt_workspace_id: None,
+            managed_auth_policy,
+            auth_route_config: crate::test_support::transport_default_auth_route_config(),
+        },
+        /*enable_codex_api_key_env*/ false,
+    )
+    .await;
+
+    assert_eq!(manager.active_account_id(), None);
+    assert_eq!(
+        manager
+            .activate_imported_account(&second.id)
+            .await
+            .expect_err("manual activation must honor managed auth policy")
+            .kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        manager
+            .switch_to_next_imported_account(&HashSet::from([first.id.to_string()]))
+            .await,
+        ImportedAccountSwitchOutcome::NoCandidate
+    );
 }
 
 #[tokio::test]

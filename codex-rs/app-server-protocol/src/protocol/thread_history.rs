@@ -1,3 +1,4 @@
+use crate::protocol::codex_plus_plus::InboxLegacyDeduper;
 use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::build_file_change_approval_request_item;
@@ -27,7 +28,6 @@ use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
-use codex_protocol::codex_plus_plus::USER_MESSAGE_ITEM_ID_PREFIX;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentReasoningEvent;
@@ -96,6 +96,8 @@ pub fn build_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
 pub struct ThreadHistoryItemChange {
     pub turn_id: String,
     pub item: ThreadItem,
+    pub started_at_ms: Option<i64>,
+    pub completed_at_ms: Option<i64>,
 }
 
 /// Lightweight turn metadata snapshot for projectors that track turn status without
@@ -239,6 +241,7 @@ pub struct ThreadHistoryBuilder {
     current_rollout_index: usize,
     next_rollout_index: usize,
     active_change_set: Option<ThreadHistoryChangeSet>,
+    inbox_legacy_deduper: InboxLegacyDeduper,
 }
 
 impl Default for ThreadHistoryBuilder {
@@ -256,6 +259,7 @@ impl ThreadHistoryBuilder {
             current_rollout_index: 0,
             next_rollout_index: 0,
             active_change_set: None,
+            inbox_legacy_deduper: InboxLegacyDeduper::default(),
         }
     }
 
@@ -328,6 +332,7 @@ impl ThreadHistoryBuilder {
     /// This function should handle all EventMsg variants that can be persisted in a rollout file.
     /// See `should_persist_event_msg` in `codex-rs/core/rollout/policy.rs`.
     pub fn handle_event(&mut self, event: &EventMsg) {
+        self.inbox_legacy_deduper.prepare_for(event);
         match event {
             EventMsg::UserMessage(payload) => self.handle_user_message(payload),
             EventMsg::AgentMessage(payload) => self.handle_agent_message(
@@ -498,15 +503,7 @@ impl ThreadHistoryBuilder {
         if text.is_empty() {
             return;
         }
-        if self.current_turn.as_ref().is_some_and(|turn| {
-            turn.items.iter().any(|item| {
-                matches!(
-                    item,
-                    ThreadItem::AgentMessage { id, text: existing, .. }
-                        if id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX) && existing == &text
-                )
-            })
-        }) {
+        if self.inbox_legacy_deduper.consume_if_matches(&text) {
             return;
         }
 
@@ -628,7 +625,7 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
             codex_protocol::items::TurnItem::AgentMessage(item) => {
-                item.id.starts_with(USER_MESSAGE_ITEM_ID_PREFIX)
+                InboxLegacyDeduper::should_materialize(item)
             }
             codex_protocol::items::TurnItem::UserMessage(_)
             | codex_protocol::items::TurnItem::Reasoning(_)
@@ -642,6 +639,7 @@ impl ThreadHistoryBuilder {
 
         if should_upsert {
             let item = ThreadItem::from(item.clone());
+            self.inbox_legacy_deduper.record_materialized(&item);
             if is_review_mode_item {
                 self.upsert_review_mode_item(Some(turn_id), item);
             } else {
@@ -799,6 +797,7 @@ impl ThreadHistoryBuilder {
                 }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             plugin_id: payload.plugin_id.clone(),
+            read_only_hint: payload.read_only_hint,
             result: None,
             error: None,
             duration_ms: None,
@@ -851,6 +850,7 @@ impl ThreadHistoryBuilder {
                 }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             plugin_id: payload.plugin_id.clone(),
+            read_only_hint: payload.read_only_hint,
             result,
             error,
             duration_ms,
@@ -872,6 +872,7 @@ impl ThreadHistoryBuilder {
             status: String::new(),
             revised_prompt: None,
             result: String::new(),
+            transparent_background: None,
             saved_path: None,
         });
         self.upsert_item_in_current_turn(item);
@@ -883,6 +884,7 @@ impl ThreadHistoryBuilder {
             status: payload.status.clone(),
             revised_prompt: payload.revised_prompt.clone(),
             result: payload.result.clone(),
+            transparent_background: payload.transparent_background,
             saved_path: payload.saved_path.clone(),
         });
         self.upsert_item_in_current_turn(item);
@@ -1457,9 +1459,13 @@ impl ThreadHistoryBuilder {
 
     fn record_changed_item(&mut self, turn_id: String, item: ThreadItem) {
         if let Some(change_set) = self.active_change_set.as_mut() {
-            change_set
-                .changed_items
-                .push(ThreadHistoryItemChange { turn_id, item });
+            change_set.changed_items.push(ThreadHistoryItemChange {
+                turn_id,
+                item,
+                // Legacy events used by ThreadHistoryBuilder don't have timestamps
+                started_at_ms: None,
+                completed_at_ms: None,
+            });
         }
     }
 
@@ -1655,6 +1661,7 @@ mod tests {
     use codex_protocol::protocol::CompactedItem;
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::EnteredReviewModeEvent;
+    use codex_protocol::protocol::ExecCommandBeginEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExitedReviewModeEvent;
@@ -1899,7 +1906,7 @@ mod tests {
     }
 
     #[test]
-    fn materialized_history_keeps_one_inbox_message_without_assistant_response_items() {
+    fn materialized_history_deduplicates_only_paired_legacy_inbox_messages() {
         let agent_message = |id: &str, text: &str| {
             CoreTurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
                 id: id.into(),
@@ -1915,19 +1922,30 @@ mod tests {
         builder
             .handle_materialized_item_lifecycle(&turn_id, &agent_message("assistant", "ordinary"));
         let note = "[Message for you]\nCheck deployment.";
-        builder.handle_materialized_item_lifecycle(
-            &turn_id,
-            &agent_message("user-message:call-1", note),
-        );
+        for _ in 0..2 {
+            builder.handle_materialized_item_lifecycle(
+                &turn_id,
+                &agent_message("user-message:call-1", note),
+            );
+            builder.handle_agent_message(note.into(), Some(CoreMessagePhase::Commentary), None);
+        }
         builder.handle_agent_message(note.into(), Some(CoreMessagePhase::Commentary), None);
         assert_eq!(
             builder.active_turn_snapshot().expect("active turn").items,
-            vec![ThreadItem::AgentMessage {
-                id: "user-message:call-1".into(),
-                text: note.into(),
-                phase: Some(MessagePhase::Commentary),
-                memory_citation: None,
-            }]
+            vec![
+                ThreadItem::AgentMessage {
+                    id: "user-message:call-1".into(),
+                    text: note.into(),
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                },
+                ThreadItem::AgentMessage {
+                    id: "item-1".into(),
+                    text: note.into(),
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                },
+            ]
         );
     }
 
@@ -2114,6 +2132,7 @@ mod tests {
                         status: "completed".to_string(),
                         revised_prompt: Some("A blue square".to_string()),
                         result: "cG5n".to_string(),
+                        transparent_background: Some(true),
                         saved_path: Some(saved_path.clone()),
                     },
                 )),
@@ -2144,25 +2163,35 @@ mod tests {
                 status: "completed".to_string(),
                 revised_prompt: Some("A blue square".to_string()),
                 result: "cG5n".to_string(),
+                transparent_background: Some(true),
                 saved_path: Some(saved_path),
             })]
         );
     }
 
     #[test]
-    fn preserves_command_plugin_id_across_legacy_upsert() {
+    fn preserves_command_plugin_id_and_redacts_secrets_across_legacy_upsert() {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
+        let command = vec![
+            "git".to_string(),
+            "-c".to_string(),
+            "http.extraHeader=Authorization: Bearer example_synthetic_bearer_token_123456"
+                .to_string(),
+            "push".to_string(),
+        ];
+        let parsed_cmd = vec![ParsedCommand::Unknown {
+            cmd: "git -c 'http.extraHeader=Authorization: Bearer example_synthetic_bearer_token_123456' push"
+                .to_string(),
+        }];
         let command_item = CoreTurnItem::CommandExecution(CoreCommandExecutionItem {
             id: "exec-1".to_string(),
             plugin_id: Some("sample@openai-curated".to_string()),
             script_path: Some("scripts/run.py".to_string()),
             process_id: Some("pid-1".to_string()),
-            command: vec!["echo".to_string(), "hello world".to_string()],
+            command: command.clone(),
             cwd: test_path_buf("/tmp").abs().into(),
-            parsed_cmd: vec![ParsedCommand::Unknown {
-                cmd: "echo hello world".to_string(),
-            }],
+            parsed_cmd: parsed_cmd.clone(),
             source: ExecCommandSource::Agent,
             interaction_input: None,
             status: CoreCommandExecutionStatus::Completed,
@@ -2181,6 +2210,19 @@ mod tests {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             }),
+            EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                call_id: "exec-1".to_string(),
+                plugin_id: Some("sample@openai-curated".to_string()),
+                script_path: Some("scripts/run.py".to_string()),
+                process_id: Some("pid-1".to_string()),
+                turn_id: turn_id.to_string(),
+                started_at_ms: 0,
+                command: command.clone(),
+                cwd: test_path_buf("/tmp").abs().into(),
+                parsed_cmd: parsed_cmd.clone(),
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+            }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
                 turn_id: turn_id.to_string(),
@@ -2195,11 +2237,9 @@ mod tests {
                 process_id: Some("pid-1".to_string()),
                 turn_id: turn_id.to_string(),
                 completed_at_ms: 1_000,
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command,
                 cwd: test_path_buf("/tmp").abs().into(),
-                parsed_cmd: vec![ParsedCommand::Unknown {
-                    cmd: "echo hello world".to_string(),
-                }],
+                parsed_cmd,
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
                 stdout: "hello world\n".to_string(),
@@ -2225,6 +2265,29 @@ mod tests {
             .into_iter()
             .map(RolloutItem::EventMsg)
             .collect::<Vec<_>>();
+
+        assert_eq!(
+            build_turns_from_rollout_items(&items[..2])[0].items,
+            vec![ThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: Some("sample@openai-curated".to_string()),
+                script_path: Some("scripts/run.py".to_string()),
+                command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                    .to_string(),
+                cwd: test_path_buf("/tmp").abs().into(),
+                process_id: Some("pid-1".to_string()),
+                source: CommandExecutionSource::Agent,
+                status: CommandExecutionStatus::InProgress,
+                command_actions: vec![CommandAction::Unknown {
+                    command:
+                        "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                            .to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }]
+        );
         let turns = build_turns_from_rollout_items(&items);
 
         assert_eq!(turns.len(), 1);
@@ -2234,13 +2297,16 @@ mod tests {
                 id: "exec-1".to_string(),
                 plugin_id: Some("sample@openai-curated".to_string()),
                 script_path: Some("scripts/run.py".to_string()),
-                command: "echo 'hello world'".to_string(),
+                command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                    .to_string(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-1".to_string()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
-                    command: "echo hello world".to_string(),
+                    command:
+                        "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                            .to_string(),
                 }],
                 aggregated_output: Some("hello world\n".to_string()),
                 exit_code: Some(0),
@@ -2360,6 +2426,7 @@ mod tests {
                 status: "completed".into(),
                 revised_prompt: Some("final prompt".into()),
                 result: "Zm9v".into(),
+                transparent_background: Some(true),
                 saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
@@ -2399,6 +2466,7 @@ mod tests {
                         status: "completed".into(),
                         revised_prompt: Some("final prompt".into()),
                         result: "Zm9v".into(),
+                        transparent_background: Some(true),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
                     }),
                 ],
@@ -2823,6 +2891,7 @@ mod tests {
                 app_name: None,
                 action_name: None,
                 plugin_id: None,
+                read_only_hint: None,
                 duration: Duration::from_millis(8),
                 result: Err("boom".into()),
             }),
@@ -2881,6 +2950,7 @@ mod tests {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "boom".into(),
@@ -2913,6 +2983,7 @@ mod tests {
                 app_name: Some("Calendar".into()),
                 action_name: Some("lookup".into()),
                 plugin_id: Some("sample@test".into()),
+                read_only_hint: Some(false),
                 duration: Duration::from_millis(8),
                 result: Ok(CallToolResult {
                     content: vec![serde_json::json!({
@@ -2951,6 +3022,7 @@ mod tests {
                 }),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
                 plugin_id: Some("sample@test".into()),
+                read_only_hint: Some(false),
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![serde_json::json!({
                         "type": "text",
@@ -4493,6 +4565,8 @@ mod tests {
                             text_elements: Vec::new(),
                         }],
                     },
+                    started_at_ms: None,
+                    completed_at_ms: None,
                 }],
                 changed_turns: vec![ThreadHistoryTurnChange {
                     turn_id: "rollout-0".into(),
@@ -4541,6 +4615,8 @@ mod tests {
                         }),
                         results: None,
                     }),
+                    started_at_ms: None,
+                    completed_at_ms: None,
                 }],
                 changed_turns: Vec::new(),
                 removed_turn_ids: Vec::new(),
@@ -4572,6 +4648,8 @@ mod tests {
                         summary: vec!["summary".into()],
                         content: vec!["raw content".into()],
                     },
+                    started_at_ms: None,
+                    completed_at_ms: None,
                 }],
                 changed_turns: Vec::new(),
                 removed_turn_ids: Vec::new(),
@@ -4678,6 +4756,8 @@ mod tests {
                         }),
                         results: None,
                     }),
+                    started_at_ms: None,
+                    completed_at_ms: None,
                 }],
                 changed_turns: vec![ThreadHistoryTurnChange {
                     turn_id: "rollout-0".into(),
