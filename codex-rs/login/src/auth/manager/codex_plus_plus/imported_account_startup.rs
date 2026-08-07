@@ -111,6 +111,7 @@ pub(in crate::auth::manager) async fn load_imported_account_auth(
     load_auth_from_storage(
         account_home,
         AuthCredentialsStoreMode::File,
+        /*allowed_login_methods*/ None,
         forced_chatgpt_workspace_id,
         chatgpt_base_url,
         AuthKeyringBackendKind::default(),

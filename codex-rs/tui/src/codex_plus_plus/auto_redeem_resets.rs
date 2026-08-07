@@ -119,11 +119,18 @@ async fn load_reset_account<'a>(
     account_id: &'a AccountId,
 ) -> Result<ResetAccount<'a>> {
     let account_home = current_account_home(store, account_id)?;
+    let auth_config = config.auth_config();
+    ensure!(
+        auth_config
+            .is_login_method_allowed(codex_protocol::config_types::ForcedLoginMethod::Chatgpt),
+        "managed authentication policy does not permit ChatGPT accounts"
+    );
+    let effective_chatgpt_workspaces = auth_config.effective_chatgpt_workspaces();
     let auth_route_config = config.auth_route_config();
     let auth = match refresh_auth_from_storage(
         &account_home,
         AuthCredentialsStoreMode::File,
-        config.forced_chatgpt_workspace_id.as_deref(),
+        effective_chatgpt_workspaces.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
         &auth_route_config,
@@ -259,13 +266,13 @@ impl ResetAccount<'_> {
     }
 
     async fn activate_weekly(&self) -> WeeklyWindowPingOutcome {
+        let mut auth_config = self.config.auth_config();
+        auth_config.codex_home = self.home.clone();
         ping_weekly_window(WeeklyWindowPingRequest {
-            account_codex_home: self.home.clone(),
+            auth_config,
             model_provider_id: self.config.model_provider_id.clone(),
             model_provider: self.config.model_provider.clone(),
             chatgpt_base_url: self.config.chatgpt_base_url.clone(),
-            auth_route_config: self.config.auth_route_config(),
-            forced_chatgpt_workspace_id: self.config.forced_chatgpt_workspace_id.clone(),
             http_client_factory: self.config.http_client_factory(),
         })
         .await

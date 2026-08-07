@@ -160,9 +160,9 @@ pub struct InProcessStartArgs {
 #[derive(Debug, Clone)]
 pub enum InProcessServerEvent {
     /// Server request that requires client response/rejection.
-    ServerRequest(ServerRequest),
+    ServerRequest(Box<ServerRequest>),
     /// App-server notification directed to the embedded client.
-    ServerNotification(ServerNotification),
+    ServerNotification(Box<ServerNotification>),
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
 }
@@ -426,6 +426,7 @@ async fn start_uninitialized(
     mut args: InProcessStartArgs,
     initial_account: InitialAccount,
 ) -> IoResult<InProcessClientHandle> {
+    args.config.auth_config().validate()?;
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let auth_manager =
@@ -492,7 +493,7 @@ async fn start_uninitialized(
         ));
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
-        let config_manager = ConfigManager::new(
+        let mut config_manager = ConfigManager::new(
             args.config.codex_home.to_path_buf(),
             args.cli_overrides,
             args.loader_overrides,
@@ -501,6 +502,7 @@ async fn start_uninitialized(
             args.arg0_paths.clone(),
             args.thread_config_loader,
         );
+        config_manager.psp = args.config.psp;
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
@@ -688,7 +690,10 @@ async fn start_uninitialized(
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
                             if let Some(response_tx) = pending_request_responses.remove(&response.id) {
-                                let _ = response_tx.send(Ok(response.result));
+                                let result = serde_json::to_value(response.result).map_err(|err| {
+                                    internal_error(format!("failed to serialize response: {err}"))
+                                });
+                                let _ = response_tx.send(result);
                             } else {
                                 warn!(
                                     request_id = ?response.id,
@@ -710,7 +715,7 @@ async fn start_uninitialized(
                             // Send directly to avoid cloning; on failure the
                             // original value is returned inside the error.
                             if let Err(send_error) = event_tx
-                                .try_send(InProcessServerEvent::ServerRequest(request))
+                                .try_send(InProcessServerEvent::ServerRequest(Box::new(request)))
                             {
                                 let (error, inner) = match send_error {
                                     mpsc::error::TrySendError::Full(inner) => (
@@ -742,14 +747,18 @@ async fn start_uninitialized(
                             let notification = envelope.notification;
                             if server_notification_requires_delivery(&notification) {
                                 if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
+                                    .send(InProcessServerEvent::ServerNotification(Box::new(
+                                        notification,
+                                    )))
                                     .await
                                     .is_err()
                                 {
                                     break;
                                 }
                             } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
+                                event_tx.try_send(InProcessServerEvent::ServerNotification(
+                                    Box::new(notification),
+                                ))
                             {
                                 match send_error {
                                     mpsc::error::TrySendError::Full(_) => {

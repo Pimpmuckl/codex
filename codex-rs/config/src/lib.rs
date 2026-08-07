@@ -1,3 +1,4 @@
+mod auth_policy;
 mod cloud_config_bundle;
 mod cloud_config_layers;
 mod codex_plus_plus;
@@ -35,6 +36,7 @@ pub mod types;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 
+pub use auth_policy::ManagedAuthPolicy;
 pub use cloud_config_bundle::CloudConfigBundle;
 pub use cloud_config_bundle::CloudConfigBundleLayers;
 pub use cloud_config_bundle::CloudConfigBundleLoadError;
@@ -54,6 +56,7 @@ pub use codex_plus_plus::WeeklyUsageWindowAutoStart;
 pub use codex_plus_plus::codex_plus_plus_dcg_nux_shown;
 pub use codex_protocol::config_types::ProfileV2Name;
 pub use codex_protocol::config_types::ProfileV2NameParseError;
+pub use codex_protocol::config_types::ToolExposureSurface;
 pub use codex_utils_absolute_path::AbsolutePathBuf;
 pub use config_layer_source::ConfigLayer;
 pub use config_layer_source::ConfigLayerMetadata;
@@ -120,7 +123,6 @@ pub use marketplace_edit::RemoveMarketplaceConfigOutcome;
 pub use marketplace_edit::record_user_marketplace;
 pub use marketplace_edit::remove_user_marketplace;
 pub use marketplace_edit::remove_user_marketplace_config;
-pub use mcp_edit::ConfigEditsBuilder;
 pub use mcp_edit::load_global_mcp_servers;
 pub use mcp_requirements::McpServerCommandMatcher;
 pub use mcp_requirements::McpServerIdentity;
@@ -160,7 +162,6 @@ pub use skills_config::SkillConfig;
 pub use skills_config::SkillsConfig;
 pub use state::ConfigLayerEntry;
 pub use state::ConfigLayerStack;
-pub use state::ConfigLayerStackOrdering;
 pub use state::ConfigLoadOptions;
 pub use state::LoaderOverrides;
 pub use strict_config::config_error_from_ignored_toml_fields;

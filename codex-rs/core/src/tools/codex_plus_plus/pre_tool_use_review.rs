@@ -110,7 +110,7 @@ pub(crate) fn review<'a>(
             &invocation.turn,
             review_id,
             request,
-            /*retry_reason*/ None,
+            crate::tools::sandboxing::ApprovalRequestReasons::default(),
         )
         .await;
         match decision {

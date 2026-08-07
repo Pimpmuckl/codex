@@ -121,11 +121,21 @@ async fn fetch(
     account_home: PathBuf,
     config: Config,
 ) -> std::result::Result<AccountUsage, AccountUsageFetchError> {
+    let auth_config = config.auth_config();
+    if !auth_config
+        .is_login_method_allowed(codex_protocol::config_types::ForcedLoginMethod::Chatgpt)
+    {
+        return Err(AccountUsageFetchError::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "managed authentication policy does not permit ChatGPT accounts",
+        )));
+    }
+    let effective_chatgpt_workspaces = auth_config.effective_chatgpt_workspaces();
     let auth_route_config = config.auth_route_config();
     let auth = CodexAuth::from_auth_storage(
         &account_home,
         AuthCredentialsStoreMode::File,
-        config.forced_chatgpt_workspace_id.as_deref(),
+        effective_chatgpt_workspaces.as_deref(),
         Some(&config.chatgpt_base_url),
         config.auth_keyring_backend_kind(),
         &auth_route_config,
@@ -140,7 +150,7 @@ async fn fetch(
             let auth = match refresh_auth_from_storage(
                 &account_home,
                 AuthCredentialsStoreMode::File,
-                config.forced_chatgpt_workspace_id.as_deref(),
+                effective_chatgpt_workspaces.as_deref(),
                 Some(&config.chatgpt_base_url),
                 config.auth_keyring_backend_kind(),
                 &auth_route_config,

@@ -83,6 +83,15 @@ async fn maybe_run_startup_account_picker(
         auth.and_then(|auth| auth.tokens)
             .is_some_and(|tokens| tokens.refresh_token.is_empty())
     });
+    let auth_config = config.auth_config();
+    if !auth_config
+        .is_login_method_allowed(codex_protocol::config_types::ForcedLoginMethod::Chatgpt)
+    {
+        return Ok(StartupAccountSelection::Continue {
+            selected_account_id: None,
+            reload_cloud_config: false,
+        });
+    }
     let mut selectable_accounts = store.enabled_file_accounts()?;
     if config.automatic_account_selection == AutomaticAccountSelection::Disabled
         && root_auth_is_marker
@@ -97,14 +106,15 @@ async fn maybe_run_startup_account_picker(
             selectable_accounts.push((current_account.id, account_home.to_path_buf()));
         }
     }
-    if config.forced_chatgpt_workspace_id.is_some() {
+    let effective_chatgpt_workspaces = auth_config.effective_chatgpt_workspaces();
+    if effective_chatgpt_workspaces.is_some() {
         let auth_route_config = config.auth_route_config();
         let mut allowed_accounts = Vec::with_capacity(selectable_accounts.len());
         for (account_id, account_home) in selectable_accounts {
             let auth = CodexAuth::from_auth_storage(
                 &account_home,
                 codex_config::types::AuthCredentialsStoreMode::File,
-                config.forced_chatgpt_workspace_id.as_deref(),
+                effective_chatgpt_workspaces.as_deref(),
                 Some(&config.chatgpt_base_url),
                 config.auth_keyring_backend_kind(),
                 &auth_route_config,

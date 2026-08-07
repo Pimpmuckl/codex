@@ -110,7 +110,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         || {
             normalize_and_validate_additional_permissions(
                 additional_permissions_allowed,
-                turn.approval_policy.value(),
+                turn.approval_policy(),
                 effective_additional_permissions.sandbox_permissions,
                 effective_additional_permissions.additional_permissions,
                 effective_additional_permissions.permissions_preapproved,
@@ -129,11 +129,11 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         .requests_sandbox_override()
         && !effective_additional_permissions.permissions_preapproved
         && !matches!(
-            turn.approval_policy.value(),
+            turn.approval_policy(),
             codex_protocol::protocol::AskForApproval::OnRequest
         )
     {
-        let approval_policy = turn.approval_policy.value();
+        let approval_policy = turn.approval_policy();
         return Err(FunctionCallError::RespondToModel(format!(
             "approval policy is {approval_policy:?}; reject command — you should not ask for escalated permissions if the approval policy is {approval_policy:?}"
         )));
@@ -180,8 +180,8 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         .create_exec_approval_requirement_with_guardian(
             ExecApprovalRequest {
                 command: &exec_params.command,
-                approval_policy: turn.approval_policy.value(),
-                permission_profile: turn.permission_profile(),
+                approval_policy: turn.approval_policy(),
+                permission_profile: turn_environment.permission_profile().clone(),
                 windows_sandbox_level: turn.windows_sandbox_level,
                 sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
                     codex_protocol::models::SandboxPermissions::UseDefault
@@ -222,13 +222,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         tool_name,
     };
     let out = orchestrator
-        .run(
-            &mut runtime,
-            &req,
-            &tool_ctx,
-            &turn,
-            turn.approval_policy.value(),
-        )
+        .run(&mut runtime, &req, &tool_ctx, &turn, turn.approval_policy())
         .await
         .map(|result| result.output);
     let event_ctx = ToolEventCtx::new(

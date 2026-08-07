@@ -55,6 +55,8 @@ pub fn spawn_from_direct_driver(driver: DirectProcessDriver) -> SpawnedProcess {
         driver.writer_tx,
         Box::new(ClosureTerminator {
             inner: driver.terminator,
+            #[cfg(windows)]
+            interrupt_terminates: true,
         }),
         tokio::spawn(async {}),
         Vec::new(),
