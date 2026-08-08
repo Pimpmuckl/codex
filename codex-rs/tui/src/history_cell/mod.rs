@@ -110,6 +110,7 @@ const RAW_TOOL_OUTPUT_WIDTH: usize = 10_000;
 
 mod approvals;
 mod base;
+mod codex_plus_plus;
 mod exec;
 mod hook_cell;
 mod markdown_render_cache;
@@ -125,6 +126,7 @@ mod session;
 
 pub(crate) use approvals::*;
 pub(crate) use base::*;
+pub(crate) use codex_plus_plus::*;
 pub(crate) use exec::*;
 pub(crate) use hook_cell::HookCell;
 pub(crate) use hook_cell::new_active_hook_cell;
@@ -145,6 +147,7 @@ mod tests;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HistoryRenderMode {
     Rich,
+    CompactToolActivity,
     Raw,
 }
 
@@ -201,7 +204,9 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
 
     fn display_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
         match mode {
-            HistoryRenderMode::Rich => visible_lines(self.display_hyperlink_lines(width)),
+            HistoryRenderMode::Rich | HistoryRenderMode::CompactToolActivity => {
+                visible_lines(self.display_hyperlink_lines(width))
+            }
             HistoryRenderMode::Raw => self.raw_lines(),
         }
     }
@@ -213,6 +218,17 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     ) -> Vec<HyperlinkLine> {
         match mode {
             HistoryRenderMode::Rich => self.display_hyperlink_lines(width),
+            HistoryRenderMode::CompactToolActivity => {
+                let lines = self.display_lines_for_mode(width, mode);
+                if lines.is_empty() {
+                    return Vec::new();
+                }
+                if lines == self.display_lines(width) {
+                    self.display_hyperlink_lines(width)
+                } else {
+                    plain_hyperlink_lines(lines)
+                }
+            }
             HistoryRenderMode::Raw => plain_hyperlink_lines(self.raw_lines()),
         }
     }

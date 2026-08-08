@@ -278,6 +278,24 @@ pub(crate) fn tool_call_history_cell(
     }
 }
 
+pub(crate) fn wait_completion_is_noop(item: &ThreadItem) -> bool {
+    let ThreadItem::CollabAgentToolCall {
+        tool: CollabAgentTool::Wait,
+        status: CollabAgentToolCallStatus::Completed,
+        agents_states,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    agents_states.values().all(|state| {
+        matches!(
+            state.status,
+            CollabAgentStatus::PendingInit | CollabAgentStatus::Running
+        )
+    })
+}
+
 pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentActivityDisplay> {
     let ThreadItem::SubAgentActivity {
         kind,
@@ -934,6 +952,42 @@ mod tests {
             status,
             message: message.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn wait_completion_requires_a_terminal_agent_state() {
+        let item =
+            |call_status, status: Option<CollabAgentStatus>| ThreadItem::CollabAgentToolCall {
+                id: "wait".to_string(),
+                tool: CollabAgentTool::Wait,
+                status: call_status,
+                sender_thread_id: ThreadId::new().to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: status
+                    .map(|status| {
+                        HashMap::from([(
+                            ThreadId::new().to_string(),
+                            agent_state(status, /*message*/ None),
+                        )])
+                    })
+                    .unwrap_or_default(),
+            };
+
+        assert!(!wait_completion_is_noop(&item(
+            CollabAgentToolCallStatus::Completed,
+            Some(CollabAgentStatus::Completed),
+        )));
+        assert!(wait_completion_is_noop(&item(
+            CollabAgentToolCallStatus::Completed,
+            None,
+        )));
+        assert!(!wait_completion_is_noop(&item(
+            CollabAgentToolCallStatus::Failed,
+            None,
+        )));
     }
 
     fn metadata_for(thread_id: ThreadId, robie_id: ThreadId, bob_id: ThreadId) -> AgentMetadata {

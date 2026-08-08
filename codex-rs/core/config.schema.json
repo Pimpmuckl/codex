@@ -3201,6 +3201,14 @@
       ],
       "type": "string"
     },
+    "ToolActivityPresentation": {
+      "description": "Controls how routine tool activity is presented in the main TUI conversation.",
+      "enum": [
+        "full",
+        "compact"
+      ],
+      "type": "string"
+    },
     "ToolExposureSurface": {
       "description": "A model-facing surface on which a tool can be exposed.",
       "oneOf": [
@@ -5062,6 +5070,14 @@
     "codex_plus_plus_dcg_nux_shown": {
       "description": "Whether the global Destructive Command Guard introduction was shown.",
       "type": "boolean"
+    },
+    "codex_plus_plus_tool_activity": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ToolActivityPresentation"
+        }
+      ],
+      "description": "How Codex++ presents routine tool activity in the main TUI conversation."
     },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",

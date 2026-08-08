@@ -5,6 +5,7 @@ use crate::app_server_session::AppServerSession;
 use crate::legacy_core::config::Config;
 use codex_config::AutoRedeemResets;
 use codex_config::ModelCapacityRetryMode;
+use codex_config::ToolActivityPresentation;
 use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
@@ -18,6 +19,7 @@ pub(crate) async fn persist_settings(
     auto_redeem_resets: Option<bool>,
     model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
     user_message_inbox: UserMessageInbox,
+    tool_activity: ToolActivityPresentation,
 ) {
     let automatic = match automatic_account_selection {
         AutomaticAccountSelection::Enabled => "enabled",
@@ -66,6 +68,13 @@ pub(crate) async fn persist_settings(
         serde_json::json!(match user_message_inbox {
             UserMessageInbox::Enabled => "enabled",
             UserMessageInbox::Disabled => "disabled",
+        }),
+    ));
+    writes.push(crate::config_update::replace_config_value(
+        "codex_plus_plus_tool_activity",
+        serde_json::json!(match tool_activity {
+            ToolActivityPresentation::Full => "full",
+            ToolActivityPresentation::Compact => "compact",
         }),
     ));
     let write_error = crate::config_update::write_config_batch(app_server.request_handle(), writes)
@@ -143,9 +152,19 @@ pub(crate) async fn persist_settings(
         Some("enabled") => UserMessageInbox::Enabled,
         _ => UserMessageInbox::Disabled,
     };
+    let effective_tool_activity = match response
+        .config
+        .additional
+        .get("codex_plus_plus_tool_activity")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("compact") => ToolActivityPresentation::Compact,
+        _ => ToolActivityPresentation::Full,
+    };
     app.config.automatic_account_selection = effective_automatic;
     app.config.weekly_usage_window_auto_start = effective_weekly;
     app.config.model_capacity_retry_mode = effective_capacity;
+    app.config.codex_plus_plus_tool_activity = effective_tool_activity;
     app.chat_widget
         .sync_codex_plus_plus_settings_config(&app.config);
     if let Err(err) = app.refresh_in_memory_config_from_disk().await {
@@ -178,11 +197,13 @@ pub(crate) async fn persist_settings(
         && auto_redeem_resets.is_none_or(|enabled| effective_auto_redeem.is_some() == enabled)
         && model_capacity_retry_mode.is_none_or(|capacity| effective_capacity == capacity)
         && effective_user_message_inbox == user_message_inbox
+        && effective_tool_activity == tool_activity
     {
         app.chat_widget.codex_plus_plus_settings_persisted(
             effective_automatic,
             effective_weekly,
             effective_capacity,
+            effective_tool_activity,
         );
     } else {
         app.chat_widget
@@ -190,6 +211,7 @@ pub(crate) async fn persist_settings(
                 effective_automatic,
                 effective_weekly,
                 effective_capacity,
+                effective_tool_activity,
             );
     }
 }

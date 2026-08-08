@@ -1,3 +1,4 @@
+mod codex_plus_plus;
 mod live_output;
 mod model;
 mod render;

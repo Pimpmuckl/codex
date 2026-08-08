@@ -65,6 +65,11 @@ pub(super) fn settings_item(
                         CapacityBounded,
                     ),
                     user_message_inbox: selected(&selection.user_message_inbox, InboxOn, InboxOff),
+                    tool_activity: selected(
+                        &selection.compact_tool_activity,
+                        ActivityCompact,
+                        ActivityFull,
+                    ),
                 });
                 tx.send(match action {
                     DcgAction::InstallAndEnable => AppEvent::OpenDcgInstallConfirmation,

@@ -22,6 +22,7 @@ use codex_config::ResidencyRequirement;
 use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
+use codex_config::ToolActivityPresentation;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
@@ -841,6 +842,7 @@ pub struct Config {
     pub automatic_account_selection: AutomaticAccountSelection,
     pub weekly_usage_window_auto_start: WeeklyUsageWindowAutoStart,
     pub model_capacity_retry_mode: ModelCapacityRetryMode,
+    pub codex_plus_plus_tool_activity: ToolActivityPresentation,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
@@ -4140,6 +4142,9 @@ impl Config {
                 .weekly_usage_window_auto_start
                 .unwrap_or_default(),
             model_capacity_retry_mode: cfg.model_capacity_retry_mode.unwrap_or_default(),
+            codex_plus_plus_tool_activity: cfg
+                .codex_plus_plus_tool_activity
+                .unwrap_or_default(),
             mcp_servers,
             non_prefixed_mcp_tool_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"

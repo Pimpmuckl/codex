@@ -240,6 +240,16 @@ impl HistoryCell for McpToolCallCell {
         lines
     }
 
+    fn display_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
+        match mode {
+            HistoryRenderMode::CompactToolActivity if self.success() == Some(true) => Vec::new(),
+            HistoryRenderMode::Raw => self.raw_lines(),
+            HistoryRenderMode::Rich | HistoryRenderMode::CompactToolActivity => {
+                self.display_lines(width)
+            }
+        }
+    }
+
     fn transcript_animation_tick(&self) -> Option<u64> {
         if !self.animations_enabled || self.result.is_some() {
             return None;

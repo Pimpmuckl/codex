@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::AutoRedeemResets;
 use crate::HooksToml;
 use crate::ModelCapacityRetryMode;
+use crate::ToolActivityPresentation;
 use crate::UserMessageInbox;
 use crate::WeeklyUsageWindowAutoStart;
 use crate::permissions_toml::PermissionsToml;
@@ -269,6 +270,8 @@ pub struct ConfigToml {
     pub model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
     /// Whether agents can leave durable, non-blocking messages for the user.
     pub user_message_inbox: Option<UserMessageInbox>,
+    /// How Codex++ presents routine tool activity in the main TUI conversation.
+    pub codex_plus_plus_tool_activity: Option<ToolActivityPresentation>,
     /// Whether the global Destructive Command Guard introduction was shown.
     pub codex_plus_plus_dcg_nux_shown: Option<bool>,
     /// Definition for MCP servers that Codex can reach out to for tool calls.
@@ -1050,6 +1053,23 @@ mod tests {
             toml::from_str("user_message_inbox = \"enabled\"").expect("valid inbox setting");
         assert_eq!(ConfigToml::default().user_message_inbox, None);
         assert_eq!(config.user_message_inbox, Some(UserMessageInbox::Enabled));
+    }
+
+    #[test]
+    fn tool_activity_defaults_full_and_parses_compact() {
+        let parsed = ["", "codex_plus_plus_tool_activity = \"compact\""].map(|value| {
+            toml::from_str::<ConfigToml>(value)
+                .unwrap()
+                .codex_plus_plus_tool_activity
+                .unwrap_or_default()
+        });
+        assert_eq!(
+            parsed,
+            [
+                ToolActivityPresentation::Full,
+                ToolActivityPresentation::Compact,
+            ]
+        );
     }
     use pretty_assertions::assert_eq;
 

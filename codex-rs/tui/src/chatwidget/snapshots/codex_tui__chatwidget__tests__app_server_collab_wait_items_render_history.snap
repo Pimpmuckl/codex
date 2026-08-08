@@ -1,5 +1,5 @@
 ---
-source: tui/src/chatwidget/tests.rs
+source: tui/src/chatwidget/tests/app_server.rs
 expression: combined
 ---
 • Waiting for 2 agents

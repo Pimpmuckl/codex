@@ -602,6 +602,7 @@ pub(crate) struct ChatWidget {
     running_commands: HashMap<String, RunningCommand>,
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
+    collab_wait_in_progress: bool,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<SkillMetadata>,
     skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
@@ -1600,6 +1601,10 @@ impl ChatWidget {
     pub(crate) fn history_render_mode(&self) -> HistoryRenderMode {
         if self.raw_output_mode {
             HistoryRenderMode::Raw
+        } else if self.config.codex_plus_plus_tool_activity
+            == codex_config::ToolActivityPresentation::Compact
+        {
+            HistoryRenderMode::CompactToolActivity
         } else {
             HistoryRenderMode::Rich
         }

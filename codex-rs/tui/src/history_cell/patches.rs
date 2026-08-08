@@ -21,6 +21,16 @@ impl HistoryCell for PatchHistoryCell {
             RAW_DIFF_SUMMARY_WIDTH,
         ))
     }
+
+    fn display_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
+        match mode {
+            HistoryRenderMode::CompactToolActivity => {
+                self.display_lines(width).into_iter().take(1).collect()
+            }
+            HistoryRenderMode::Rich => self.display_lines(width),
+            HistoryRenderMode::Raw => self.raw_lines(),
+        }
+    }
 }
 /// Create a new `PendingPatch` cell that lists the file‑level summary of
 /// a proposed patch. The summary lines should already be formatted (e.g.

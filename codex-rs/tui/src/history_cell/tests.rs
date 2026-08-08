@@ -1206,6 +1206,70 @@ fn web_search_history_cell_snapshot() {
 }
 
 #[test]
+fn compact_tool_activity_snapshot() {
+    let web = new_web_search_call(
+        "web".to_string(),
+        "compact rendering".to_string(),
+        WebSearchAction::Search {
+            query: Some("compact rendering".to_string()),
+            queries: None,
+        },
+    );
+    let mut mcp = new_active_mcp_tool_call(
+        "mcp".to_string(),
+        McpInvocation {
+            server: "workspace".to_string(),
+            tool: "inspect".to_string(),
+            arguments: Some(json!({"path": "README.md"})),
+        },
+        /*animations_enabled*/ false,
+    );
+    mcp.complete(
+        Duration::from_millis(5),
+        Ok(CallToolResult {
+            content: vec![text_block("full tool result")],
+            is_error: None,
+            structured_content: None,
+            meta: None,
+        }),
+    );
+    assert!(
+        mcp.display_lines_for_mode(80, HistoryRenderMode::CompactToolActivity)
+            .is_empty()
+    );
+    mcp.complete(Duration::from_millis(5), Err("server failed".to_string()));
+    let patch = new_patch_event(
+        HashMap::from([(
+            PathBuf::from("src/lib.rs"),
+            FileChange::Update {
+                unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                move_path: None,
+            },
+        )]),
+        &test_cwd(),
+    );
+
+    let compact = [&web as &dyn HistoryCell, &mcp, &patch]
+        .into_iter()
+        .flat_map(|cell| {
+            visible_lines(cell.display_hyperlink_lines_for_mode(
+                /*width*/ 80,
+                HistoryRenderMode::CompactToolActivity,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let transcript = [&web as &dyn HistoryCell, &mcp, &patch]
+        .into_iter()
+        .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
+        .collect::<Vec<_>>();
+    insta::assert_snapshot!(format!(
+        "compact:\n{}\ntranscript:\n{}",
+        render_lines(&compact).join("\n"),
+        render_lines(&transcript).join("\n")
+    ));
+}
+
+#[test]
 fn standalone_unix_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));

@@ -11,11 +11,14 @@ use AutomaticAccountSelection::Disabled as AutomaticOff;
 use AutomaticAccountSelection::Enabled as AutomaticOn;
 use ModelCapacityRetryMode::Bounded as CapacityBounded;
 use ModelCapacityRetryMode::Indefinite as CapacityIndefinite;
+use ToolActivityPresentation::Compact as ActivityCompact;
+use ToolActivityPresentation::Full as ActivityFull;
 use UserMessageInbox::Disabled as InboxOff;
 use UserMessageInbox::Enabled as InboxOn;
 use WeeklyUsageWindowAutoStart::Disabled as WeeklyOff;
 use WeeklyUsageWindowAutoStart::Enabled as WeeklyOn;
 use codex_config::ModelCapacityRetryMode;
+use codex_config::ToolActivityPresentation;
 use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::AutomaticAccountSelection;
@@ -48,6 +51,7 @@ impl ChatWidget {
                 .is_some(),
             self.config.model_capacity_retry_mode,
             crate::codex_plus_plus::user_message_inbox_enabled(&self.config.config_layer_stack),
+            self.config.codex_plus_plus_tool_activity,
             self.weekly_start_supported,
             Some(dcg_status),
             &list_keymap,
@@ -62,10 +66,12 @@ impl ChatWidget {
         automatic: AutomaticAccountSelection,
         weekly: WeeklyUsageWindowAutoStart,
         capacity: ModelCapacityRetryMode,
+        tool_activity: ToolActivityPresentation,
     ) {
         self.config.automatic_account_selection = automatic;
         self.config.weekly_usage_window_auto_start = weekly;
         self.config.model_capacity_retry_mode = capacity;
+        self.config.codex_plus_plus_tool_activity = tool_activity;
         self.add_info_message(persistence_success_message(), /*hint*/ None);
     }
 
@@ -76,6 +82,7 @@ impl ChatWidget {
         self.config.automatic_account_selection = config.automatic_account_selection;
         self.config.weekly_usage_window_auto_start = config.weekly_usage_window_auto_start;
         self.config.model_capacity_retry_mode = config.model_capacity_retry_mode;
+        self.config.codex_plus_plus_tool_activity = config.codex_plus_plus_tool_activity;
         self.config.config_layer_stack = config.config_layer_stack.clone();
     }
 
@@ -88,10 +95,12 @@ impl ChatWidget {
         automatic: AutomaticAccountSelection,
         weekly: WeeklyUsageWindowAutoStart,
         capacity: ModelCapacityRetryMode,
+        tool_activity: ToolActivityPresentation,
     ) {
         self.config.automatic_account_selection = automatic;
         self.config.weekly_usage_window_auto_start = weekly;
         self.config.model_capacity_retry_mode = capacity;
+        self.config.codex_plus_plus_tool_activity = tool_activity;
         self.add_error_message(persistence_overridden_message());
     }
 
@@ -107,6 +116,7 @@ struct SettingsSelection {
     auto_redeem: Arc<AtomicBool>,
     capacity_indefinite: Arc<AtomicBool>,
     user_message_inbox: Arc<AtomicBool>,
+    compact_tool_activity: Arc<AtomicBool>,
 }
 
 fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
@@ -125,6 +135,7 @@ fn codex_plus_plus_settings_params(
     current_auto_redeem: bool,
     current_capacity: ModelCapacityRetryMode,
     current_user_message_inbox: bool,
+    current_tool_activity: ToolActivityPresentation,
     weekly_supported: bool,
     dcg_status: Option<DcgStatus>,
     list_keymap: &ListKeymap,
@@ -135,6 +146,7 @@ fn codex_plus_plus_settings_params(
         auto_redeem: Arc::new(AtomicBool::new(current_auto_redeem)),
         capacity_indefinite: Arc::new(AtomicBool::new(current_capacity == CapacityIndefinite)),
         user_message_inbox: Arc::new(AtomicBool::new(current_user_message_inbox)),
+        compact_tool_activity: Arc::new(AtomicBool::new(current_tool_activity == ActivityCompact)),
     };
     let mut items = vec![settings_item(
         "Automatic account selection",
@@ -169,6 +181,13 @@ fn codex_plus_plus_settings_params(
         "Keep retrying at capacity",
         "After 1, 2, 5, and 15 minutes, retry every 15 minutes.",
         Arc::clone(&selection.capacity_indefinite),
+        selection.clone(),
+        weekly_supported,
+    ));
+    items.push(settings_item(
+        "Compact tool activity",
+        "Keep routine tool details in Ctrl+T instead of the main conversation.",
+        Arc::clone(&selection.compact_tool_activity),
         selection.clone(),
         weekly_supported,
     ));
@@ -230,6 +249,11 @@ fn settings_item(
                     InboxOn
                 } else {
                     InboxOff
+                },
+                tool_activity: if selection.compact_tool_activity.load(Ordering::Relaxed) {
+                    ActivityCompact
+                } else {
+                    ActivityFull
                 },
             });
         })],
