@@ -18,6 +18,14 @@ impl ChatWidget {
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
     ) -> bool {
+        let header = if self.collab_wait_in_progress
+            && self.config.codex_plus_plus_tool_activity
+                == codex_config::ToolActivityPresentation::Compact
+        {
+            "Waiting for agents".to_string()
+        } else {
+            header
+        };
         let details = details
             .filter(|details| !details.is_empty())
             .map(|details| {

@@ -114,6 +114,21 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn reconcile_compact_tool_activity_status(&mut self) {
+        if self.collab_wait_in_progress
+            && self.config.codex_plus_plus_tool_activity
+                == codex_config::ToolActivityPresentation::Compact
+        {
+            self.bottom_pane.ensure_status_indicator();
+            self.set_status_header("Waiting for agents".to_string());
+        } else if let Some(header) = self.mcp_startup_status_header() {
+            self.set_status_header(header);
+        } else if self.bottom_pane.is_task_running() {
+            self.restore_reasoning_status_header();
+        }
+        self.request_redraw();
+    }
+
     pub(super) fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
         let ThreadItem::CollabAgentToolCall {
             id, tool, status, ..
@@ -121,6 +136,32 @@ impl ChatWidget {
         else {
             return;
         };
+        let compact = self.config.codex_plus_plus_tool_activity
+            == codex_config::ToolActivityPresentation::Compact;
+        let wait_in_progress = matches!(tool, CollabAgentTool::Wait)
+            && matches!(status, CollabAgentToolCallStatus::InProgress);
+        if matches!(tool, CollabAgentTool::Wait) {
+            self.collab_wait_in_progress = wait_in_progress;
+            if compact && wait_in_progress {
+                self.reconcile_compact_tool_activity_status();
+                return;
+            }
+            if !wait_in_progress {
+                self.reconcile_compact_tool_activity_status();
+            }
+            if multi_agents::wait_completion_is_noop(&item) {
+                if let Some(cell) = multi_agents::tool_call_history_cell(
+                    &item,
+                    /*cached_spawn_request*/ None,
+                    |thread_id| self.collab_agent_metadata(thread_id),
+                ) {
+                    self.flush_answer_stream_with_separator();
+                    self.add_to_history(history_cell::CompactHiddenHistoryCell::new(cell));
+                }
+                self.request_redraw();
+                return;
+            }
+        }
         if matches!(tool, CollabAgentTool::SpawnAgent)
             && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
         {
@@ -141,7 +182,13 @@ impl ChatWidget {
             cached_spawn_request.as_ref(),
             |thread_id| self.collab_agent_metadata(thread_id),
         ) {
-            self.on_collab_event(cell);
+            if wait_in_progress {
+                self.flush_answer_stream_with_separator();
+                self.add_to_history(history_cell::CompactHiddenHistoryCell::new(cell));
+                self.request_redraw();
+            } else {
+                self.on_collab_event(cell);
+            }
         }
     }
 
@@ -201,6 +248,7 @@ impl ChatWidget {
             result,
             error,
             duration_ms,
+            status,
             ..
         } = item
         else {
@@ -219,7 +267,7 @@ impl ChatWidget {
                 Ok(codex_protocol::mcp::CallToolResult {
                     content: result.content,
                     structured_content: result.structured_content,
-                    is_error: Some(false),
+                    is_error: Some(status == codex_app_server_protocol::McpToolCallStatus::Failed),
                     meta: None,
                 })
             }

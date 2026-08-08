@@ -4,6 +4,7 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use codex_app_server_protocol::CommandExecutionStatus;
 
 impl ChatWidget {
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
@@ -338,6 +339,7 @@ impl ChatWidget {
             aggregated_output,
             exit_code,
             duration_ms,
+            status,
             ..
         } = item
         else {
@@ -349,7 +351,9 @@ impl ChatWidget {
             .map(codex_app_server_protocol::CommandAction::into_core)
             .collect();
         let duration = Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64);
-        let exit_code = exit_code.unwrap_or_default();
+        let exit_code = exit_code
+            .filter(|code| *code != 0 || status == CommandExecutionStatus::Completed)
+            .unwrap_or((status != CommandExecutionStatus::Completed) as i32);
         let aggregated_output = aggregated_output.unwrap_or_default();
 
         let running = self.running_commands.remove(&id);

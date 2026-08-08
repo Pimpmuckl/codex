@@ -6,6 +6,7 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::HistoryHydrationScope;
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::history_cell::AgentMarkdownCell;
+use crate::history_cell::CompactHiddenHistoryCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::ReasoningSummaryCell;
@@ -13,6 +14,11 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::split_reasoning_summary_parts;
 use crate::inline_visualization::InlineVisualizationContext;
 use crate::multi_agents::sub_agent_activity_summary;
+use crate::multi_agents::wait_completion_is_noop;
+use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
@@ -171,12 +177,36 @@ pub(crate) fn thread_items_to_transcript_cells(
             }
             other => {
                 if let Some(cell) = fallback_transcript_cell(&other) {
-                    cells.push(Arc::new(cell));
+                    cells.push(if compact_tool_activity_hidden(&other) {
+                        Arc::new(CompactHiddenHistoryCell::new(cell))
+                    } else {
+                        Arc::new(cell)
+                    });
                 }
             }
         }
     }
     cells
+}
+
+fn compact_tool_activity_hidden(item: &ThreadItem) -> bool {
+    match item {
+        ThreadItem::CommandExecution { source, status, .. } => {
+            matches!(status, CommandExecutionStatus::Completed)
+                && !matches!(
+                    source,
+                    CommandExecutionSource::UserShell
+                        | CommandExecutionSource::UnifiedExecInteraction
+                )
+        }
+        ThreadItem::McpToolCall { status, .. } => matches!(status, McpToolCallStatus::Completed),
+        ThreadItem::CollabAgentToolCall {
+            tool: CollabAgentTool::Wait,
+            ..
+        } => wait_completion_is_noop(item),
+        ThreadItem::WebSearch(item) => item.action.is_some() || item.results.is_some(),
+        _ => false,
+    }
 }
 
 fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
@@ -294,3 +324,7 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     };
     (!lines.is_empty()).then(|| PlainHistoryCell::new(lines))
 }
+
+#[cfg(test)]
+#[path = "thread_transcript_tests.rs"]
+mod tests;

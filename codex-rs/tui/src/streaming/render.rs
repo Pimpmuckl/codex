@@ -182,12 +182,14 @@ pub(super) fn render_source(
     inline_visualization_context: Option<&InlineVisualizationContext>,
 ) -> Vec<HyperlinkLine> {
     match render_mode {
-        HistoryRenderMode::Rich => render_markdown_agent_with_links_cwd_and_visualizations(
-            source,
-            width,
-            Some(cwd),
-            inline_visualization_context,
-        ),
+        HistoryRenderMode::Rich | HistoryRenderMode::CompactToolActivity => {
+            render_markdown_agent_with_links_cwd_and_visualizations(
+                source,
+                width,
+                Some(cwd),
+                inline_visualization_context,
+            )
+        }
         HistoryRenderMode::Raw => plain_hyperlink_lines(raw_lines_from_source(source)),
     }
 }

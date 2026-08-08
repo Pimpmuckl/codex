@@ -51,6 +51,7 @@ use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ModelCapacityRetryMode;
+use codex_config::ToolActivityPresentation;
 use codex_config::UserMessageInbox;
 use codex_config::WeeklyUsageWindowAutoStart;
 use codex_config::types::ApprovalsReviewer;
@@ -949,6 +950,7 @@ pub(crate) enum AppEvent {
         auto_redeem_resets: Option<bool>,
         model_capacity_retry_mode: ModelCapacityRetryMode,
         user_message_inbox: UserMessageInbox,
+        tool_activity: ToolActivityPresentation,
     },
 
     OpenCodexPlusPlusSettings,

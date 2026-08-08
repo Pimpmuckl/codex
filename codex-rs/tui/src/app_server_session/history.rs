@@ -300,6 +300,10 @@ fn rendered_history_rows(
     };
     let mode = if config.tui_raw_output_mode {
         HistoryRenderMode::Raw
+    } else if config.codex_plus_plus_tool_activity
+        == codex_config::ToolActivityPresentation::Compact
+    {
+        HistoryRenderMode::CompactToolActivity
     } else {
         HistoryRenderMode::Rich
     };

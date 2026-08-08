@@ -914,6 +914,7 @@ async fn live_app_server_command_output_delta_transcript_snapshot() {
 #[tokio::test]
 async fn live_app_server_collab_wait_items_render_history() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
     let sender_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b90000000001").expect("valid thread id");
     let receiver_thread_id =
@@ -930,6 +931,15 @@ async fn live_app_server_collab_wait_items_render_history() {
         Some("Ada".to_string()),
         Some("reviewer".to_string()),
     );
+    chat.set_mcp_startup_expected_servers(["slow".to_string()]);
+    let mcp_starting = McpServerStatusUpdatedNotification {
+        thread_id: Some("thread-1".to_string()),
+        name: "slow".to_string(),
+        status: McpServerStartupState::Starting,
+        error: None,
+        failure_reason: None,
+    };
+    chat.on_mcp_server_status_updated(mcp_starting.clone());
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -953,6 +963,30 @@ async fn live_app_server_collab_wait_items_render_history() {
         }),
         /*replay_kind*/ None,
     );
+    chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    chat.reconcile_compact_tool_activity_status();
+    insta::assert_snapshot!(
+        render_bottom_popup(&chat, /*width*/ 80),
+        @r###"
+        • Waiting for agents (0s • esc to interrupt)
+
+
+        › Ask Codex to do anything
+
+          gpt-5.6-sol default · C:\tmp\project
+        "###
+    );
+    chat.on_mcp_server_status_updated(mcp_starting);
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Waiting for agents"));
+    chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Full;
+    chat.reconcile_compact_tool_activity_status();
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Booting MCP server: slow"));
+    chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    chat.reconcile_compact_tool_activity_status();
+    chat.finalize_turn();
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("Booting MCP server: slow"));
+    chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Full;
 
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -991,6 +1025,8 @@ async fn live_app_server_collab_wait_items_render_history() {
         }),
         /*replay_kind*/ None,
     );
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("Booting MCP server: slow"));
 
     let combined = drain_insert_history(&mut rx)
         .into_iter()

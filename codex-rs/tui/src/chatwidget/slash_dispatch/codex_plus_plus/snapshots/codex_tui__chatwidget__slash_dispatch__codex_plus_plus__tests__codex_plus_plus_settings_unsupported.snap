@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/slash_dispatch/codex_plus_plus/codex_plus_plus_tests.rs
-assertion_line: 74
 expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWindowAutoStart::Disabled, ModelCapacityRetryMode::Indefinite,)"
 ---
 
@@ -11,9 +10,9 @@ expression: "render_settings(AutomaticAccountSelection::Disabled,\nWeeklyUsageWi
                                               needed.
   2. [*] Keep retrying at capacity            After 1, 2, 5, and 15 minutes, retry
                                               every 15 minutes.
-  3. [ ] Agent inbox messages (Experimental)  Let Codex leave durable messages you
+  3. [ ] Compact tool activity                Keep routine tool details in Ctrl+T
+                                              instead of the main conversation.
+  4. [ ] Agent inbox messages (Experimental)  Let Codex leave durable messages you
                                               can review with /inbox.
-
-
 
   Press space to toggle; enter to save or manage; esc to cancel

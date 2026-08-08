@@ -32,6 +32,7 @@ fn settings_view(
                 /*current_auto_redeem*/ false,
                 capacity,
                 /*current_user_message_inbox*/ false,
+                ToolActivityPresentation::Full,
                 weekly_supported,
                 None,
                 &keymap,
@@ -100,6 +101,7 @@ fn unsupported_settings_save_only_the_visible_settings() {
             auto_redeem_resets: None,
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
             user_message_inbox: UserMessageInbox::Disabled,
+            tool_activity: ToolActivityPresentation::Full,
         })
     );
 }
@@ -124,6 +126,7 @@ fn weekly_setting_saves_full_selection() {
             auto_redeem_resets: Some(false),
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
             user_message_inbox: UserMessageInbox::Disabled,
+            tool_activity: ToolActivityPresentation::Full,
         })
     );
 }
@@ -141,6 +144,7 @@ fn capacity_setting_saves_indefinite_mode() {
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
@@ -152,6 +156,30 @@ fn capacity_setting_saves_indefinite_mode() {
             auto_redeem_resets: Some(false),
             model_capacity_retry_mode: ModelCapacityRetryMode::Indefinite,
             user_message_inbox: UserMessageInbox::Enabled,
+            tool_activity: ToolActivityPresentation::Full,
+        })
+    );
+}
+
+#[test]
+fn compact_tool_activity_saves_full_selection() {
+    let (mut view, mut rx) = settings_view(
+        AutomaticAccountSelection::Enabled,
+        WeeklyUsageWindowAutoStart::Enabled,
+        ModelCapacityRetryMode::Bounded,
+    );
+
+    for _ in 0..4 {
+        view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    }
+    view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
+    view.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PersistCodexPlusPlusSettings {
+            tool_activity: ToolActivityPresentation::Compact,
+            ..
         })
     );
 }

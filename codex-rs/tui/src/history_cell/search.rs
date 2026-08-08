@@ -120,6 +120,16 @@ impl HistoryCell for WebSearchCell {
             vec![Line::from(format!("{header}{separator}{detail}"))]
         }
     }
+
+    fn display_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
+        match mode {
+            HistoryRenderMode::CompactToolActivity if self.completed => Vec::new(),
+            HistoryRenderMode::Raw => self.raw_lines(),
+            HistoryRenderMode::Rich | HistoryRenderMode::CompactToolActivity => {
+                self.display_lines(width)
+            }
+        }
+    }
 }
 
 pub(crate) fn new_active_web_search_call(

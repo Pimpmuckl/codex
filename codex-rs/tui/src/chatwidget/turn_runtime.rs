@@ -181,9 +181,11 @@ impl ChatWidget {
         self.clear_guardian_review_status();
         self.turn_lifecycle.finish();
         self.clear_safety_buffering();
+        self.collab_wait_in_progress = false;
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
+        self.reconcile_compact_tool_activity_status();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
         if !from_replay {
@@ -326,9 +328,11 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start = false;
         self.clear_guardian_review_status();
         self.turn_lifecycle.finish();
+        self.collab_wait_in_progress = false;
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
+        self.reconcile_compact_tool_activity_status();
         self.last_unified_wait = None;
         self.unified_exec_wait_streak = None;
         self.adaptive_chunking.reset();

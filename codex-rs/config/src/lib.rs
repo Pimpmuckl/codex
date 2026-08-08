@@ -51,6 +51,7 @@ pub use cloud_config_layers::CloudConfigLayerError;
 pub use cloud_config_layers::cloud_config_layers_from_fragments;
 pub use codex_plus_plus::AutoRedeemResets;
 pub use codex_plus_plus::ModelCapacityRetryMode;
+pub use codex_plus_plus::ToolActivityPresentation;
 pub use codex_plus_plus::UserMessageInbox;
 pub use codex_plus_plus::WeeklyUsageWindowAutoStart;
 pub use codex_plus_plus::codex_plus_plus_dcg_nux_shown;
