@@ -82,9 +82,6 @@ impl McpServerConnection {
         if !current.has_same_connection_config(desired) {
             return None;
         }
-        if !self.client.startup_complete.load(Ordering::Acquire) {
-            return None;
-        }
         let client = self.client.client().await.ok()?;
         if client.client.is_closed().await {
             return None;

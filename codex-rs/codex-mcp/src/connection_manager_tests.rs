@@ -3680,6 +3680,45 @@ async fn reconciliation_reuses_an_unchanged_ready_server() {
 }
 
 #[tokio::test]
+async fn reconciliation_reuses_an_unchanged_starting_server() {
+    let runtime_context = reusable_server_runtime_context();
+    let config = reusable_server_config("http://127.0.0.1:1");
+    let mut previous = manager_with_reusable_ready_server(
+        &config,
+        &runtime_context,
+        vec![create_test_tool("docs", "search")],
+    )
+    .await;
+    let (client, startup_started, release_startup) = create_gated_async_managed_client(
+        create_test_managed_client(vec![create_test_tool("docs", "search")]).await,
+    );
+    let startup_cancellation_token = client.cancel_token.clone();
+    let docs = previous.servers.get_mut("docs").expect("docs server");
+    docs.connection = Arc::new(McpServerConnection {
+        identity: Some(reusable_server_identity(&config, &runtime_context)),
+        client,
+    });
+    let previous = Arc::new(previous);
+    let previous_for_reconciliation = Arc::clone(&previous);
+    let reconciliation = tokio::spawn(async move {
+        reconcile_reusable_server(&previous_for_reconciliation, config, runtime_context).await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), startup_started)
+        .await
+        .expect("reconciliation should await the existing startup")
+        .expect("existing startup should signal");
+    assert!(!startup_cancellation_token.is_cancelled());
+    release_startup.send(()).expect("release existing startup");
+    let reconciled = tokio::time::timeout(Duration::from_secs(1), reconciliation)
+        .await
+        .expect("reconciliation should finish after startup")
+        .expect("reconciliation task should finish");
+
+    assert!(previous.shares_test_connection_with(&reconciled, "docs"));
+}
+
+#[tokio::test]
 async fn reconciliation_reuses_legacy_stdio_server_with_existing_protocol_marker() {
     let runtime_context = McpRuntimeContext::new(
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
