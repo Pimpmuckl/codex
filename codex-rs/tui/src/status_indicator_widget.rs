@@ -78,6 +78,13 @@ pub fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 }
 
 impl StatusIndicatorWidget {
+    pub(crate) fn as_renderable_with_header(&self, header: String) -> impl Renderable + '_ {
+        StatusIndicatorHeaderOverride {
+            status: self,
+            header,
+        }
+    }
+
     pub(crate) fn new(
         app_event_tx: AppEventSender,
         frame_requester: FrameRequester,
@@ -230,12 +237,33 @@ impl StatusIndicatorWidget {
     }
 }
 
+struct StatusIndicatorHeaderOverride<'a> {
+    status: &'a StatusIndicatorWidget,
+    header: String,
+}
+
+impl Renderable for StatusIndicatorHeaderOverride<'_> {
+    fn desired_height(&self, width: u16) -> u16 {
+        self.status.desired_height(width)
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.status.render_with_header(area, buf, &self.header);
+    }
+}
+
 impl Renderable for StatusIndicatorWidget {
     fn desired_height(&self, width: u16) -> u16 {
         1 + u16::try_from(self.wrapped_details_lines(width).len()).unwrap_or(0)
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.render_with_header(area, buf, &self.header);
+    }
+}
+
+impl StatusIndicatorWidget {
+    fn render_with_header(&self, area: Rect, buf: &mut Buffer, header: &str) {
         if area.is_empty() {
             return;
         }
@@ -259,7 +287,7 @@ impl Renderable for StatusIndicatorWidget {
             spans.push(indicator);
             spans.push(" ".into());
         }
-        spans.extend(shimmer_text(&self.header, motion_mode));
+        spans.extend(shimmer_text(header, motion_mode));
         if !spans.is_empty() {
             spans.push(" ".into());
         }

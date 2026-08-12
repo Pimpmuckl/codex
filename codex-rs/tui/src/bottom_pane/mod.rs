@@ -1018,7 +1018,6 @@ impl BottomPane {
         self.composer.quit_shortcut_hint_visible()
     }
 
-    #[cfg(test)]
     pub(crate) fn status_indicator_visible(&self) -> bool {
         self.status.is_some()
     }
@@ -1756,12 +1755,29 @@ impl BottomPane {
         &'_ self,
         composer_right_reserve: u16,
     ) -> RenderableItem<'_> {
+        self.as_renderable_with_status_override(
+            composer_right_reserve,
+            /*status_override*/ None,
+        )
+    }
+
+    pub(crate) fn as_renderable_with_status_override(
+        &'_ self,
+        composer_right_reserve: u16,
+        status_override: Option<String>,
+    ) -> RenderableItem<'_> {
         if let Some(view) = self.active_view() {
             RenderableItem::Borrowed(view)
         } else {
             let mut flex = FlexRenderable::new();
             if let Some(status) = &self.status {
-                flex.push(/*flex*/ 0, RenderableItem::Borrowed(status));
+                let status: RenderableItem<'_> = match status_override {
+                    Some(header) => {
+                        RenderableItem::Owned(Box::new(status.as_renderable_with_header(header)))
+                    }
+                    None => RenderableItem::Borrowed(status),
+                };
+                flex.push(/*flex*/ 0, status);
             }
             // Avoid double-surfacing the same summary and avoid adding an extra
             // row while the status line is already visible.

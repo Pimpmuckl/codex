@@ -160,6 +160,27 @@ impl HookCell {
         self.runs.iter().any(|run| run.state.should_render())
     }
 
+    pub(crate) fn compact_transient_status(&self) -> Option<String> {
+        if self
+            .runs
+            .iter()
+            .any(|run| run.state.should_render() && !run.state.is_running_visible())
+        {
+            return None;
+        }
+        let lines = self.display_lines(u16::MAX);
+        let line = lines.iter().rev().find(|line| !line.spans.is_empty())?;
+        let skip = usize::from(line.spans.get(1).is_some_and(|span| span.content == " ")) * 2;
+        let text = line
+            .spans
+            .iter()
+            .skip(skip)
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let text = text.trim().to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
     /// Splits durable completed runs from ephemeral active-cell bookkeeping.
     ///
     /// Quiet successes are left behind so they can disappear from the active cell, while failures,

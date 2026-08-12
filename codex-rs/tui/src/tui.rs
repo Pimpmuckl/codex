@@ -553,6 +553,7 @@ pub struct Tui {
     event_broker: Arc<EventBroker>,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
+    pending_resize_replay_clear: Option<ResizeReplayClear>,
     screen_size: ScreenSizePolicy,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
@@ -577,6 +578,12 @@ pub struct Tui {
 struct PendingHistoryLines {
     lines: Vec<HyperlinkLine>,
     wrap_policy: HistoryLineWrapPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum ResizeReplayClear {
+    VisibleScreen,
+    ScrollbackAndVisibleScreen,
 }
 
 fn clear_for_viewport_change<B>(terminal: &mut CustomTerminal<B>, new_area: Rect) -> Result<()>
@@ -611,6 +618,7 @@ impl Tui {
             event_broker: Arc::new(EventBroker::new()),
             terminal,
             pending_history_lines: vec![],
+            pending_resize_replay_clear: None,
             screen_size: ScreenSizePolicy::default(),
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
@@ -904,6 +912,45 @@ impl Tui {
         Ok(())
     }
 
+    pub(crate) fn prepare_resize_replay(&mut self) {
+        let viewport_was_bottom_aligned =
+            self.terminal.viewport_area.bottom() == self.terminal.last_known_screen_size.height;
+        self.pending_resize_replay_clear = Some(if self.is_alt_screen_active() {
+            ResizeReplayClear::VisibleScreen
+        } else {
+            ResizeReplayClear::ScrollbackAndVisibleScreen
+        });
+
+        let mut area = self.terminal.viewport_area;
+        let replay_y = if viewport_was_bottom_aligned {
+            self.terminal
+                .last_known_screen_size
+                .height
+                .saturating_sub(area.height)
+        } else {
+            0
+        };
+        if area.y != replay_y {
+            area.y = replay_y;
+            self.terminal.set_viewport_area(area);
+        }
+        self.frame_requester.schedule_frame();
+    }
+
+    fn apply_pending_resize_replay_clear(
+        terminal: &mut Terminal,
+        pending_clear: &mut Option<ResizeReplayClear>,
+    ) -> Result<()> {
+        match pending_clear.take() {
+            Some(ResizeReplayClear::VisibleScreen) => terminal.queue_clear_visible_screen()?,
+            Some(ResizeReplayClear::ScrollbackAndVisibleScreen) => {
+                terminal.queue_clear_scrollback_and_visible_screen_ansi()?
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
     pub fn draw(
         &mut self,
         height: u16,
@@ -1061,6 +1108,10 @@ impl Tui {
             }
 
             let terminal = &mut self.terminal;
+            Self::apply_pending_resize_replay_clear(
+                terminal,
+                &mut self.pending_resize_replay_clear,
+            )?;
             let needs_full_repaint =
                 Self::update_inline_viewport_for_resize_reflow(terminal, height, screen_size)?;
             Self::flush_pending_history_lines(
