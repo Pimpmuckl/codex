@@ -3,6 +3,7 @@ use crate::app::test_support::make_test_app;
 use crate::history_cell::PlainHistoryCell;
 use crate::legacy_core::config::TerminalResizeReflowMaxRows;
 use pretty_assertions::assert_eq;
+use ratatui::layout::Rect;
 
 fn plain_history_cells(count: usize) -> Vec<Arc<dyn HistoryCell>> {
     (0..count)
@@ -20,6 +21,36 @@ fn rendered_line_text(line: &HyperlinkLine) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect()
+}
+
+#[tokio::test]
+async fn compact_reflow_preserves_bottom_alignment_when_visible_history_shrinks() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.transcript_cells = plain_history_cells(/*count*/ 1);
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.terminal.set_viewport_area(Rect::new(
+        /*x*/ 0, /*y*/ 18, /*width*/ 80, /*height*/ 6,
+    ));
+
+    app.reflow_transcript_now(&mut tui, Size::new(/*width*/ 80, /*height*/ 24).into())?;
+
+    insta::assert_snapshot!(
+        format!(
+            "viewport: {:?}\nreplayed: {}",
+            tui.terminal.viewport_area,
+            app.render_transcript_lines_for_reflow(/*width*/ 80)
+                .lines
+                .iter()
+                .map(rendered_line_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+        @r"
+    viewport: Rect { x: 0, y: 18, width: 80, height: 6 }
+    replayed: cell 0
+    "
+    );
+    Ok(())
 }
 
 #[tokio::test]

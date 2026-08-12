@@ -265,14 +265,24 @@ impl App {
     }
 
     fn clear_terminal_for_resize_replay(&mut self, tui: &mut tui::Tui) -> Result<()> {
+        let viewport_was_bottom_aligned =
+            tui.terminal.viewport_area.bottom() == tui.terminal.last_known_screen_size.height;
         if tui.is_alt_screen_active() {
             tui.terminal.clear_visible_screen()?;
         } else {
             tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
         }
         let mut area = tui.terminal.viewport_area;
-        if area.y > 0 {
-            area.y = 0;
+        let replay_y = if viewport_was_bottom_aligned {
+            tui.terminal
+                .last_known_screen_size
+                .height
+                .saturating_sub(area.height)
+        } else {
+            0
+        };
+        if area.y != replay_y {
+            area.y = replay_y;
             tui.terminal.set_viewport_area(area);
         }
         Ok(())

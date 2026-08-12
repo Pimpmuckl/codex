@@ -104,6 +104,7 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
+    use super::Tui;
     use super::clear_for_viewport_change;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
@@ -175,6 +176,49 @@ mod tests {
         assert!(
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn compact_height_contraction_preserves_only_bottom_aligned_viewports() {
+        let screen_size = ratatui::layout::Size::new(/*width*/ 80, /*height*/ 24);
+        let backend = VT100Backend::new(screen_size.width, screen_size.height);
+        let mut terminal = CustomTerminal::with_screen_size_and_cursor_position_for_test(
+            backend,
+            screen_size,
+            Position::default(),
+        );
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 16, /*width*/ 80, /*height*/ 8,
+        ));
+
+        Tui::update_inline_viewport_for_resize_reflow(
+            &mut terminal,
+            /*height*/ 4,
+            screen_size,
+        )
+        .expect("contract bottom-aligned viewport");
+        let bottom_aligned = terminal.viewport_area;
+
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 8, /*width*/ 80, /*height*/ 8,
+        ));
+        Tui::update_inline_viewport_for_resize_reflow(
+            &mut terminal,
+            /*height*/ 4,
+            screen_size,
+        )
+        .expect("contract high viewport");
+
+        insta::assert_snapshot!(
+            format!(
+                "bottom aligned: {bottom_aligned:?}\nintentionally high: {:?}",
+                terminal.viewport_area
+            ),
+            @r"
+        bottom aligned: Rect { x: 0, y: 20, width: 80, height: 4 }
+        intentionally high: Rect { x: 0, y: 8, width: 80, height: 4 }
+        "
         );
     }
 
@@ -839,11 +883,14 @@ impl Tui {
     /// Unlike the legacy draw path, this path does not scroll rows above the viewport when the
     /// terminal shrinks. Resize reflow owns rebuilding those rows from transcript source, so
     /// scrolling here would move the viewport once and then replay history into the wrong row.
-    fn update_inline_viewport_for_resize_reflow(
-        terminal: &mut Terminal,
+    fn update_inline_viewport_for_resize_reflow<B>(
+        terminal: &mut CustomTerminal<B>,
         height: u16,
         screen_size: Size,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        B: Backend<Error = io::Error> + Write,
+    {
         let terminal_height_shrank = screen_size.height < terminal.last_known_screen_size.height;
         let terminal_height_grew = screen_size.height > terminal.last_known_screen_size.height;
         let viewport_was_bottom_aligned =
@@ -863,7 +910,9 @@ impl Tui {
                     .scroll_region_up(0..area.top(), scroll_by)?;
             }
             area.y = screen_size.height - area.height;
-        } else if terminal_height_grew && viewport_was_bottom_aligned {
+        } else if viewport_was_bottom_aligned
+            && (terminal_height_grew || area.height < previous_area.height)
+        {
             area.y = screen_size.height - area.height;
         }
 
