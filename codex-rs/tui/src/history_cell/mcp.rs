@@ -60,6 +60,10 @@ impl McpToolCallCell {
         &self.call_id
     }
 
+    pub(crate) fn is_active(&self) -> bool {
+        self.result.is_none()
+    }
+
     pub(crate) fn complete(
         &mut self,
         duration: Duration,

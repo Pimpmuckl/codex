@@ -4408,6 +4408,52 @@ async fn identical_parallel_running_hooks_collapse_to_count() {
 }
 
 #[tokio::test]
+async fn compact_running_hook_reuses_status_row_and_output_remains_durable() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    chat.bottom_pane.ensure_status_indicator();
+    let working_height = chat.as_renderable().desired_height(/*width*/ 80);
+
+    let hook_id = "pre-tool-use:0:/tmp/hooks.json";
+    let event = codex_app_server_protocol::HookEventName::PreToolUse;
+    handle_hook_started(
+        &mut chat,
+        hook_started_run(hook_id, event, Some("checking")),
+    );
+    reveal_running_hooks(&mut chat);
+    assert_eq!(
+        (
+            chat.as_renderable().desired_height(/*width*/ 80),
+            chat.compact_transient_status()
+        ),
+        (
+            working_height,
+            Some("Running PreToolUse hook: checking".into())
+        )
+    );
+
+    handle_hook_completed(
+        &mut chat,
+        hook_completed_run(
+            hook_id,
+            event,
+            codex_app_server_protocol::HookRunStatus::Failed,
+            vec![codex_app_server_protocol::HookOutputEntry {
+                kind: codex_app_server_protocol::HookOutputEntryKind::Warning,
+                text: "command denied".to_string(),
+            }],
+        ),
+    );
+    let history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(history.contains("PreToolUse (failed) says: command denied"));
+}
+
+#[tokio::test]
 async fn overlapping_hook_live_cell_tracks_parallel_quiet_hooks() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

@@ -1,5 +1,7 @@
 use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
+use crate::exec_cell::new_active_exec_command;
+use codex_app_server_protocol::CommandExecutionSource;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -77,6 +79,48 @@ fn contains_text(buffer: &Buffer, text: &str) -> bool {
                 .collect::<String>()
                 .contains(text)
         })
+}
+
+#[tokio::test]
+async fn compact_live_tool_reuses_status_row_without_changing_height() {
+    let (mut widget, _sender, _events, _operations) = make_chatwidget_manual_with_sender().await;
+    widget.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    widget.bottom_pane.set_task_running(/*running*/ true);
+    widget.bottom_pane.ensure_status_indicator();
+    let working = render_frame(&widget, /*width*/ 80);
+
+    widget.transcript.active_cell = Some(Box::new(new_active_exec_command(
+        "call-1".to_string(),
+        vec!["git".to_string(), "status".to_string()],
+        Vec::new(),
+        CommandExecutionSource::Agent,
+        /*interaction_input*/ None,
+        /*animations_enabled*/ false,
+    )));
+    let active = render_frame(&widget, /*width*/ 80);
+
+    assert_eq!(working.area.height, active.area.height);
+    let status_row = active
+        .content
+        .chunks(usize::from(active.area.width))
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
+        .find(|row| row.contains("Running git status"))
+        .expect("status row");
+    insta::assert_snapshot!(status_row.trim_end(), @"• Running git status (0s • esc to interrupt)");
+
+    widget.transcript.active_cell = Some(Box::new(new_active_exec_command(
+        "call-2".to_string(),
+        vec!["echo".to_string(), "hello".to_string()],
+        Vec::new(),
+        CommandExecutionSource::UserShell,
+        /*interaction_input*/ None,
+        /*animations_enabled*/ false,
+    )));
+    assert_eq!(widget.compact_transient_status(), None);
 }
 
 #[tokio::test]

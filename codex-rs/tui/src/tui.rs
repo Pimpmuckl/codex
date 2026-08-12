@@ -104,7 +104,6 @@ impl Drop for Tui {
 mod tests {
     use std::io::Write as _;
 
-    use super::Tui;
     use super::clear_for_viewport_change;
     use super::should_emit_notification;
     use crate::custom_terminal::Terminal as CustomTerminal;
@@ -176,49 +175,6 @@ mod tests {
         assert!(
             !rows.iter().skip(1).any(|row| row.contains("stale")),
             "expected stale cells inside the new viewport to be cleared, rows: {rows:?}"
-        );
-    }
-
-    #[test]
-    fn compact_height_contraction_preserves_only_bottom_aligned_viewports() {
-        let screen_size = ratatui::layout::Size::new(/*width*/ 80, /*height*/ 24);
-        let backend = VT100Backend::new(screen_size.width, screen_size.height);
-        let mut terminal = CustomTerminal::with_screen_size_and_cursor_position_for_test(
-            backend,
-            screen_size,
-            Position::default(),
-        );
-        terminal.set_viewport_area(Rect::new(
-            /*x*/ 0, /*y*/ 16, /*width*/ 80, /*height*/ 8,
-        ));
-
-        Tui::update_inline_viewport_for_resize_reflow(
-            &mut terminal,
-            /*height*/ 4,
-            screen_size,
-        )
-        .expect("contract bottom-aligned viewport");
-        let bottom_aligned = terminal.viewport_area;
-
-        terminal.set_viewport_area(Rect::new(
-            /*x*/ 0, /*y*/ 8, /*width*/ 80, /*height*/ 8,
-        ));
-        Tui::update_inline_viewport_for_resize_reflow(
-            &mut terminal,
-            /*height*/ 4,
-            screen_size,
-        )
-        .expect("contract high viewport");
-
-        insta::assert_snapshot!(
-            format!(
-                "bottom aligned: {bottom_aligned:?}\nintentionally high: {:?}",
-                terminal.viewport_area
-            ),
-            @r"
-        bottom aligned: Rect { x: 0, y: 20, width: 80, height: 4 }
-        intentionally high: Rect { x: 0, y: 8, width: 80, height: 4 }
-        "
         );
     }
 
@@ -597,6 +553,7 @@ pub struct Tui {
     event_broker: Arc<EventBroker>,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
+    pending_resize_replay_clear: Option<ResizeReplayClear>,
     screen_size: ScreenSizePolicy,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
@@ -621,6 +578,12 @@ pub struct Tui {
 struct PendingHistoryLines {
     lines: Vec<HyperlinkLine>,
     wrap_policy: HistoryLineWrapPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum ResizeReplayClear {
+    VisibleScreen,
+    ScrollbackAndVisibleScreen,
 }
 
 fn clear_for_viewport_change<B>(terminal: &mut CustomTerminal<B>, new_area: Rect) -> Result<()>
@@ -655,6 +618,7 @@ impl Tui {
             event_broker: Arc::new(EventBroker::new()),
             terminal,
             pending_history_lines: vec![],
+            pending_resize_replay_clear: None,
             screen_size: ScreenSizePolicy::default(),
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
@@ -883,14 +847,11 @@ impl Tui {
     /// Unlike the legacy draw path, this path does not scroll rows above the viewport when the
     /// terminal shrinks. Resize reflow owns rebuilding those rows from transcript source, so
     /// scrolling here would move the viewport once and then replay history into the wrong row.
-    fn update_inline_viewport_for_resize_reflow<B>(
-        terminal: &mut CustomTerminal<B>,
+    fn update_inline_viewport_for_resize_reflow(
+        terminal: &mut Terminal,
         height: u16,
         screen_size: Size,
-    ) -> Result<bool>
-    where
-        B: Backend<Error = io::Error> + Write,
-    {
+    ) -> Result<bool> {
         let terminal_height_shrank = screen_size.height < terminal.last_known_screen_size.height;
         let terminal_height_grew = screen_size.height > terminal.last_known_screen_size.height;
         let viewport_was_bottom_aligned =
@@ -910,9 +871,7 @@ impl Tui {
                     .scroll_region_up(0..area.top(), scroll_by)?;
             }
             area.y = screen_size.height - area.height;
-        } else if viewport_was_bottom_aligned
-            && (terminal_height_grew || area.height < previous_area.height)
-        {
+        } else if terminal_height_grew && viewport_was_bottom_aligned {
             area.y = screen_size.height - area.height;
         }
 
@@ -950,6 +909,45 @@ impl Tui {
             )?;
         }
         pending_history_lines.clear();
+        Ok(())
+    }
+
+    pub(crate) fn prepare_resize_replay(&mut self) {
+        let viewport_was_bottom_aligned =
+            self.terminal.viewport_area.bottom() == self.terminal.last_known_screen_size.height;
+        self.pending_resize_replay_clear = Some(if self.is_alt_screen_active() {
+            ResizeReplayClear::VisibleScreen
+        } else {
+            ResizeReplayClear::ScrollbackAndVisibleScreen
+        });
+
+        let mut area = self.terminal.viewport_area;
+        let replay_y = if viewport_was_bottom_aligned {
+            self.terminal
+                .last_known_screen_size
+                .height
+                .saturating_sub(area.height)
+        } else {
+            0
+        };
+        if area.y != replay_y {
+            area.y = replay_y;
+            self.terminal.set_viewport_area(area);
+        }
+        self.frame_requester.schedule_frame();
+    }
+
+    fn apply_pending_resize_replay_clear(
+        terminal: &mut Terminal,
+        pending_clear: &mut Option<ResizeReplayClear>,
+    ) -> Result<()> {
+        match pending_clear.take() {
+            Some(ResizeReplayClear::VisibleScreen) => terminal.queue_clear_visible_screen()?,
+            Some(ResizeReplayClear::ScrollbackAndVisibleScreen) => {
+                terminal.queue_clear_scrollback_and_visible_screen_ansi()?
+            }
+            None => {}
+        }
         Ok(())
     }
 
@@ -1110,6 +1108,10 @@ impl Tui {
             }
 
             let terminal = &mut self.terminal;
+            Self::apply_pending_resize_replay_clear(
+                terminal,
+                &mut self.pending_resize_replay_clear,
+            )?;
             let needs_full_repaint =
                 Self::update_inline_viewport_for_resize_reflow(terminal, height, screen_size)?;
             Self::flush_pending_history_lines(

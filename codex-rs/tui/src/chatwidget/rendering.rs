@@ -9,29 +9,32 @@ impl ChatWidget {
     pub(crate) fn as_renderable(&self) -> RenderableItem<'_> {
         let active_cell_right_reserve = self.ambient_pet_wrap_reserved_cols();
         let history_render_mode = self.history_render_mode();
+        let compact_transient_status = self.compact_transient_status();
         let active_cell_renderable = match &self.transcript.active_cell {
-            Some(cell) => RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
-                child: cell.as_ref(),
-                top: 1,
-                right: active_cell_right_reserve,
-                history_render_mode,
-                // Externally backed transcript cells can also change viewport height without an
-                // active-cell revision. Spinner cells remain safe because their indicator width
-                // is stable and their display lines are still rebuilt on every frame.
-                persistent_layout: cell.has_stable_transcript_height().then_some(
-                    PersistentActiveCellLayout {
-                        cache: &self.transcript.active_cell_layout,
-                        cell_identity: cell.as_ref() as *const dyn HistoryCell as *const ()
-                            as usize,
-                        revision: self.transcript.active_cell_revision,
-                        render_mode: self.history_render_mode(),
-                    },
-                ),
-            })),
-            None => RenderableItem::Owned(Box::new(())),
+            Some(cell) if compact_transient_status.is_none() => {
+                RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
+                    child: cell.as_ref(),
+                    top: 1,
+                    right: active_cell_right_reserve,
+                    history_render_mode,
+                    // Externally backed transcript cells can also change viewport height without an
+                    // active-cell revision. Spinner cells remain safe because their indicator width
+                    // is stable and their display lines are still rebuilt on every frame.
+                    persistent_layout: cell.has_stable_transcript_height().then_some(
+                        PersistentActiveCellLayout {
+                            cache: &self.transcript.active_cell_layout,
+                            cell_identity: cell.as_ref() as *const dyn HistoryCell as *const ()
+                                as usize,
+                            revision: self.transcript.active_cell_revision,
+                            render_mode: self.history_render_mode(),
+                        },
+                    ),
+                }))
+            }
+            Some(_) | None => RenderableItem::Owned(Box::new(())),
         };
         let active_hook_cell_renderable = match &self.active_hook_cell {
-            Some(cell) if cell.should_render() => {
+            Some(cell) if cell.should_render() && compact_transient_status.is_none() => {
                 RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
                     child: cell,
                     top: 1,
@@ -72,7 +75,10 @@ impl ChatWidget {
         flex.push(
             /*flex*/ 0,
             self.bottom_pane
-                .as_renderable_with_composer_right_reserve(active_cell_right_reserve)
+                .as_renderable_with_status_override(
+                    active_cell_right_reserve,
+                    compact_transient_status,
+                )
                 .inset(Insets::tlbr(
                     /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
                 )),

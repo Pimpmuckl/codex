@@ -16,6 +16,7 @@ impl ChatWidget {
 
     pub(super) fn on_hook_started(&mut self, run: codex_app_server_protocol::HookRunSummary) {
         self.flush_answer_stream_with_separator();
+        self.ensure_compact_activity_status();
         self.flush_completed_hook_output();
         match self.active_hook_cell.as_mut() {
             Some(cell) => {

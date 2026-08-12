@@ -28,27 +28,21 @@ async fn compact_reflow_preserves_bottom_alignment_when_visible_history_shrinks(
     let mut app = make_test_app().await;
     app.transcript_cells = plain_history_cells(/*count*/ 1);
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    tui.terminal.set_viewport_area(Rect::new(
+    let bottom_area = Rect::new(
         /*x*/ 0, /*y*/ 18, /*width*/ 80, /*height*/ 6,
-    ));
+    );
+    tui.terminal.set_viewport_area(bottom_area);
 
     app.reflow_transcript_now(&mut tui, Size::new(/*width*/ 80, /*height*/ 24).into())?;
 
-    insta::assert_snapshot!(
-        format!(
-            "viewport: {:?}\nreplayed: {}",
-            tui.terminal.viewport_area,
-            app.render_transcript_lines_for_reflow(/*width*/ 80)
-                .lines
-                .iter()
-                .map(rendered_line_text)
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-        @r"
-    viewport: Rect { x: 0, y: 18, width: 80, height: 6 }
-    replayed: cell 0
-    "
+    assert_eq!(tui.terminal.viewport_area, bottom_area);
+    assert_eq!(
+        app.render_transcript_lines_for_reflow(/*width*/ 80)
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>(),
+        vec!["cell 0"]
     );
     Ok(())
 }

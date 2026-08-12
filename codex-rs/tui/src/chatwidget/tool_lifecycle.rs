@@ -70,6 +70,7 @@ impl ChatWidget {
 
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
         self.flush_answer_stream_with_separator();
+        self.ensure_compact_activity_status();
         self.flush_active_cell();
         self.transcript.active_cell = Some(Box::new(history_cell::new_active_web_search_call(
             call_id,
@@ -223,6 +224,7 @@ impl ChatWidget {
             return;
         };
         self.flush_answer_stream_with_separator();
+        self.ensure_compact_activity_status();
         self.flush_active_cell();
         self.transcript.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
             id,

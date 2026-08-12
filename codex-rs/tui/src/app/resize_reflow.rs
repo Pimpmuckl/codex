@@ -264,30 +264,6 @@ impl App {
         );
     }
 
-    fn clear_terminal_for_resize_replay(&mut self, tui: &mut tui::Tui) -> Result<()> {
-        let viewport_was_bottom_aligned =
-            tui.terminal.viewport_area.bottom() == tui.terminal.last_known_screen_size.height;
-        if tui.is_alt_screen_active() {
-            tui.terminal.clear_visible_screen()?;
-        } else {
-            tui.terminal.clear_scrollback_and_visible_screen_ansi()?;
-        }
-        let mut area = tui.terminal.viewport_area;
-        let replay_y = if viewport_was_bottom_aligned {
-            tui.terminal
-                .last_known_screen_size
-                .height
-                .saturating_sub(area.height)
-        } else {
-            0
-        };
-        if area.y != replay_y {
-            area.y = replay_y;
-            tui.terminal.set_viewport_area(area);
-        }
-        Ok(())
-    }
-
     /// Finish stream consolidation by repairing any resize work that happened during streaming.
     ///
     /// This is called after agent-message stream cells have either been replaced by an
@@ -481,7 +457,7 @@ impl App {
 
         // Drop any queued pre-resize/pre-consolidation inserts before rebuilding from cells.
         tui.clear_pending_history_lines();
-        self.clear_terminal_for_resize_replay(tui)?;
+        tui.prepare_resize_replay();
 
         self.deferred_history_lines.clear();
         if !reflowed_lines.is_empty() {
@@ -538,7 +514,7 @@ impl App {
         };
 
         tui.clear_pending_history_lines();
-        self.clear_terminal_for_resize_replay(tui)?;
+        tui.prepare_resize_replay();
 
         self.deferred_history_lines.clear();
         if !reflowed_lines.is_empty() {
