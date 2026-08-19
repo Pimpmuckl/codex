@@ -21,6 +21,7 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::WarningEvent;
+use futures::future::BoxFuture;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -681,7 +682,7 @@ pub(crate) async fn review_approval_request(
 ) -> ReviewDecision {
     // Box the delegated review future so callers do not inline the entire
     // guardian session state machine into their own async stack.
-    Box::pin(run_guardian_review(
+    let review: BoxFuture<'_, ReviewDecision> = Box::pin(run_guardian_review(
         Arc::clone(session),
         context.into(),
         review_id,
@@ -692,8 +693,8 @@ pub(crate) async fn review_approval_request(
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
             external_cancel: None,
         },
-    ))
-    .await
+    ));
+    review.await
 }
 
 pub(crate) async fn review_approval_request_with_cancel(
