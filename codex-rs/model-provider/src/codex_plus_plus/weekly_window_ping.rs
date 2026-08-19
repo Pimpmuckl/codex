@@ -259,7 +259,10 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
         | ApiError::UsageNotIncluded
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
-        | ApiError::CyberPolicy { .. } => WeeklyWindowPingOutcome::Rejected { status: None },
+        | ApiError::CyberPolicy { .. }
+        | ApiError::MisalignmentPolicyViolation { .. } => {
+            WeeklyWindowPingOutcome::Rejected { status: None }
+        }
         ApiError::Transport(TransportError::Http { status, .. }) | ApiError::Api { status, .. } => {
             WeeklyWindowPingOutcome::Ambiguous {
                 status: Some(status.as_u16()),

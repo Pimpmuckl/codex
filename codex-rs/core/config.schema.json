@@ -405,6 +405,12 @@
     "CodeModeConfigToml": {
       "additionalProperties": false,
       "properties": {
+        "default_exec_yield_time_ms": {
+          "description": "Default yield timeout for code-mode exec calls, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "direct_only_tool_namespaces": {
           "description": "Exact tool namespaces to expose only as direct model tools. These tools bypass deferral, remain top-level in code-mode-only sessions, and are omitted from the nested code-mode tool surface.",
           "items": {
@@ -468,6 +474,9 @@
             "apply_patch_freeform": {
               "type": "boolean"
             },
+            "apply_patch_preserve_line_endings": {
+              "type": "boolean"
+            },
             "apply_patch_streaming_events": {
               "type": "boolean"
             },
@@ -496,6 +505,9 @@
             "auth_elicitation": {
               "type": "boolean"
             },
+            "background_paginated_rollout_migration": {
+              "type": "boolean"
+            },
             "browser_use": {
               "type": "boolean"
             },
@@ -516,6 +528,9 @@
             },
             "code_mode_host": {
               "$ref": "#/definitions/FeatureToml_for_CodeModeHostConfigToml"
+            },
+            "code_mode_interrupt": {
+              "type": "boolean"
             },
             "code_mode_only": {
               "type": "boolean"
@@ -598,8 +613,17 @@
             "guardian_approval": {
               "type": "boolean"
             },
-            "guardianv2": {
+            "guardian_enhanced_node_repl_transcripts": {
               "type": "boolean"
+            },
+            "guardian_node_repl_transcript_images": {
+              "type": "boolean"
+            },
+            "guardian_reuse_parent_compaction": {
+              "type": "boolean"
+            },
+            "guardianv2": {
+              "$ref": "#/definitions/FeatureToml_for_GuardianV2ConfigToml"
             },
             "hooks": {
               "type": "boolean"
@@ -676,6 +700,9 @@
             "prevent_idle_sleep": {
               "type": "boolean"
             },
+            "psp": {
+              "type": "boolean"
+            },
             "realtime_conversation": {
               "type": "boolean"
             },
@@ -713,6 +740,9 @@
               "type": "boolean"
             },
             "responses_websockets_v2": {
+              "type": "boolean"
+            },
+            "retain_client_developer_messages": {
               "type": "boolean"
             },
             "rollout_budget": {
@@ -787,6 +817,9 @@
             "unavailable_dummy_tools": {
               "type": "boolean"
             },
+            "unbounded_connection_retries": {
+              "type": "boolean"
+            },
             "undo": {
               "type": "boolean"
             },
@@ -794,6 +827,9 @@
               "type": "boolean"
             },
             "unified_exec_zsh_fork": {
+              "type": "boolean"
+            },
+            "unified_image_budget": {
               "type": "boolean"
             },
             "use_agent_identity": {
@@ -1074,6 +1110,16 @@
         }
       ]
     },
+    "FeatureToml_for_GuardianV2ConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/GuardianV2ConfigToml"
+        }
+      ]
+    },
     "FeatureToml_for_MultiAgentV2ConfigToml": {
       "anyOf": [
         {
@@ -1218,6 +1264,18 @@
       },
       "type": "object"
     },
+    "GoalsToml": {
+      "additionalProperties": false,
+      "properties": {
+        "max_goal_token_budget": {
+          "description": "Maximum token budget allowed for a goal and default budget for new goals.",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "GranularApprovalConfig": {
       "properties": {
         "mcp_elicitations": {
@@ -1249,6 +1307,94 @@
         "sandbox_approval"
       ],
       "type": "object"
+    },
+    "GuardianV2ConfigToml": {
+      "additionalProperties": false,
+      "description": "User-configurable prompt, approval, and context settings for Guardian v2.",
+      "properties": {
+        "classifier_instructions": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_action_tokens": {
+          "format": "uint",
+          "maximum": 100000.0,
+          "minimum": 100.0,
+          "type": "integer"
+        },
+        "max_classifier_instruction_tokens": {
+          "format": "uint",
+          "maximum": 100000.0,
+          "minimum": 100.0,
+          "type": "integer"
+        },
+        "reasoning_effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        },
+        "review_threshold": {
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "transcript": {
+          "$ref": "#/definitions/GuardianV2TranscriptConfigToml"
+        }
+      },
+      "type": "object"
+    },
+    "GuardianV2TranscriptConfigToml": {
+      "additionalProperties": false,
+      "description": "Bounds and optional sources for the Guardian v2 conversation transcript.",
+      "properties": {
+        "max_message_entry_tokens": {
+          "format": "uint",
+          "maximum": 100000.0,
+          "minimum": 100.0,
+          "type": "integer"
+        },
+        "max_message_transcript_tokens": {
+          "format": "uint",
+          "maximum": 100000.0,
+          "minimum": 100.0,
+          "type": "integer"
+        },
+        "max_recent_non_user_entries": {
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "max_tool_entry_tokens": {
+          "format": "uint",
+          "maximum": 100000.0,
+          "minimum": 100.0,
+          "type": "integer"
+        },
+        "max_tool_transcript_tokens": {
+          "format": "uint",
+          "maximum": 100000.0,
+          "minimum": 100.0,
+          "type": "integer"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/definitions/GuardianV2TranscriptSource"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "GuardianV2TranscriptSource": {
+      "description": "Optional conversation sources available to the Guardian v2 classifier.",
+      "enum": [
+        "tool_calls",
+        "tool_outputs",
+        "reasoning"
+      ],
+      "type": "string"
     },
     "History": {
       "additionalProperties": false,
@@ -1331,6 +1477,43 @@
           },
           "required": [
             "command",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "input": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "server": {
+              "type": "string"
+            },
+            "statusMessage": {
+              "default": null,
+              "type": "string"
+            },
+            "timeout": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "mcp_tool"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "server",
+            "tool",
             "type"
           ],
           "type": "object"
@@ -1592,6 +1775,12 @@
       "additionalProperties": false,
       "description": "OAuth client settings used when Codex launches an MCP OAuth flow.",
       "properties": {
+        "callback_port": {
+          "description": "Fixed callback port that takes precedence over Codex's global OAuth callback port.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
           "type": "string"
@@ -2732,6 +2921,9 @@
           },
           "type": "object"
         },
+        "http_headers_helper": {
+          "type": "string"
+        },
         "name": {
           "default": null,
           "description": "Legacy display-name field accepted for backward compatibility.",
@@ -3170,14 +3362,6 @@
           "maxLength": 2000,
           "type": "string"
         },
-        "mode": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/TokenBudgetMode"
-            }
-          ],
-          "description": "Select whether context-window metadata identifies the thread or agent name."
-        },
         "reminder_message_template": {
           "description": "Reminder template. `{n_remaining}` is replaced with the tokens remaining before auto-compaction.",
           "maxLength": 2000,
@@ -3193,16 +3377,7 @@
       },
       "type": "object"
     },
-    "TokenBudgetMode": {
-      "description": "Identity included in the context-window developer message.",
-      "enum": [
-        "thread",
-        "name"
-      ],
-      "type": "string"
-    },
     "ToolActivityPresentation": {
-      "description": "Controls how routine tool activity is presented in the main TUI conversation.",
       "enum": [
         "full",
         "compact"
@@ -3240,6 +3415,10 @@
       "properties": {
         "error_on_tool_collisions": {
           "description": "Fail the turn when multiple tools share the same effective name.",
+          "type": "boolean"
+        },
+        "turn_metadata_includes_tool_info": {
+          "description": "Include authoritative tool information in per-turn request metadata.",
           "type": "boolean"
         }
       },
@@ -5160,6 +5339,9 @@
         "apply_patch_freeform": {
           "type": "boolean"
         },
+        "apply_patch_preserve_line_endings": {
+          "type": "boolean"
+        },
         "apply_patch_streaming_events": {
           "type": "boolean"
         },
@@ -5188,6 +5370,9 @@
         "auth_elicitation": {
           "type": "boolean"
         },
+        "background_paginated_rollout_migration": {
+          "type": "boolean"
+        },
         "browser_use": {
           "type": "boolean"
         },
@@ -5208,6 +5393,9 @@
         },
         "code_mode_host": {
           "$ref": "#/definitions/FeatureToml_for_CodeModeHostConfigToml"
+        },
+        "code_mode_interrupt": {
+          "type": "boolean"
         },
         "code_mode_only": {
           "type": "boolean"
@@ -5290,8 +5478,17 @@
         "guardian_approval": {
           "type": "boolean"
         },
-        "guardianv2": {
+        "guardian_enhanced_node_repl_transcripts": {
           "type": "boolean"
+        },
+        "guardian_node_repl_transcript_images": {
+          "type": "boolean"
+        },
+        "guardian_reuse_parent_compaction": {
+          "type": "boolean"
+        },
+        "guardianv2": {
+          "$ref": "#/definitions/FeatureToml_for_GuardianV2ConfigToml"
         },
         "hooks": {
           "type": "boolean"
@@ -5368,6 +5565,9 @@
         "prevent_idle_sleep": {
           "type": "boolean"
         },
+        "psp": {
+          "type": "boolean"
+        },
         "realtime_conversation": {
           "type": "boolean"
         },
@@ -5405,6 +5605,9 @@
           "type": "boolean"
         },
         "responses_websockets_v2": {
+          "type": "boolean"
+        },
+        "retain_client_developer_messages": {
           "type": "boolean"
         },
         "rollout_budget": {
@@ -5479,6 +5682,9 @@
         "unavailable_dummy_tools": {
           "type": "boolean"
         },
+        "unbounded_connection_retries": {
+          "type": "boolean"
+        },
         "undo": {
           "type": "boolean"
         },
@@ -5486,6 +5692,9 @@
           "type": "boolean"
         },
         "unified_exec_zsh_fork": {
+          "type": "boolean"
+        },
+        "unified_image_budget": {
           "type": "boolean"
         },
         "use_agent_identity": {
@@ -5560,6 +5769,14 @@
       ],
       "default": null,
       "description": "Compatibility-only settings retained so legacy `ghost_snapshot` config still loads."
+    },
+    "goals": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoalsToml"
+        }
+      ],
+      "description": "Goal-related settings."
     },
     "hide_agent_reasoning": {
       "default": false,
@@ -5819,7 +6036,7 @@
     },
     "project_doc_max_bytes": {
       "default": 32768,
-      "description": "Maximum number of bytes to include from an AGENTS.md project doc file.",
+      "description": "Maximum total bytes of project instruction content across all selected environments.",
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
@@ -5846,6 +6063,13 @@
       ],
       "default": null,
       "description": "Experimental / do not use. Realtime websocket session selection. `version` controls v1/v2 and `type` controls conversational/transcription."
+    },
+    "responses_api_metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Bounded, product-owned metadata attached to every Responses API request.",
+      "type": "object"
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",

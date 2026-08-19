@@ -7,9 +7,12 @@ use uuid::Uuid;
 use super::*;
 
 #[tokio::test]
-async fn sqlite_sink_default_filter_drops_trace_and_debug() {
+async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
     let codex_home =
         std::env::temp_dir().join(format!("codex-state-log-db-filter-{}", Uuid::new_v4()));
+    let _cleanup = scopeguard::guard(codex_home.clone(), |codex_home| {
+        let _ = std::fs::remove_dir_all(codex_home);
+    });
     let runtime = StateRuntime::init(
         crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
         "test-provider".to_string(),
@@ -35,7 +38,32 @@ async fn sqlite_sink_default_filter_drops_trace_and_debug() {
         target: "codex_rmcp_client::oauth",
         "retained-codex-rmcp-client-info"
     );
+    tracing::trace!(target: "codex_http_client::transport", "dropped-request-body");
+    tracing::debug!(target: "codex_http_client::transport", "retained-request-diagnostic");
+    tracing::trace!(target: "codex_api::sse", "dropped-sse-parent");
+    tracing::trace!(target: "codex_api::sse::responses", "dropped-sse-payload");
+    tracing::debug!(target: "codex_api::sse::responses", "retained-sse-diagnostic");
     tracing::trace!(target: "codex_state", "dropped-trace");
+    tracing::trace!(
+        target: "codex_tui::streaming::controller",
+        "dropped-controller-trace"
+    );
+    tracing::debug!(
+        target: "codex_tui::streaming::controller",
+        "retained-controller-debug"
+    );
+    tracing::trace!(
+        target: "codex_tui::streaming::table_holdback",
+        "dropped-table-holdback-trace"
+    );
+    tracing::debug!(
+        target: "codex_tui::streaming::table_holdback",
+        "retained-table-holdback-debug"
+    );
+    tracing::trace!(
+        target: "codex_tui::streaming::commit_tick",
+        "dropped-commit-tick-trace"
+    );
     tracing::trace!(
         target: "codex_api::responses_websocket_timing",
         payload = "complete timing payload",
@@ -65,8 +93,26 @@ async fn sqlite_sink_default_filter_drops_trace_and_debug() {
                 "codex_rmcp_client::oauth",
                 Some("retained-codex-rmcp-client-info")
             ),
+            (
+                "DEBUG",
+                "codex_http_client::transport",
+                Some("retained-request-diagnostic")
+            ),
+            (
+                "DEBUG",
+                "codex_api::sse::responses",
+                Some("retained-sse-diagnostic")
+            ),
+            (
+                "DEBUG",
+                "codex_tui::streaming::controller",
+                Some("retained-controller-debug"),
+            ),
+            (
+                "DEBUG",
+                "codex_tui::streaming::table_holdback",
+                Some("retained-table-holdback-debug"),
+            ),
         ]
     );
-
-    let _ = tokio::fs::remove_dir_all(codex_home).await;
 }

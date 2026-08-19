@@ -1,5 +1,7 @@
 use anyhow::Result;
 use codex_config::CONFIG_TOML_FILE;
+use codex_core::TurnInputRequest;
+use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -7,7 +9,6 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
@@ -63,7 +64,9 @@ async fn user_message_tool_preserves_responses_order_without_synthetic_model_mes
         text: "Continue the task.".to_string(),
         text_elements: Vec::new(),
     };
-    test.codex.submit(vec![input].into()).await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![input]))
+        .await?;
 
     let item = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::ItemCompleted(ItemCompletedEvent {

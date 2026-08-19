@@ -16,11 +16,9 @@ use codex_protocol::config_types::ForcedLoginMethod;
 use tracing::warn;
 
 use crate::AppServerTarget;
-use crate::TerminalRestoreGuard;
 use crate::account_picker;
 use crate::account_usage;
 use crate::legacy_core::config::Config;
-use crate::tui;
 use crate::tui::Tui;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,24 +31,6 @@ pub(crate) enum StartupAccountSelection {
 }
 
 pub(crate) async fn run_startup_account_picker(
-    config: &Config,
-    app_server_target: &AppServerTarget,
-) -> color_eyre::Result<StartupAccountSelection> {
-    let mut initialized_terminal = tui::init()?;
-    initialized_terminal.terminal.clear()?;
-    let mut tui = Tui::new(
-        initialized_terminal.terminal,
-        initialized_terminal.enhanced_keys_supported,
-        initialized_terminal.stderr_guard,
-    );
-    let mut restore_guard = TerminalRestoreGuard::new();
-    let selection = maybe_run_startup_account_picker(&mut tui, config, app_server_target).await;
-    let _ = tui.terminal.clear();
-    restore_guard.restore()?;
-    selection
-}
-
-async fn maybe_run_startup_account_picker(
     tui: &mut Tui,
     config: &Config,
     app_server_target: &AppServerTarget,

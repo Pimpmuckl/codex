@@ -56,8 +56,23 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+    /// Returns a shared spec when both the spec and search metadata are immutable.
+    fn immutable_spec(&self) -> Option<&Arc<ToolSpec>> {
+        None
+    }
+
+    /// Returns lazily cached Code Mode definitions owned by this runtime.
+    fn cached_code_mode_definitions(&self) -> Option<&[codex_code_mode::ToolDefinition]> {
+        None
+    }
+
     /// Returns a readiness wait for this exact tool before taking the execution gate.
     fn wait_until_ready<'a>(&'a self, _session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
+        None
+    }
+
+    /// Returns the owning server only for MCP-backed tool runtimes.
+    fn mcp_server_name(&self) -> Option<&str> {
         None
     }
 
@@ -92,6 +107,9 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     fn telemetry_tags(&self, _invocation: &ToolInvocation) -> ToolTelemetryTags {
         Vec::new()
     }
+
+    /// Observes a tool result only after all PostToolUse hooks accept it.
+    fn on_tool_result_accepted(&self, _invocation: &ToolInvocation, _result: &dyn ToolOutput) {}
 
     fn post_tool_use_payload(
         &self,
@@ -407,15 +425,22 @@ impl ToolRegistry {
             if !existing_description.trim().is_empty() {
                 continue;
             }
-            let description = match tool.runtime.spec() {
-                ToolSpec::Namespace(namespace) => namespace.description,
+            let owned_spec;
+            let spec = if let Some(spec) = tool.runtime.immutable_spec() {
+                spec.as_ref()
+            } else {
+                owned_spec = tool.runtime.spec();
+                &owned_spec
+            };
+            let description = match spec {
+                ToolSpec::Namespace(namespace) => namespace.description.as_str(),
                 ToolSpec::Function(_)
                 | ToolSpec::Freeform(_)
                 | ToolSpec::ToolSearch { .. }
-                | ToolSpec::WebSearch { .. } => String::new(),
+                | ToolSpec::WebSearch { .. } => "",
             };
             if !description.trim().is_empty() {
-                *existing_description = description;
+                *existing_description = description.to_string();
             }
         }
         namespaces
@@ -563,8 +588,6 @@ impl ToolRegistry {
             return Err(err);
         }
 
-        notify_tool_start(&invocation).await;
-
         let mut pre_tool_use_approval = None;
         let mut reviewed_exec_command_shell = None;
         if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
@@ -654,6 +677,7 @@ impl ToolRegistry {
         let exact_pre_tool_use_approval = pre_tool_use_approval
             .as_ref()
             .map(|receipt| ExactPreToolUseApproval::new(receipt.execution_target().cloned()));
+        notify_tool_start(&invocation).await;
 
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);
@@ -794,6 +818,7 @@ impl ToolRegistry {
                         });
                     }
                 }
+                tool.on_tool_result_accepted(&invocation, result.result.as_ref());
                 dispatch_trace.record_completed(
                     &invocation,
                     &result.call_id,

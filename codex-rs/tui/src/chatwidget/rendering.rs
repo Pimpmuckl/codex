@@ -14,7 +14,12 @@ impl ChatWidget {
             Some(cell) if compact_transient_status.is_none() => {
                 RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
                     child: cell.as_ref(),
-                    top: 1,
+                    // The initial header becomes the first history cell, which has no leading separator.
+                    top: if cell.as_any().is::<history_cell::SessionHeaderHistoryCell>() {
+                        0
+                    } else {
+                        1
+                    },
                     right: active_cell_right_reserve,
                     history_render_mode,
                     // Externally backed transcript cells can also change viewport height without an
@@ -87,7 +92,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn note_rendered_width(&self, width: u16) {
-        self.last_rendered_width.set(Some(width as usize));
+        self.last_rendered_width.set(Some(width));
     }
 }
 

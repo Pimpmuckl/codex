@@ -584,6 +584,7 @@ impl DcgManager {
                     marketplace_path: Some(manifest.clone()),
                     remote_marketplace_name: None,
                     plugin_name: PLUGIN_NAME.to_string(),
+                    install_attempt_id: None,
                 },
             })
             .await

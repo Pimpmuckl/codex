@@ -7,6 +7,7 @@ pub mod error;
 mod personal_access_token;
 mod storage;
 mod util;
+mod workload_identity;
 
 mod external_bearer;
 mod manager;
@@ -19,3 +20,4 @@ pub use error::RefreshTokenFailedError;
 pub use error::RefreshTokenFailedReason;
 pub use manager::*;
 pub(crate) use storage::save_file_auth_if_unchanged;
+pub use workload_identity::is_workload_identity_selected;

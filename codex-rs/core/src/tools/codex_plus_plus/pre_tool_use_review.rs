@@ -117,6 +117,7 @@ pub(crate) fn review<'a>(
             ReviewDecision::Approved
             | ReviewDecision::ApprovedForSession
             | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+            | ReviewDecision::ApprovedMcpPolicyAmendment
             | ReviewDecision::NetworkPolicyAmendment { .. } => {
                 Ok(PreToolUseApprovalReceipt::for_reviewed(
                     invocation,

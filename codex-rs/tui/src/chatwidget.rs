@@ -165,7 +165,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use rand::Rng;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -338,6 +337,7 @@ mod codex_plus_plus;
 mod command_lifecycle;
 mod connectors;
 mod constructor;
+pub(crate) use self::connectors::ConnectorScopeGeneration;
 use self::connectors::ConnectorsState;
 mod exec_state;
 use self::exec_state::RunningCommand;
@@ -425,11 +425,14 @@ mod status_controls;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
+mod thread_usage;
+pub(crate) use self::thread_usage::ThreadUsageOutcome;
 mod tokens;
 pub(crate) use self::tokens::TokenActivityView;
 mod tool_lifecycle;
 mod tool_requests;
 mod transcript;
+mod transcript_export;
 use self::transcript::TranscriptState;
 mod turn_lifecycle;
 mod turn_runtime;
@@ -710,7 +713,7 @@ pub(crate) struct ChatWidget {
     quit_shortcut_key: Option<KeyBinding>,
     // Runtime metrics accumulated across delta snapshots for the active turn.
     turn_runtime_metrics: RuntimeMetricsSummary,
-    last_rendered_width: std::cell::Cell<Option<usize>>,
+    last_rendered_width: std::cell::Cell<Option<u16>>,
     // Feedback sink for /feedback
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
@@ -769,6 +772,8 @@ pub(crate) struct ChatWidget {
     status_line_workspace_headline_last_requested_at: Option<Instant>,
     // Set after the backend reports the workspace-message feature gate is disabled.
     status_line_workspace_messages_disabled: bool,
+    // Cached backend-estimated cost and bounded refresh state for the current thread.
+    thread_usage: thread_usage::ThreadUsageState,
     // Current thread-goal status shown in the status line when plan mode is inactive.
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
@@ -1221,6 +1226,7 @@ impl ChatWidget {
             self.refresh_terminal_title();
         }
         self.refresh_status_line_if_workspace_headline_due();
+        self.refresh_thread_usage_if_settlement_due();
     }
 
     fn flush_active_cell(&mut self) {
@@ -1244,8 +1250,17 @@ impl ChatWidget {
                 .active_cell
                 .as_ref()
                 .is_some_and(|c| c.as_any().is::<history_cell::SessionHeaderHistoryCell>());
+        let history_width = self
+            .last_rendered_width
+            .get()
+            .map(|width| self.history_wrap_width(width))
+            .unwrap_or(u16::MAX);
 
-        if !keep_placeholder_header_active && !cell.display_lines(u16::MAX).is_empty() {
+        if !keep_placeholder_header_active
+            && !cell
+                .display_lines_for_mode(history_width, self.history_render_mode())
+                .is_empty()
+        {
             // Only break exec grouping if the cell renders visible lines.
             if !self.has_active_stream_tail() {
                 self.flush_active_cell();
@@ -1588,7 +1603,6 @@ impl ChatWidget {
             if width == 0 {
                 None
             } else {
-                let width = u16::try_from(width).unwrap_or(u16::MAX);
                 let width = usize::from(self.history_wrap_width(width));
                 Some(crate::width::usable_content_width(width, reserved_cols).unwrap_or(1))
             }
@@ -1652,7 +1666,7 @@ impl ChatWidget {
     /// rebuilding runs through app-level resize reflow.
     pub(crate) fn on_terminal_resize(&mut self, width: u16) {
         let had_rendered_width = self.last_rendered_width.get().is_some();
-        self.last_rendered_width.set(Some(width as usize));
+        self.last_rendered_width.set(Some(width));
         let stream_width = self.current_stream_width(/*reserved_cols*/ 2);
         let plan_stream_width = self.current_stream_width(/*reserved_cols*/ 4);
         if let Some(controller) = self.stream_controller.as_mut() {
@@ -1682,7 +1696,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn composer_is_empty(&self) -> bool {
-        self.bottom_pane.composer_is_empty()
+        self.bottom_pane.composer_is_empty() && !self.bottom_pane.is_in_paste_burst()
     }
 
     #[cfg(test)]
@@ -1734,7 +1748,6 @@ impl ChatWidget {
         self.bottom_pane.pending_thread_approvals()
     }
 
-    #[cfg(test)]
     pub(crate) fn has_active_view(&self) -> bool {
         self.bottom_pane.has_active_view()
     }
@@ -1985,22 +1998,8 @@ impl Drop for ChatWidget {
     }
 }
 
-const PLACEHOLDERS: [&str; 8] = [
-    "Explain this codebase",
-    "Summarize recent commits",
-    "Implement {feature}",
-    "Find and fix a bug in @filename",
-    "Write tests for @filename",
-    "Improve documentation in @filename",
-    "Run /review on my current changes",
-    "Use /skills to list available skills",
-];
-
-const SIDE_PLACEHOLDERS: [&str; 3] = [
-    "Check recently modified functions for compatibility",
-    "How many files have been modified?",
-    "Will this algorithm scale well?",
-];
+const PLACEHOLDER: &str = "Ask Codex to do anything";
+const SIDE_PLACEHOLDER: &str = "Ask a follow-up question";
 
 // Extract the first bold (Markdown) element in the form **...** from `s`.
 // Returns the inner text if found; otherwise `None`.
