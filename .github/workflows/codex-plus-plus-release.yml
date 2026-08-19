@@ -188,7 +188,12 @@ jobs:
       - name: Install musl build tools
         if: runner.os == 'Linux'
         shell: bash
-        run: bash .github/scripts/install-musl-build-tools.sh
+        run: |
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '\|azure\.archive\.ubuntu\.com|d' /etc/apt/apt-mirrors.txt
+            grep -qE '^[[:space:]]*https?://' /etc/apt/apt-mirrors.txt || { echo "No apt mirror remains" >&2; exit 1; }
+          fi
+          bash .github/scripts/install-musl-build-tools.sh
 
       - name: Build bundled bwrap
         if: runner.os == 'Linux'
@@ -297,7 +302,12 @@ jobs:
       - name: Install musl build tools
         if: runner.os == 'Linux'
         shell: bash
-        run: bash .github/scripts/install-musl-build-tools.sh
+        run: |
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '\|azure\.archive\.ubuntu\.com|d' /etc/apt/apt-mirrors.txt
+            grep -qE '^[[:space:]]*https?://' /etc/apt/apt-mirrors.txt || { echo "No apt mirror remains" >&2; exit 1; }
+          fi
+          bash .github/scripts/install-musl-build-tools.sh
 
       - name: Build bundled bwrap
         if: runner.os == 'Linux'
