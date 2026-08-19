@@ -1,3 +1,4 @@
+use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_protocol::models::ShellCommandToolCallParams;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolName;
@@ -7,7 +8,9 @@ use codex_utils_path_uri::PathUri;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
 use crate::exec_env::create_env;
+use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_permission_profile_env;
+use crate::exec_env::inject_session_id_env;
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::session::turn_context::TurnContext;
@@ -99,14 +102,18 @@ impl ShellCommandHandler {
             .shell
             .as_ref()
             .unwrap_or(session_shell.as_ref());
-        let use_login_shell =
-            Self::resolve_use_login_shell(params.login, turn_environment.config.allow_login_shell)?;
+        let use_login_shell = Self::resolve_use_login_shell(
+            params.login,
+            turn_environment.config().allow_login_shell,
+        )?;
         let command = Self::base_command(shell, &params.command, use_login_shell);
 
         let mut env = create_env(
             &turn_context.config.permissions.shell_environment_policy,
             Some(session.thread_id),
         );
+        inject_session_id_env(&mut env, session.session_id());
+        inject_apply_patch_env(&mut env, &turn_context.config.features);
         let active_permission_profile = turn_environment.active_permission_profile();
         inject_permission_profile_env(&mut env, active_permission_profile.as_ref());
         let sandbox_permissions = resolve_sandbox_permissions(
@@ -121,7 +128,7 @@ impl ShellCommandHandler {
             capture_policy: ExecCapturePolicy::ShellTool,
             env,
             network: turn_context.network.clone(),
-            network_environment_id: Some(turn_environment.environment_id.clone()),
+            network_environment_id: Some(turn_environment.selection.environment_id.clone()),
             sandbox_permissions,
             windows_sandbox_level: turn_context.windows_sandbox_level,
             windows_sandbox_private_desktop: turn_context
@@ -207,12 +214,14 @@ impl ShellCommandHandler {
         let exact_pre_tool_use_approval = exact_pre_tool_use_approval
             && !params
                 .login
-                .unwrap_or(turn_environment.config.allow_login_shell);
+                .unwrap_or(turn_environment.config().allow_login_shell);
         maybe_emit_implicit_skill_invocation(
             session.as_ref(),
             turn.as_ref(),
             &params.command,
-            &cwd,
+            &PathUri::from_abs_path(&cwd),
+            Some(&cwd),
+            LOCAL_ENVIRONMENT_ID,
         )
         .await;
         let prefix_rule = params.prefix_rule.clone();
@@ -238,7 +247,7 @@ impl ShellCommandHandler {
             additional_permissions: params.additional_permissions.clone(),
             prefix_rule,
             session,
-            turn,
+            step_context,
             turn_environment,
             tracker,
             call_id,

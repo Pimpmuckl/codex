@@ -8,5 +8,4 @@ pub async fn stop_cloud_config_refresh_before_account_picker() {
         return;
     };
     task.abort();
-    let _ = task.await;
 }

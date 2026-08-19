@@ -124,6 +124,41 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
 }
 
 #[tokio::test]
+async fn initial_session_header_starts_at_the_top_of_the_viewport() {
+    let (mut widget, _sender, _events, _operations) = make_chatwidget_manual_with_sender().await;
+    widget.transcript.active_cell =
+        Some(ChatWidget::placeholder_session_header_cell(&widget.config));
+
+    let frame = render_frame(&widget, /*width*/ 48);
+    let header = frame
+        .content
+        .chunks(usize::from(frame.area.width))
+        .take(/*n*/ 6)
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
+
+    let cwd = widget.config.cwd.as_path().display().to_string();
+    let normalized_cwd = format!("{:<width$}", "/tmp/project", width = cwd.len());
+
+    insta::assert_snapshot!(header.replace(&cwd, &normalized_cwd), @r"
+    ╭───────────────────────────────────────╮
+    │ >_ OpenAI Codex (v<VERSION>)              │
+    │                                       │
+    │ model:     loading   /model to change │
+    │ directory: /tmp/project               │
+    ╰───────────────────────────────────────╯
+    ");
+}
+
+#[tokio::test]
 async fn active_cell_layout_reuses_heights_without_freezing_animation() {
     let (widget, desired_height_calls, display_lines_calls) = widget_with_counting_cell(
         /*desired_height*/ 2, /*line_count*/ 2, /*stable_height*/ true,
@@ -197,9 +232,14 @@ async fn active_cell_layout_invalidates_width_revision_mode_theme_and_identity()
     render_frame(&widget, /*width*/ 81);
     assert_eq!(desired_height_calls.load(Ordering::Relaxed), 3);
 
-    widget.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    widget.raw_output_mode = true;
     render_frame(&widget, /*width*/ 81);
     assert_eq!(desired_height_calls.load(Ordering::Relaxed), 4);
+
+    widget.raw_output_mode = false;
+    widget.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    render_frame(&widget, /*width*/ 81);
+    assert_eq!(desired_height_calls.load(Ordering::Relaxed), 5);
 
     let mut cached = widget
         .transcript
@@ -209,7 +249,7 @@ async fn active_cell_layout_invalidates_width_revision_mode_theme_and_identity()
     cached.key.syntax_theme_revision = cached.key.syntax_theme_revision.wrapping_sub(1);
     widget.transcript.active_cell_layout.set(Some(cached));
     render_frame(&widget, /*width*/ 81);
-    assert_eq!(desired_height_calls.load(Ordering::Relaxed), 5);
+    assert_eq!(desired_height_calls.load(Ordering::Relaxed), 6);
 
     let replacement_height_calls = Arc::new(AtomicUsize::new(0));
     widget.transcript.active_cell = Some(Box::new(CountingHistoryCell {

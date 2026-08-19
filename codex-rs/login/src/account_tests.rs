@@ -676,7 +676,8 @@ async fn managed_api_only_policy_blocks_imported_account_switches() {
         },
         /*enable_codex_api_key_env*/ false,
     )
-    .await;
+    .await
+    .expect("auth manager should initialize");
 
     assert_eq!(manager.active_account_id(), None);
     assert_eq!(

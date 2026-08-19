@@ -108,6 +108,7 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
+            | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
     )
@@ -430,7 +431,9 @@ async fn start_uninitialized(
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let auth_manager =
-        AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env).await;
+        AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
+            .await
+            .map_err(IoError::other)?;
     if let InitialAccount::Selected(selected_account_id) = initial_account {
         let activation_result = match auth_manager.account_candidates() {
             Ok(candidates) => match candidates
@@ -493,7 +496,7 @@ async fn start_uninitialized(
         ));
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
-        let mut config_manager = ConfigManager::new(
+        let config_manager = ConfigManager::new(
             args.config.codex_home.to_path_buf(),
             args.cli_overrides,
             args.loader_overrides,
@@ -502,7 +505,6 @@ async fn start_uninitialized(
             args.arg0_paths.clone(),
             args.thread_config_loader,
         );
-        config_manager.psp = args.config.psp;
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
@@ -827,6 +829,7 @@ mod tests {
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::ThreadQueueChangedNotification;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_app_server_protocol::Turn;
@@ -1074,6 +1077,11 @@ mod tests {
                     completed_at: Some(0),
                     duration_ms: None,
                 },
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {
+                thread_id: "thread-1".to_string(),
             })
         ));
         assert!(server_notification_requires_delivery(

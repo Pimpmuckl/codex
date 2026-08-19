@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use codex_config::ModelCapacityRetryMode;
+use codex_core::TurnInputRequest;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
@@ -33,16 +34,10 @@ const CAPACITY_RETRY_DELAYS: [Duration; 4] = [
 
 async fn submit(codex: &codex_core::CodexThread) {
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "hello".into(),
+            text_elements: Vec::new(),
+        }]))
         .await
         .expect("submit turn");
 }

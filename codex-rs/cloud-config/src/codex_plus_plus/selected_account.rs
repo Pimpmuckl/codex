@@ -14,7 +14,7 @@ pub async fn cloud_config_bundle_loader_for_selected_account(
     let auth_route_config = config.auth_route_config();
     let http_client_factory = auth_route_config.http_client_factory().clone();
     let auth_manager =
-        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await;
+        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
     if let Some(selected_account_id) = selected_account_id {
         auth_manager
             .activate_imported_account(selected_account_id)

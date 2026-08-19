@@ -10,6 +10,7 @@ use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
+use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
@@ -24,6 +25,8 @@ use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_protocol::protocol::EnvironmentConfigState;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use tokio::sync::Mutex;
 
 const TEST_TRUNCATION_POLICY: TruncationPolicy = TruncationPolicy::Tokens(10_000);
@@ -186,7 +189,7 @@ async fn exec_command_rejects_login_when_selected_environment_disallows_it() {
     else {
         panic!("primary environment should be ready");
     };
-    environment.config.allow_login_shell = false;
+    environment.config_mut().allow_login_shell = false;
 
     let turn = Arc::new(turn);
     let invocation = ToolInvocation {
@@ -291,17 +294,20 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
         .to_string(),
     };
     let (session, mut turn) = make_session_and_context().await;
-    let environment_config = turn.environments.primary().unwrap().config.clone();
+    let environment_config = turn.environments.primary().unwrap().config().clone();
     turn.environments = TurnEnvironmentSnapshot {
         environments: vec![TurnEnvironmentState::Ready(TurnEnvironment::new(
-            "remote".to_string(),
+            TurnEnvironmentSelection {
+                environment_id: "remote".to_string(),
+                cwd: remote_cwd.clone(),
+                workspace_roots: vec![remote_cwd.clone()],
+                config: EnvironmentConfigState::Ready(environment_config),
+            },
+            EnvironmentConfigOrigin::Thread,
             Arc::new(Environment::create_for_tests(Some(
                 "ws://127.0.0.1:1/remote-exec-server".to_string(),
             ))?),
-            remote_cwd.clone(),
-            vec![remote_cwd.clone()],
             /*shell*/ None,
-            environment_config,
         ))],
     };
     let turn = Arc::new(turn);
