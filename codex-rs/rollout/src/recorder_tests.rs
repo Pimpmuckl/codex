@@ -1017,6 +1017,30 @@ async fn resume_uses_latest_valid_envelope_ordinal() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn resumed_paginated_rollout_rejects_non_envelope_tail() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
+    let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
+    writeln!(file, r#"{{"ordinal":1}}"#)?;
+    drop(file);
+    let before = fs::read(&rollout_path)?;
+
+    let error =
+        match RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
+            .await
+        {
+            Ok(_) => panic!("non-envelope tail should fail closed"),
+            Err(error) => error,
+        };
+
+    assert!(error.to_string().contains("not a valid envelope"));
+    assert_eq!(fs::read(&rollout_path)?, before);
+    Ok(())
+}
+
+#[tokio::test]
 async fn resumed_paginated_rollout_repairs_unsafe_tail() -> std::io::Result<()> {
     let valid_unterminated = serde_json::to_string(&RolloutLine {
         timestamp: "2026-07-09T00:00:05Z".to_string(),

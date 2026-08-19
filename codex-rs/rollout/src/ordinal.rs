@@ -69,9 +69,18 @@ pub(crate) fn ordinal_state_for_rollout(
     let ordinal = loop {
         match scanner.scan_next::<serde_json::Value>()? {
             Some(ScanOutcome::Parsed(value)) => {
-                let Some(ordinal) = value.get("ordinal").and_then(serde_json::Value::as_u64) else {
+                let valid_envelope = value.as_object().filter(|fields| {
+                    fields
+                        .get("timestamp")
+                        .is_some_and(serde_json::Value::is_string)
+                        && fields.get("type").is_some_and(serde_json::Value::is_string)
+                });
+                let Some(ordinal) = valid_envelope
+                    .and_then(|fields| fields.get("ordinal"))
+                    .and_then(serde_json::Value::as_u64)
+                else {
                     return Err(io::Error::other(format!(
-                        "final paginated rollout record at {} is missing or has an invalid ordinal",
+                        "final paginated rollout record at {} is not a valid envelope with an ordinal",
                         path.display()
                     )));
                 };
