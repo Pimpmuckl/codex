@@ -66,9 +66,42 @@ pub(crate) fn ordinal_state_for_rollout(
     }
 
     let mut scanner = ReverseJsonlScanner::new(file)?;
-    let record = loop {
-        match scanner.scan_next::<RolloutLine>()? {
-            Some(ScanOutcome::Parsed(record)) => break record,
+    let ordinal = loop {
+        match scanner.scan_next::<serde_json::Value>()? {
+            Some(ScanOutcome::Parsed(value)) => {
+                let valid_envelope = value.as_object().filter(|fields| {
+                    fields
+                        .get("timestamp")
+                        .is_some_and(serde_json::Value::is_string)
+                        && fields
+                            .get("payload")
+                            .is_some_and(serde_json::Value::is_object)
+                        && matches!(
+                            fields.get("type").and_then(serde_json::Value::as_str),
+                            Some(
+                                "session_meta"
+                                    | "response_item"
+                                    | "inter_agent_communication"
+                                    | "inter_agent_communication_metadata"
+                                    | "compacted"
+                                    | "turn_context"
+                                    | "world_state"
+                                    | "security_risk_score"
+                                    | "event_msg"
+                            )
+                        )
+                });
+                let Some(ordinal) = valid_envelope
+                    .and_then(|fields| fields.get("ordinal"))
+                    .and_then(serde_json::Value::as_u64)
+                else {
+                    return Err(io::Error::other(format!(
+                        "final paginated rollout record at {} is not a valid envelope with an ordinal",
+                        path.display()
+                    )));
+                };
+                break ordinal;
+            }
             Some(ScanOutcome::Rejected(_)) => continue,
             None => {
                 return Err(io::Error::other(format!(
@@ -78,12 +111,6 @@ pub(crate) fn ordinal_state_for_rollout(
             }
         }
     };
-    let ordinal = record.ordinal.ok_or_else(|| {
-        io::Error::other(format!(
-            "final paginated rollout record at {} is missing an ordinal",
-            path.display()
-        ))
-    })?;
     // Child records must start at `subagent_history_start_ordinal`. If initialization died while
     // copying the inherited parent records, resuming would append child records before that
     // boundary.
