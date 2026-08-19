@@ -5112,20 +5112,6 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .is_err(),
         "approved command should remove its target"
     );
-    if uses_windows_shell {
-        let executed_shell_path = String::from_utf8(
-            test.fs()
-                .read_file(&executed_shell, /*sandbox*/ None)
-                .await?,
-        )?;
-        assert!(
-            executed_shell_path
-                .trim()
-                .replace('/', "\\")
-                .eq_ignore_ascii_case(&custom_shell.replace('/', "\\")),
-            "reviewed shell path should equal the executed shell path"
-        );
-    }
     let mut expected_counter = b"x".to_vec();
     for (index, (label, _, _)) in cases.iter().skip(2).enumerate() {
         test.fs()

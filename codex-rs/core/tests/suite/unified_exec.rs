@@ -3542,10 +3542,28 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
             .expect("test config should allow feature update");
     });
     let test = builder.build_with_auto_env(&server).await?;
+    let targets_windows =
+        core_test_support::test_target_os() == core_test_support::TestTargetOs::Windows;
+    let executed_shell_name = ".unified-exec-executed-shell";
+    let reviewed_shell_path = test
+        .executor_environment()
+        .environment()
+        .info()
+        .await?
+        .shell
+        .path;
 
     let call_id = "uexec";
+    let command = if targets_windows {
+        format!(
+            "Set-Content -NoNewline -LiteralPath {executed_shell_name} \
+             -Value (Get-Process -Id $PID).Path; Write-Output 'hello crossplat'"
+        )
+    } else {
+        "echo 'hello crossplat'".to_string()
+    };
     let args = serde_json::json!({
-        "cmd": "echo 'hello crossplat'",
+        "cmd": command,
     });
 
     let responses = vec![
@@ -3588,6 +3606,22 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
 
     // TODO: Weaker match because windows produces control characters
     assert_regex_match(".*hello crossplat.*", &output.output);
+    if targets_windows {
+        let cwd = test.executor_environment().selection().cwd.clone();
+        let executed_shell = cwd.join(executed_shell_name)?;
+        let executed_shell_path = String::from_utf8(
+            test.fs()
+                .read_file(&executed_shell, /*sandbox*/ None)
+                .await?,
+        )?;
+        assert!(
+            executed_shell_path
+                .trim()
+                .replace('/', "\\")
+                .eq_ignore_ascii_case(&reviewed_shell_path.replace('/', "\\")),
+            "reviewed shell path should equal the executed shell path"
+        );
+    }
 
     Ok(())
 }
