@@ -70,7 +70,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         properties.insert(
             "login".to_string(),
             JsonSchema::boolean(Some(
-                "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+                "True runs the shell with -l/-i semantics; false or omitted disables them."
                     .to_string(),
             )),
         );

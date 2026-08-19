@@ -3779,9 +3779,7 @@ impl BashRewriteSurface {
             BashRewriteSurface::ExecCommand => Ok(ev_function_call(
                 call_id,
                 "exec_command",
-                &serde_json::to_string(
-                    &serde_json::json!({ "cmd": command_text, "login": false, "tty": false }),
-                )?,
+                &serde_json::to_string(&serde_json::json!({ "cmd": command_text, "tty": false }))?,
             )),
             BashRewriteSurface::ShellCommand => Ok(ev_function_call(
                 call_id,
@@ -5039,6 +5037,11 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     ];
     match surface {
         BashRewriteSurface::ExecCommand => cases.extend([
+            (
+                "profileless",
+                "allow",
+                serde_json::json!({ "login": false }),
+            ),
             ("interactive", "allow", serde_json::json!({ "tty": true })),
             ("login", "allow", serde_json::json!({ "login": true })),
             (
@@ -5109,25 +5112,29 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             .is_err(),
         "approved command should remove its target"
     );
+    let mut expected_counter = b"x".to_vec();
     for (index, (label, _, _)) in cases.iter().skip(2).enumerate() {
         test.fs()
             .write_file(&target, b"seed".to_vec(), /*sandbox*/ None)
             .await?;
         submit_yolo_hook_review_turn(&test, "use unreviewed execution semantics").await?;
         wait_for_response_request_count(&responses, /*expected_count*/ (index + 3) * 3).await;
-        if *label == "custom-shell" && !test.executor_environment().environment().is_remote() {
+        let should_execute = *label == "profileless"
+            || (*label == "custom-shell" && !test.executor_environment().environment().is_remote());
+        if should_execute {
+            expected_counter.push(b'x');
             assert_eq!(
                 test.fs().read_file(&counter, /*sandbox*/ None).await?,
-                b"xx"
+                expected_counter
             );
             assert!(
                 test.fs()
                     .read_file(&target, /*sandbox*/ None)
                     .await
                     .is_err(),
-                "approved custom shell should remove its target"
+                "approved command should remove its target"
             );
-            if uses_windows_shell {
+            if *label == "custom-shell" && uses_windows_shell {
                 let executed_shell_path = String::from_utf8(
                     test.fs()
                         .read_file(&executed_shell, /*sandbox*/ None)
@@ -5139,7 +5146,10 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
                 );
             }
         } else {
-            assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+            assert_eq!(
+                test.fs().read_file(&counter, /*sandbox*/ None).await?,
+                expected_counter
+            );
             assert_eq!(
                 test.fs().read_file(&target, /*sandbox*/ None).await?,
                 b"seed"

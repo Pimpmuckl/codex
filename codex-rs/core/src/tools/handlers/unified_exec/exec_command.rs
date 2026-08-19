@@ -196,10 +196,8 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
+        let use_login_shell = *args.login.get_or_insert_default();
         let requested_shell = args.shell.clone();
-        let use_login_shell = args
-            .login
-            .unwrap_or(turn_environment.config().allow_login_shell);
         let sandbox_permissions =
             resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
         let hook_command = args.cmd.clone();
@@ -454,7 +452,8 @@ impl CoreToolRuntime for ExecCommandHandler {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
         };
-        let args = parse_arguments::<ExecCommandArgs>(arguments).ok()?;
+        let mut args = parse_arguments::<ExecCommandArgs>(arguments).ok()?;
+        args.login.get_or_insert_default();
         let environment_args: ExecCommandEnvironmentArgs = parse_arguments(arguments).ok()?;
         let turn_environment = resolve_tool_environment(
             &invocation.step_context.environments,
