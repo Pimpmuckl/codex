@@ -66,12 +66,17 @@ pub(crate) fn ordinal_state_for_rollout(
     }
 
     let mut scanner = ReverseJsonlScanner::new(file)?;
-    let record = loop {
+    let ordinal = loop {
         match scanner.scan_next::<serde_json::Value>()? {
-            Some(ScanOutcome::Parsed(value)) => match crate::decode_rollout_line(value) {
-                Ok(record) => break record,
-                Err(_) => continue,
-            },
+            Some(ScanOutcome::Parsed(value)) => {
+                let Some(ordinal) = value.get("ordinal").and_then(serde_json::Value::as_u64) else {
+                    return Err(io::Error::other(format!(
+                        "final paginated rollout record at {} is missing or has an invalid ordinal",
+                        path.display()
+                    )));
+                };
+                break ordinal;
+            }
             Some(ScanOutcome::Rejected(_)) => continue,
             None => {
                 return Err(io::Error::other(format!(
@@ -81,12 +86,6 @@ pub(crate) fn ordinal_state_for_rollout(
             }
         }
     };
-    let ordinal = record.ordinal.ok_or_else(|| {
-        io::Error::other(format!(
-            "final paginated rollout record at {} is missing an ordinal",
-            path.display()
-        ))
-    })?;
     // Child records must start at `subagent_history_start_ordinal`. If initialization died while
     // copying the inherited parent records, resuming would append child records before that
     // boundary.
