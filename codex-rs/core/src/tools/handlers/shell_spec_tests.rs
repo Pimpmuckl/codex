@@ -73,7 +73,7 @@ fn exec_command_tool_matches_expected_spec() {
         (
             "login".to_string(),
             JsonSchema::boolean(Some(
-                    "True runs the shell with -l/-i semantics; false disables them. Defaults to true.".to_string(),
+                    "True runs the shell with -l/-i semantics; false or omitted disables them.".to_string(),
                 )),
         ),
     ]);
