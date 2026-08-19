@@ -8,4 +8,7 @@ pub async fn stop_cloud_config_refresh_before_account_picker() {
         return;
     };
     task.abort();
+    while !task.is_finished() {
+        tokio::task::yield_now().await;
+    }
 }
