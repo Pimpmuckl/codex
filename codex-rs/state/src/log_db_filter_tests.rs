@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::*;
 
 #[tokio::test]
-async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
+async fn sqlite_sink_filters_noisy_targets_without_dropping_useful_diagnostics() {
     let codex_home =
         std::env::temp_dir().join(format!("codex-state-log-db-filter-{}", Uuid::new_v4()));
     let _cleanup = scopeguard::guard(codex_home.clone(), |codex_home| {
@@ -43,7 +43,7 @@ async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
     tracing::trace!(target: "codex_api::sse", "dropped-sse-parent");
     tracing::trace!(target: "codex_api::sse::responses", "dropped-sse-payload");
     tracing::debug!(target: "codex_api::sse::responses", "retained-sse-diagnostic");
-    tracing::trace!(target: "codex_state", "dropped-trace");
+    tracing::trace!(target: "codex_state", "retained-trace");
     tracing::trace!(
         target: "codex_tui::streaming::controller",
         "dropped-controller-trace"
@@ -62,7 +62,7 @@ async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
     );
     tracing::trace!(
         target: "codex_tui::streaming::commit_tick",
-        "dropped-commit-tick-trace"
+        "retained-commit-tick-trace"
     );
     tracing::trace!(
         target: "codex_api::responses_websocket_timing",
@@ -103,6 +103,7 @@ async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
                 "codex_api::sse::responses",
                 Some("retained-sse-diagnostic")
             ),
+            ("TRACE", "codex_state", Some("retained-trace")),
             (
                 "DEBUG",
                 "codex_tui::streaming::controller",
@@ -112,6 +113,11 @@ async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
                 "DEBUG",
                 "codex_tui::streaming::table_holdback",
                 Some("retained-table-holdback-debug"),
+            ),
+            (
+                "TRACE",
+                "codex_tui::streaming::commit_tick",
+                Some("retained-commit-tick-trace"),
             ),
         ]
     );

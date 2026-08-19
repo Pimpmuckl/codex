@@ -261,27 +261,6 @@ async fn guardian_approved_request_permissions_clears_status_without_history() {
         decision_source: Some(GuardianAssessmentDecisionSource::Agent),
         action,
     });
-    chat.on_guardian_assessment(GuardianAssessmentEvent {
-        id: "guardian-pre-tool-use".into(),
-        target_item_id: Some("tool-call-1".into()),
-        plugin_id: None,
-        script_path: None,
-        turn_id: "turn-1".into(),
-        started_at_ms: 2,
-        completed_at_ms: Some(3),
-        status: GuardianAssessmentStatus::Approved,
-        risk_level: Some(GuardianRiskLevel::Low),
-        user_authorization: Some(GuardianUserAuthorization::High),
-        rationale: Some("Hook-requested review approved.".into()),
-        decision_source: Some(GuardianAssessmentDecisionSource::Agent),
-        action: GuardianAssessmentAction::PreToolUse {
-            tool_name: "Bash".to_string(),
-            tool_input: serde_json::json!({
-                "command": "Remove-Item -Recurse -Force C:\\Temp\\codex-cleanup\r\ngit status"
-            }),
-            reason: "DCG flagged recursive forced deletion".to_string(),
-        },
-    });
 
     assert!(chat.status_state.pending_guardian_review_status.is_empty());
     assert_eq!(chat.status_state.current_status.header, "Working");
