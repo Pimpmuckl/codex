@@ -977,6 +977,35 @@ async fn resumed_paginated_rollout_continues_after_ordinal_gap() -> std::io::Res
 }
 
 #[tokio::test]
+async fn resume_after_structured_token_count_uses_next_ordinal() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::new(), &[])?;
+    let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
+    writeln!(
+        file,
+        r#"{{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"event_msg","payload":{{"type":"token_count","info":null,"rate_limits":{{"limit_id":null,"limit_name":null,"primary":{{"used_percent":0.0,"window_minutes":60,"resets_at":1800000000}},"secondary":null,"credits":{{"has_credits":false,"unlimited":false,"balance":null}},"individual_limit":null,"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}}}}"#
+    )?;
+
+    let recorder =
+        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
+    recorder
+        .record_canonical_items(&[agent_message_item("after-resume")])
+        .await?;
+    recorder.flush().await?;
+
+    let contents = fs::read_to_string(&rollout_path)?;
+    let ordinals = contents
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .map(|value| value.map(|value| value["ordinal"].as_u64()))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(ordinals, vec![Some(0), Some(1), Some(2)]);
+    recorder.shutdown().await
+}
+
+#[tokio::test]
 async fn resumed_paginated_rollout_repairs_unsafe_tail() -> std::io::Result<()> {
     let valid_unterminated = serde_json::to_string(&RolloutLine {
         timestamp: "2026-07-09T00:00:05Z".to_string(),

@@ -67,8 +67,11 @@ pub(crate) fn ordinal_state_for_rollout(
 
     let mut scanner = ReverseJsonlScanner::new(file)?;
     let record = loop {
-        match scanner.scan_next::<RolloutLine>()? {
-            Some(ScanOutcome::Parsed(record)) => break record,
+        match scanner.scan_next::<serde_json::Value>()? {
+            Some(ScanOutcome::Parsed(value)) => match crate::decode_rollout_line(value) {
+                Ok(record) => break record,
+                Err(_) => continue,
+            },
             Some(ScanOutcome::Rejected(_)) => continue,
             None => {
                 return Err(io::Error::other(format!(
