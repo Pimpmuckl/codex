@@ -73,7 +73,23 @@ pub(crate) fn ordinal_state_for_rollout(
                     fields
                         .get("timestamp")
                         .is_some_and(serde_json::Value::is_string)
-                        && fields.get("type").is_some_and(serde_json::Value::is_string)
+                        && fields
+                            .get("payload")
+                            .is_some_and(serde_json::Value::is_object)
+                        && matches!(
+                            fields.get("type").and_then(serde_json::Value::as_str),
+                            Some(
+                                "session_meta"
+                                    | "response_item"
+                                    | "inter_agent_communication"
+                                    | "inter_agent_communication_metadata"
+                                    | "compacted"
+                                    | "turn_context"
+                                    | "world_state"
+                                    | "security_risk_score"
+                                    | "event_msg"
+                            )
+                        )
                 });
                 let Some(ordinal) = valid_envelope
                     .and_then(|fields| fields.get("ordinal"))
