@@ -196,11 +196,8 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
-        args.login.get_or_insert_default();
+        let use_login_shell = *args.login.get_or_insert_default();
         let requested_shell = args.shell.clone();
-        let use_login_shell = args
-            .login
-            .unwrap_or(turn_environment.config().allow_login_shell);
         let sandbox_permissions =
             resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
         let hook_command = args.cmd.clone();
