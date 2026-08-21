@@ -112,6 +112,7 @@ impl ToolExecutor<ToolInvocation> for LeaveUserMessageHandler {
                     text: user_message_envelope(message),
                 }],
                 phase: Some(MessagePhase::Commentary),
+                delivery: None,
                 memory_citation: None,
             });
 

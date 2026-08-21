@@ -12,6 +12,7 @@ fn item(id: &str, text: &str, phase: Option<MessagePhase>) -> AgentMessageItem {
             text: text.to_string(),
         }],
         phase,
+        delivery: None,
         memory_citation: None,
     }
 }

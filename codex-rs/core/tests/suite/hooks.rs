@@ -2996,7 +2996,12 @@ async fn permission_request_hook_allow_bypasses_strict_auto_review() -> Result<(
         .cwd
         .join(marker_name)?;
     test.fs()
-        .write_file(&marker, b"seed".to_vec(), /*sandbox*/ None)
+        .write_file(
+            &marker,
+            b"seed".to_vec(),
+            Default::default(),
+            /*sandbox*/ None,
+        )
         .await
         .context("create strict auto-review marker")?;
     let (sandbox_policy, permission_profile) =
@@ -3045,7 +3050,7 @@ async fn permission_request_hook_allow_bypasses_strict_auto_review() -> Result<(
     requests[2].function_call_output(command_call_id);
     assert!(
         test.fs()
-            .read_file(&marker, /*sandbox*/ None)
+            .read_file(&marker, Default::default(), /*sandbox*/ None)
             .await
             .is_err(),
         "hook-approved command should remove marker without Guardian review"
@@ -5096,18 +5101,30 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
     submit_yolo_hook_review_turn(&test, "deny the dangerous command").await?;
     wait_for_response_request_count(&responses, /*expected_count*/ 3).await;
 
-    assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"");
     assert_eq!(
-        test.fs().read_file(&target, /*sandbox*/ None).await?,
+        test.fs()
+            .read_file(&counter, Default::default(), /*sandbox*/ None)
+            .await?,
+        b""
+    );
+    assert_eq!(
+        test.fs()
+            .read_file(&target, Default::default(), /*sandbox*/ None)
+            .await?,
         b"seed"
     );
 
     submit_yolo_hook_review_turn(&test, "approve the dangerous command").await?;
     wait_for_response_request_count(&responses, /*expected_count*/ 6).await;
-    assert_eq!(test.fs().read_file(&counter, /*sandbox*/ None).await?, b"x");
+    assert_eq!(
+        test.fs()
+            .read_file(&counter, Default::default(), /*sandbox*/ None)
+            .await?,
+        b"x"
+    );
     assert!(
         test.fs()
-            .read_file(&target, /*sandbox*/ None)
+            .read_file(&target, Default::default(), /*sandbox*/ None)
             .await
             .is_err(),
         "approved command should remove its target"
@@ -5124,12 +5141,14 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
         if should_execute {
             expected_counter.push(b'x');
             assert_eq!(
-                test.fs().read_file(&counter, /*sandbox*/ None).await?,
+                test.fs()
+                    .read_file(&counter, Default::default(), /*sandbox*/ None)
+                    .await?,
                 expected_counter
             );
             assert!(
                 test.fs()
-                    .read_file(&target, /*sandbox*/ None)
+                    .read_file(&target, Default::default(), /*sandbox*/ None)
                     .await
                     .is_err(),
                 "approved command should remove its target"
@@ -5137,7 +5156,7 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             if *label == "custom-shell" && uses_windows_shell {
                 let executed_shell_path = String::from_utf8(
                     test.fs()
-                        .read_file(&executed_shell, /*sandbox*/ None)
+                        .read_file(&executed_shell, Default::default(), /*sandbox*/ None)
                         .await?,
                 )?;
                 assert_eq!(
@@ -5147,11 +5166,15 @@ async fn assert_guardian_allows_dangerous_bash_once(surface: BashRewriteSurface)
             }
         } else {
             assert_eq!(
-                test.fs().read_file(&counter, /*sandbox*/ None).await?,
+                test.fs()
+                    .read_file(&counter, Default::default(), /*sandbox*/ None)
+                    .await?,
                 expected_counter
             );
             assert_eq!(
-                test.fs().read_file(&target, /*sandbox*/ None).await?,
+                test.fs()
+                    .read_file(&target, Default::default(), /*sandbox*/ None)
+                    .await?,
                 b"seed"
             );
         }

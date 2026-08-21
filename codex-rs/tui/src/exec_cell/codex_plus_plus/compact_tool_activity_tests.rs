@@ -41,6 +41,15 @@ fn compact_tool_activity_preserves_failures_shell_and_transcript() {
             .any(|line| line.to_string().contains("final output"))
     );
 
+    assert!(routine.add_call(
+        "next".to_string(),
+        vec!["cargo".into(), "nextest".into()],
+        Vec::new(),
+        CommandExecutionSource::Agent,
+        /*interaction_input*/ None,
+    ));
+    insta::assert_snapshot!(rendered(&routine), @"• Running cargo nextest");
+
     let mut failed = new_active_exec_command(
         "failed".to_string(),
         vec!["cat".into(), "missing".into()],

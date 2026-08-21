@@ -126,6 +126,7 @@ fn user_message_item() -> AgentMessageItem {
             text: ENVELOPE.to_string(),
         }],
         phase: Some(MessagePhase::Commentary),
+        delivery: None,
         memory_citation: None,
     }
 }

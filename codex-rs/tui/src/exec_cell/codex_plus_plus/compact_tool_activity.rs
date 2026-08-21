@@ -21,7 +21,9 @@ pub(in crate::exec_cell) fn compact_display_lines(
         return if cell.is_exploring_cell() {
             cell.exploring_display_lines(width)
         } else {
-            cell.command_display_lines_with_output(width, /*include_output*/ false)
+            cell.calls.last().map_or_else(Vec::new, |call| {
+                cell.command_call_display_lines(width, call, /*include_output*/ false)
+            })
         };
     }
     if cell.calls.iter().all(|call| {
