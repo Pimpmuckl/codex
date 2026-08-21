@@ -98,7 +98,9 @@ impl ChatWidget {
                 TerminalTitleStatusKind::WaitingForBackgroundTerminal;
             self.set_status(
                 "Waiting for background terminal".to_string(),
-                command_display.clone(),
+                command_display.clone().filter(|_| {
+                    self.history_render_mode() != HistoryRenderMode::CompactToolActivity
+                }),
                 StatusDetailsCapitalization::Preserve,
                 /*details_max_lines*/ 1,
             );
