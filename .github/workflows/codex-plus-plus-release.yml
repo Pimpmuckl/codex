@@ -29,6 +29,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
 env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
   APT_UPDATE_ARGS: -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
   APT_INSTALL_ARGS: --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
 
