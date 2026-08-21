@@ -37,6 +37,7 @@ fn agent_status_uses_bounded_buffered_activity() {
                 text: "Finished checking the focused TUI tests.".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
             },
             thread_id: "thread-child".to_string(),
             turn_id: "turn-1".to_string(),
@@ -58,8 +59,8 @@ fn agent_status_uses_bounded_buffered_activity() {
         .join("\n");
 
     insta::assert_snapshot!(rendered, @r###"
-    /agent
-    Sub-agents
+    /subagents
+    Sub-agents running
 
       • `/root/reviewer`
         $ cargo test -p codex-tui
@@ -110,8 +111,8 @@ fn agent_status_uses_reasoning_summaries_only() {
         .join("\n");
 
     insta::assert_snapshot!(rendered, @r###"
-    /agent
-    Sub-agents
+    /subagents
+    Sub-agents running
 
       • `/root/reviewer`
         safe summary
@@ -133,9 +134,10 @@ fn agent_status_marks_unread_user_messages() {
         .join("\n");
 
     insta::assert_snapshot!(rendered, @r###"
-    /agent
+    /subagents
+    Sub-agents running
+
       • Main [default]  New message
-    Sub-agents
 
       • `/root/reviewer`  New message
         No recent activity yet.

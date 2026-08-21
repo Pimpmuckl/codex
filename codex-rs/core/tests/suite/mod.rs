@@ -133,6 +133,7 @@ mod rollout_list_find;
 mod safety_buffering;
 mod safety_check_downgrade;
 mod search_tool;
+mod send_user_message_async;
 mod server_overloaded;
 mod shell_command;
 mod shell_serialization;
@@ -168,3 +169,4 @@ mod window_headers;
 #[cfg(target_os = "windows")]
 mod windows_sandbox;
 mod workspace_roots;
+mod worktree_trust;

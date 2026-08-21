@@ -28,6 +28,9 @@ async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
     tracing::trace!(target: "opentelemetry_sdk", "dropped-trace");
     tracing::debug!(target: "opentelemetry_sdk", "dropped-debug");
     tracing::info!(target: "opentelemetry_sdk", "retained-info");
+    tracing::warn!(target: "sqlx::query", "dropped-slow-query-warning");
+    tracing::warn!(target: "sqlx::pool::acquire", "dropped-slow-acquire-warning");
+    tracing::warn!(target: "sqlx::other", "retained-sqlx-warning");
     tracing::debug!(target: "rmcp::transport", "dropped-rmcp-debug");
     tracing::info!(target: "rmcp::transport", "retained-rmcp-info");
     tracing::debug!(
@@ -87,6 +90,7 @@ async fn sqlite_sink_keeps_default_info_and_targeted_debug() {
             .collect::<Vec<_>>(),
         vec![
             ("INFO", "opentelemetry_sdk", Some("retained-info")),
+            ("WARN", "sqlx::other", Some("retained-sqlx-warning")),
             ("INFO", "rmcp::transport", Some("retained-rmcp-info")),
             (
                 "INFO",

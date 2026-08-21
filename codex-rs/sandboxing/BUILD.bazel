@@ -11,4 +11,5 @@ codex_rust_crate(
     extra_binaries = [
         "//codex-rs/windows-sandbox-rs:codex-command-runner",
     ],
+    test_tags = ["no-sandbox"],
 )
