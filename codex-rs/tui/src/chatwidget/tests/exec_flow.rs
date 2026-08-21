@@ -1200,6 +1200,31 @@ async fn unified_exec_wait_status_renders_command_in_single_details_row_snapshot
 }
 
 #[tokio::test]
+async fn compact_unified_exec_wait_status_uses_one_row_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
+    chat.on_task_started();
+    begin_unified_exec_startup(
+        &mut chat,
+        "call-wait-compact",
+        "proc-compact",
+        "cargo test -p codex-core -- --exact some::very::long::test::name",
+    );
+
+    terminal_interaction(&mut chat, "call-wait-compact-stdin", "proc-compact", "");
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(status.details(), None);
+    assert_chatwidget_snapshot!(
+        "compact_unified_exec_wait_status_uses_one_row",
+        normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 48))
+    );
+}
+
+#[tokio::test]
 async fn unified_exec_empty_then_non_empty_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
