@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 
 use codex_cloud_config::stop_cloud_config_refresh_before_account_picker;
@@ -28,6 +29,15 @@ pub(crate) enum StartupAccountSelection {
         reload_cloud_config: bool,
     },
     Exit,
+}
+
+/// Conservatively protect startup when an imported account could reach the picker.
+pub(crate) fn may_run_startup_account_picker(codex_home: &Path) -> bool {
+    AccountStore::new(codex_home.to_path_buf())
+        .candidates()
+        .map_or(true, |candidates| {
+            candidates.iter().any(|candidate| candidate.enabled)
+        })
 }
 
 pub(crate) async fn run_startup_account_picker(

@@ -33,6 +33,7 @@ pub(crate) use release_status::refresh_release_status;
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) use release_status::release_status_filepath;
 pub(super) use startup_accounts::StartupAccountSelection;
+pub(super) use startup_accounts::may_run_startup_account_picker;
 pub(super) use startup_accounts::run_startup_account_picker;
 pub(crate) use user_message_inbox::UserMessageInboxState;
 pub(crate) use user_message_inbox::enabled as user_message_inbox_enabled;
