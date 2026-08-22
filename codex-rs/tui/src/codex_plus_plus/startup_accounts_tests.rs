@@ -33,6 +33,33 @@ fn picker_candidate(id: &str, is_current: bool) -> account_picker::AccountPicker
 }
 
 #[test]
+fn startup_picker_preflight_is_conservative_for_enabled_or_unreadable_accounts() {
+    let codex_home = tempfile::tempdir().expect("create Codex home");
+    let index_path = codex_home.path().join("accounts/index.json");
+
+    assert!(!may_run_startup_account_picker(codex_home.path()));
+
+    std::fs::create_dir_all(index_path.parent().expect("accounts directory"))
+        .expect("create accounts directory");
+    std::fs::write(&index_path, "not json").expect("write unreadable account index");
+    assert!(may_run_startup_account_picker(codex_home.path()));
+
+    std::fs::write(
+        &index_path,
+        r#"{"accounts":[{"id":"acct_enabled","label":"enabled@example.com","auth":{"scope":"file","path":"accounts/acct_enabled/auth.json"}}]}"#,
+    )
+    .expect("write enabled account index");
+    assert!(may_run_startup_account_picker(codex_home.path()));
+
+    std::fs::write(
+        index_path,
+        r#"{"accounts":[{"id":"acct_disabled","label":"disabled@example.com","enabled":false,"auth":{"scope":"file","path":"accounts/acct_disabled/auth.json"}}]}"#,
+    )
+    .expect("write disabled account index");
+    assert!(!may_run_startup_account_picker(codex_home.path()));
+}
+
+#[test]
 fn automatic_default_ignores_automation_disabled_current_account() {
     let current = account_candidate("acct_current", /*automation_enabled*/ false);
     let alternative = account_candidate("acct_alternative", /*automation_enabled*/ true);

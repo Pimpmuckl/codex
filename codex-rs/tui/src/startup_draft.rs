@@ -53,6 +53,7 @@ const STARTUP_PASTE_NEWLINE_TIMEOUT: Duration = Duration::from_millis(120);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StartupDraftInitialScreen {
     Composer,
+    AccountPicker,
     Onboarding,
     SessionPicker,
 }
@@ -158,6 +159,11 @@ impl StartupDraft {
         &mut self.tui
     }
 
+    /// Reveal the composer after the optional startup account picker resolves.
+    pub(crate) fn finish_account_picker(&mut self) -> io::Result<()> {
+        self.pump.finish_account_picker(&mut self.tui)
+    }
+
     /// Transfer terminal ownership while keeping the same draft pump available to later startup.
     pub(crate) fn into_parts(self) -> (Tui, TerminalRestoreGuard, StartupDraftPump) {
         (self.tui, self.terminal_restore_guard, self.pump)
@@ -165,6 +171,13 @@ impl StartupDraft {
 }
 
 impl StartupDraftPump {
+    fn finish_account_picker(&mut self, tui: &mut Tui) -> io::Result<()> {
+        if self.initial_screen == StartupDraftInitialScreen::AccountPicker {
+            self.show(tui)?;
+        }
+        Ok(())
+    }
+
     /// Refresh the session header and safe editor shortcuts without enabling modal editing.
     pub(crate) fn apply_config(&mut self, config: &Config) {
         self.header = startup_session_header(Some(config));
