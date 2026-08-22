@@ -172,7 +172,7 @@ impl TranscriptAreaRenderable<'_> {
     fn child_desired_height(&self, width: u16) -> u16 {
         match self.history_render_mode {
             HistoryRenderMode::Rich => HistoryCell::desired_height(self.child, width),
-            HistoryRenderMode::Raw | HistoryRenderMode::CompactToolActivity => self
+            HistoryRenderMode::Raw => self
                 .child
                 .desired_height_for_mode(width, self.history_render_mode),
         }

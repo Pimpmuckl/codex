@@ -143,24 +143,12 @@ impl ChatWidget {
             && matches!(status, CollabAgentToolCallStatus::InProgress);
         if matches!(tool, CollabAgentTool::Wait) {
             self.collab_wait_in_progress = wait_in_progress;
-            if compact && wait_in_progress {
+            if compact {
                 self.reconcile_compact_tool_activity_status();
-                return;
-            }
-            if !wait_in_progress {
-                self.reconcile_compact_tool_activity_status();
-            }
-            if multi_agents::wait_completion_is_noop(&item) {
-                if let Some(cell) = multi_agents::tool_call_history_cell(
-                    &item,
-                    /*cached_spawn_request*/ None,
-                    |thread_id| self.collab_agent_metadata(thread_id),
-                ) {
-                    self.flush_answer_stream_with_separator();
-                    self.add_to_history(history_cell::CompactHiddenHistoryCell::new(cell));
+                if wait_in_progress || multi_agents::wait_completion_is_noop(&item) {
+                    self.request_redraw();
+                    return;
                 }
-                self.request_redraw();
-                return;
             }
         }
         if matches!(tool, CollabAgentTool::SpawnAgent)
@@ -183,13 +171,7 @@ impl ChatWidget {
             cached_spawn_request.as_ref(),
             |thread_id| self.collab_agent_metadata(thread_id),
         ) {
-            if wait_in_progress {
-                self.flush_answer_stream_with_separator();
-                self.add_to_history(history_cell::CompactHiddenHistoryCell::new(cell));
-                self.request_redraw();
-            } else {
-                self.on_collab_event(cell);
-            }
+            self.on_collab_event(cell);
         }
     }
 

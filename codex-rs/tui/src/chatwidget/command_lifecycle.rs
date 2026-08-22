@@ -99,7 +99,8 @@ impl ChatWidget {
             self.set_status(
                 "Waiting for background terminal".to_string(),
                 command_display.clone().filter(|_| {
-                    self.history_render_mode() != HistoryRenderMode::CompactToolActivity
+                    self.config.codex_plus_plus_tool_activity
+                        != codex_config::ToolActivityPresentation::Compact
                 }),
                 StatusDetailsCapitalization::Preserve,
                 /*details_max_lines*/ 1,

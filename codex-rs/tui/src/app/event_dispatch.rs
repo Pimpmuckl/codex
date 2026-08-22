@@ -2267,7 +2267,6 @@ impl App {
                 user_message_inbox,
                 tool_activity,
             } => {
-                let previous_render_mode = self.chat_widget.history_render_mode();
                 crate::codex_plus_plus::persist_settings(
                     self,
                     app_server,
@@ -2280,15 +2279,6 @@ impl App {
                 )
                 .await;
                 self.chat_widget.reconcile_compact_tool_activity_status();
-                if self.chat_widget.history_render_mode() != previous_render_mode {
-                    let terminal_width = tui.terminal.last_known_screen_size.into();
-                    if let Err(err) = self.reflow_transcript_now(tui, terminal_width) {
-                        tracing::warn!(error = %err, "failed to reflow transcript after compact tool activity toggle");
-                        self.chat_widget
-                            .add_error_message(format!("Failed to redraw transcript: {err}"));
-                    }
-                    tui.frame_requester().schedule_frame();
-                }
             }
             AppEvent::OpenCodexPlusPlusSettings => {
                 let request_id = DcgManager::begin_status_detection();
