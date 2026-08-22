@@ -162,7 +162,9 @@ pub(super) async fn run_main_inner(
         )
     {
         startup_draft::StartupDraftInitialScreen::Onboarding
-    } else if !workload_identity_selected
+    } else if !cli.oss
+        && explicit_remote_endpoint.is_none()
+        && !workload_identity_selected
         && codex_plus_plus::may_run_startup_account_picker(&codex_home)
     {
         startup_draft::StartupDraftInitialScreen::AccountPicker
@@ -191,6 +193,9 @@ pub(super) async fn run_main_inner(
         reuse_implicit_local_daemon,
         workload_identity_selected,
     )?;
+    if !app_server_target.supports_startup_account_picker() {
+        startup_draft.finish_account_picker()?;
+    }
     let remote_cwd_override = cli
         .cwd
         .clone()
