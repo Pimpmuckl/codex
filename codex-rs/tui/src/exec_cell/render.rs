@@ -1,12 +1,10 @@
 use std::time::Instant;
 
-use super::codex_plus_plus;
 use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell::HistoryCell;
-use crate::history_cell::HistoryRenderMode;
 use crate::history_cell::plain_lines;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
@@ -245,16 +243,6 @@ impl HistoryCell for ExecCell {
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.transcript_lines(u16::MAX))
     }
-
-    fn display_lines_for_mode(&self, width: u16, mode: HistoryRenderMode) -> Vec<Line<'static>> {
-        match mode {
-            HistoryRenderMode::CompactToolActivity => {
-                codex_plus_plus::compact_display_lines(self, width)
-            }
-            HistoryRenderMode::Rich => self.display_lines(width),
-            HistoryRenderMode::Raw => self.raw_lines(),
-        }
-    }
 }
 
 impl ExecCell {
@@ -289,7 +277,7 @@ impl ExecCell {
             ]));
         }
         for call in &self.calls[completed_commands..] {
-            lines.extend(self.command_call_display_lines(width, call, /*include_output*/ true));
+            lines.extend(self.command_call_display_lines(width, call));
         }
         lines
     }
@@ -302,7 +290,7 @@ impl ExecCell {
         Line::from(vec![Self::output_ellipsis_text(omitted).dim()])
     }
 
-    pub(super) fn exploring_display_lines(&self, width: u16) -> Vec<Line<'static>> {
+    fn exploring_display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut out: Vec<Line<'static>> = Vec::new();
         out.push(Line::from(vec![
             if self.is_active() {
@@ -400,26 +388,13 @@ impl ExecCell {
     }
 
     fn command_display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.command_display_lines_with_output(width, /*include_output*/ true)
-    }
-
-    pub(super) fn command_display_lines_with_output(
-        &self,
-        width: u16,
-        include_output: bool,
-    ) -> Vec<Line<'static>> {
         let [call] = &self.calls.as_slice() else {
             panic!("Expected exactly one call in a command display cell");
         };
-        self.command_call_display_lines(width, call, include_output)
+        self.command_call_display_lines(width, call)
     }
 
-    pub(in crate::exec_cell) fn command_call_display_lines(
-        &self,
-        width: u16,
-        call: &ExecCall,
-        include_output: bool,
-    ) -> Vec<Line<'static>> {
+    fn command_call_display_lines(&self, width: u16, call: &ExecCall) -> Vec<Line<'static>> {
         let layout = EXEC_DISPLAY_LAYOUT;
         let success = call
             .duration
@@ -495,7 +470,7 @@ impl ExecCell {
             ));
         }
 
-        if include_output && let Some(output) = call.output.as_ref() {
+        if let Some(output) = call.output.as_ref() {
             let line_limit = if call.is_user_shell_command() {
                 USER_SHELL_TOOL_CALL_MAX_LINES
             } else {

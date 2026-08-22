@@ -1656,10 +1656,6 @@ impl ChatWidget {
     pub(crate) fn history_render_mode(&self) -> HistoryRenderMode {
         if self.raw_output_mode {
             HistoryRenderMode::Raw
-        } else if self.config.codex_plus_plus_tool_activity
-            == codex_config::ToolActivityPresentation::Compact
-        {
-            HistoryRenderMode::CompactToolActivity
         } else {
             HistoryRenderMode::Rich
         }

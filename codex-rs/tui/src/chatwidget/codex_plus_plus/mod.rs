@@ -1,19 +1,24 @@
 use super::ChatWidget;
 use crate::exec_cell::ExecCell;
 use crate::history_cell::HistoryCell;
-use crate::history_cell::HistoryRenderMode;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::WebSearchCell;
 
 impl ChatWidget {
+    pub(super) fn compact_tool_activity_enabled(&self) -> bool {
+        !self.raw_output_mode
+            && self.config.codex_plus_plus_tool_activity
+                == codex_config::ToolActivityPresentation::Compact
+    }
+
     pub(super) fn ensure_compact_activity_status(&mut self) {
-        if self.history_render_mode() == HistoryRenderMode::CompactToolActivity {
+        if self.compact_tool_activity_enabled() {
             self.bottom_pane.ensure_status_indicator();
         }
     }
 
     pub(super) fn compact_transient_status(&self) -> Option<String> {
-        if self.history_render_mode() != HistoryRenderMode::CompactToolActivity {
+        if !self.compact_tool_activity_enabled() {
             return None;
         }
         if !self.bottom_pane.status_indicator_visible() {
@@ -50,8 +55,8 @@ impl ChatWidget {
 }
 
 fn transient_status(cell: &dyn HistoryCell) -> Option<String> {
-    let lines = cell.display_lines_for_mode(u16::MAX, HistoryRenderMode::CompactToolActivity);
-    let line = lines.iter().rev().find(|line| !line.spans.is_empty())?;
+    let lines = cell.display_lines(u16::MAX);
+    let line = lines.iter().find(|line| !line.spans.is_empty())?;
     let skip = usize::from(line.spans.get(1).is_some_and(|span| span.content == " ")) * 2;
     let text = line
         .spans

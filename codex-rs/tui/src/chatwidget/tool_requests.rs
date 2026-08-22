@@ -83,8 +83,7 @@ impl ChatWidget {
                 {
                     let command = command
                         .replace("\r\n", " ↵ ")
-                        .replace('\n', " ↵ ")
-                        .replace('\r', " ↵ ");
+                        .replace(['\n', '\r'], " ↵ ");
                     Some(truncate_text(&command, /*max_graphemes*/ 80))
                 } else {
                     Some(format!("{tool_name}: {reason}"))
