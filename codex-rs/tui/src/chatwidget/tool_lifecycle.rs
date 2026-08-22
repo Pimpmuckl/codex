@@ -116,10 +116,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn reconcile_compact_tool_activity_status(&mut self) {
-        if self.collab_wait_in_progress
-            && self.config.codex_plus_plus_tool_activity
-                == codex_config::ToolActivityPresentation::Compact
-        {
+        if self.collab_wait_in_progress && self.compact_tool_activity_enabled() {
             self.bottom_pane.ensure_status_indicator();
             self.set_status_header("Waiting for agents".to_string());
         } else if let Some(header) = self.mcp_startup_status_header() {
@@ -137,8 +134,7 @@ impl ChatWidget {
         else {
             return;
         };
-        let compact = self.config.codex_plus_plus_tool_activity
-            == codex_config::ToolActivityPresentation::Compact;
+        let compact = self.compact_tool_activity_enabled();
         let wait_in_progress = matches!(tool, CollabAgentTool::Wait)
             && matches!(status, CollabAgentToolCallStatus::InProgress);
         if matches!(tool, CollabAgentTool::Wait) {

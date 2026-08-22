@@ -89,14 +89,16 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
     widget.bottom_pane.ensure_status_indicator();
     let working = render_frame(&widget, /*width*/ 80);
 
-    widget.transcript.active_cell = Some(Box::new(new_active_exec_command(
+    let mut command = new_active_exec_command(
         "call-1".to_string(),
         vec!["git".to_string(), "status".to_string()],
         Vec::new(),
         CommandExecutionSource::Agent,
         /*interaction_input*/ None,
         /*animations_enabled*/ false,
-    )));
+    );
+    command.append_output("call-1", "streamed output");
+    widget.transcript.active_cell = Some(Box::new(command));
     let active = render_frame(&widget, /*width*/ 80);
 
     assert_eq!(working.area.height, active.area.height);
@@ -111,6 +113,10 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
         .find(|row| row.contains("Running git status"))
         .expect("status row");
     insta::assert_snapshot!(status_row.trim_end(), @"• Running git status (0s • esc to interrupt)");
+
+    widget.raw_output_mode = true;
+    assert_eq!(widget.compact_transient_status(), None);
+    widget.raw_output_mode = false;
 
     widget.transcript.active_cell = Some(Box::new(new_active_exec_command(
         "call-2".to_string(),
