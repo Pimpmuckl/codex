@@ -58,6 +58,12 @@ impl McpToolResult {
             .content
             .into_iter()
             .map(|block| {
+                let artifact_discriminant = block
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| {
+                        matches!(kind, "image" | "audio" | "resource" | "resource_link")
+                    });
                 // Deserialize by reference so malformed blocks remain available for the exact
                 // JSON fallback. Successful blocks no longer retain their wire representation.
                 let parsed = ContentBlock::deserialize(&block);
@@ -98,7 +104,10 @@ impl McpToolResult {
                         has_inline_artifact = true;
                         McpContentDisplay::Summary(format!("link: {}", link.uri).into())
                     }
-                    Ok(_) | Err(_) => McpContentDisplay::Json(block.to_string()),
+                    Ok(_) | Err(_) => {
+                        has_inline_artifact |= artifact_discriminant;
+                        McpContentDisplay::Json(block.to_string())
+                    }
                 };
                 McpContentBlock {
                     display,
