@@ -458,8 +458,8 @@ impl ChatWidget {
                 let completed = orphan.complete_call(&id, output, duration);
                 debug_assert!(completed, "new orphan exec cell should contain {id}");
                 self.transcript.needs_final_message_separator = true;
-                self.app_event_tx
-                    .send(AppEvent::InsertHistoryCell(Box::new(orphan)));
+                let orphan = self.compact_history_cell(Box::new(orphan));
+                self.app_event_tx.send(AppEvent::InsertHistoryCell(orphan));
                 self.request_redraw();
             }
             ExecEndTarget::NewCell => {

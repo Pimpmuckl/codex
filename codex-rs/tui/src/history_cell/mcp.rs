@@ -104,12 +104,16 @@ impl McpToolCallCell {
         image_cell
     }
 
-    fn success(&self) -> Option<bool> {
+    pub(crate) fn success(&self) -> Option<bool> {
         match self.result.as_ref() {
             Some(Ok(result)) => Some(!result.is_error),
             Some(Err(_)) => Some(false),
             None => None,
         }
+    }
+
+    pub(crate) fn has_inline_artifact(&self) -> bool {
+        matches!(self.result.as_ref(), Some(Ok(result)) if result.has_inline_artifact)
     }
 
     pub(crate) fn mark_failed(&mut self) {

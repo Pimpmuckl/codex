@@ -1249,8 +1249,10 @@ impl ChatWidget {
     }
 
     fn flush_active_cell(&mut self) {
+        self.retain_fast_compact_completion_status();
         if let Some(active) = self.transcript.take_active_cell() {
             self.transcript.needs_final_message_separator = true;
+            let active = self.compact_history_cell(active);
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
             self.request_pending_usage_output_insertion();
         }
@@ -1273,6 +1275,7 @@ impl ChatWidget {
     }
 
     fn add_boxed_history(&mut self, cell: Box<dyn HistoryCell>) {
+        let cell = self.compact_history_cell(cell);
         // Keep the placeholder session header as the active cell until real session info arrives,
         // so we can merge headers instead of committing a duplicate box to history.
         let keep_placeholder_header_active = !self.is_session_configured()

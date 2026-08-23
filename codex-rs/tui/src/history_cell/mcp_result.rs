@@ -27,6 +27,7 @@ pub(super) struct McpToolResult {
     pub(super) content: Vec<McpContentBlock>,
     pub(super) is_error: bool,
     pub(super) has_image: bool,
+    pub(super) has_inline_artifact: bool,
 }
 
 #[derive(Debug)]
@@ -51,10 +52,17 @@ impl McpToolResult {
     /// valid image.
     pub(super) fn new(result: CallToolResult, kind: McpResultKind) -> Self {
         let mut has_image = false;
+        let mut has_inline_artifact = false;
         let content = result
             .content
             .into_iter()
             .map(|block| {
+                let artifact_discriminant = block
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| {
+                        matches!(kind, "image" | "audio" | "resource" | "resource_link")
+                    });
                 // Deserialize by reference so malformed blocks remain available for the exact
                 // JSON fallback. Successful blocks no longer retain their wire representation.
                 let parsed = ContentBlock::deserialize(&block);
@@ -70,15 +78,20 @@ impl McpToolResult {
                     Ok(ContentBlock::Image(image)) => {
                         // Keep the marker's existing full-decode validity check, and stop
                         // decoding after the first valid image, just as the old search did.
-                        if !has_image {
+                        if has_image {
+                            has_inline_artifact = true;
+                        } else {
                             has_image = decode_mcp_image(&image.data).is_some();
+                            has_inline_artifact |= !has_image;
                         }
                         McpContentDisplay::Summary("<image content>".into())
                     }
                     Ok(ContentBlock::Audio(_)) => {
+                        has_inline_artifact = true;
                         McpContentDisplay::Summary("<audio content>".into())
                     }
                     Ok(ContentBlock::Resource(resource)) => {
+                        has_inline_artifact = true;
                         let summary = match resource.resource {
                             ResourceContents::TextResourceContents { uri, .. }
                             | ResourceContents::BlobResourceContents { uri, .. } => {
@@ -89,9 +102,13 @@ impl McpToolResult {
                         McpContentDisplay::Summary(summary)
                     }
                     Ok(ContentBlock::ResourceLink(link)) => {
+                        has_inline_artifact = true;
                         McpContentDisplay::Summary(format!("link: {}", link.uri).into())
                     }
-                    Ok(_) | Err(_) => McpContentDisplay::Json(block.to_string()),
+                    Ok(_) | Err(_) => {
+                        has_inline_artifact |= artifact_discriminant;
+                        McpContentDisplay::Json(block.to_string())
+                    }
                 };
                 McpContentBlock {
                     display,
@@ -104,6 +121,7 @@ impl McpToolResult {
             content,
             is_error: result.is_error.unwrap_or(false),
             has_image,
+            has_inline_artifact,
         }
     }
 }

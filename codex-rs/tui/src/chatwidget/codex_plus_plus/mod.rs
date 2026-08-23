@@ -4,11 +4,15 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::WebSearchCell;
 
+mod compact_activity;
+
 impl ChatWidget {
     pub(super) fn compact_tool_activity_enabled(&self) -> bool {
-        !self.raw_output_mode
-            && self.config.codex_plus_plus_tool_activity
-                == codex_config::ToolActivityPresentation::Compact
+        !self.raw_output_mode && self.compact_tool_activity_configured()
+    }
+
+    fn compact_tool_activity_configured(&self) -> bool {
+        self.config.codex_plus_plus_tool_activity == codex_config::ToolActivityPresentation::Compact
     }
 
     pub(super) fn ensure_compact_activity_status(&mut self) {
@@ -47,7 +51,8 @@ impl ChatWidget {
                 || cell
                     .as_any()
                     .downcast_ref::<WebSearchCell>()
-                    .is_some_and(WebSearchCell::is_active))
+                    .is_some_and(WebSearchCell::is_active)
+                || compact_activity::compact_success_is_transcript_only(cell))
             .then(|| transient_status(cell))
             .flatten()
         })

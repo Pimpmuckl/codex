@@ -37,7 +37,6 @@ fn projected_content_preserves_width_dependent_rendering() {
         ]),
         McpResultKind::Standard,
     );
-
     for width in [1, 8, 40, 120, RAW_TOOL_OUTPUT_WIDTH] {
         let format_text =
             |text: &str| format_and_truncate_tool_result(text, TOOL_CALL_MAX_LINES, width);
@@ -72,7 +71,7 @@ fn projected_image_marker_still_requires_a_complete_image() {
     let valid = json!({"type": "image", "mimeType": "image/png", "data": format!("data:image/png;base64,{PNG}")});
 
     let projected = McpToolResult::new(result(vec![invalid.clone()]), McpResultKind::Standard);
-    assert!(!projected.has_image);
+    assert!(!projected.has_image && projected.has_inline_artifact);
     assert_eq!(projected.content[0].render(/*width*/ 80), "<image content>");
 
     let projected = McpToolResult::new(result(vec![invalid, valid]), McpResultKind::Standard);
