@@ -104,7 +104,7 @@ impl McpToolCallCell {
         image_cell
     }
 
-    fn success(&self) -> Option<bool> {
+    pub(crate) fn success(&self) -> Option<bool> {
         match self.result.as_ref() {
             Some(Ok(result)) => Some(!result.is_error),
             Some(Err(_)) => Some(false),

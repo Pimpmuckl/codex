@@ -91,7 +91,7 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
 
     let mut command = new_active_exec_command(
         "call-1".to_string(),
-        vec!["git".to_string(), "status".to_string()],
+        vec!["printf first\nprintf second".to_string()],
         Vec::new(),
         CommandExecutionSource::Agent,
         /*interaction_input*/ None,
@@ -110,9 +110,11 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
                 .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>()
         })
-        .find(|row| row.contains("Running git status"))
+        .find(|row| row.contains("Running"))
         .expect("status row");
-    insta::assert_snapshot!(status_row.trim_end(), @"• Running git status (0s • esc to interrupt)");
+    insta::assert_snapshot!(status_row.trim_end(), @"• Running 'printf first (0s • esc to interrupt)");
+    assert!(!contains_text(&active, "printf second"));
+    assert!(!contains_text(&active, "streamed output"));
 
     widget.raw_output_mode = true;
     assert_eq!(widget.compact_transient_status(), None);

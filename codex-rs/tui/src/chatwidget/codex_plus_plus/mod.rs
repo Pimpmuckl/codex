@@ -4,6 +4,8 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::WebSearchCell;
 
+mod compact_activity;
+
 impl ChatWidget {
     pub(super) fn compact_tool_activity_enabled(&self) -> bool {
         !self.raw_output_mode
