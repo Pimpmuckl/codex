@@ -69,7 +69,12 @@ impl ChatWidget {
         }
         let main = if cell.as_any().is::<PatchHistoryCell>() {
             Some(CompactMainPresentation::FirstLine)
-        } else if compact_success_is_transcript_only(cell.as_ref()) {
+        } else if compact_success_is_transcript_only(cell.as_ref())
+            || cell
+                .as_any()
+                .downcast_ref::<McpToolCallCell>()
+                .is_some_and(McpToolCallCell::is_active)
+        {
             Some(CompactMainPresentation::Hidden)
         } else {
             None
