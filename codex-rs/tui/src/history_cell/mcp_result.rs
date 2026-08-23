@@ -52,6 +52,7 @@ impl McpToolResult {
     /// valid image.
     pub(super) fn new(result: CallToolResult, kind: McpResultKind) -> Self {
         let mut has_image = false;
+        let mut has_image_block = false;
         let mut has_inline_artifact = false;
         let content = result
             .content
@@ -70,6 +71,7 @@ impl McpToolResult {
                 let display = match parsed {
                     Ok(ContentBlock::Text(text)) => McpContentDisplay::Text(text.text),
                     Ok(ContentBlock::Image(image)) => {
+                        has_image_block = true;
                         // Keep the marker's existing full-decode validity check, and stop
                         // decoding after the first valid image, just as the old search did.
                         if !has_image {
@@ -109,7 +111,7 @@ impl McpToolResult {
             content,
             is_error: result.is_error.unwrap_or(false),
             has_image,
-            has_inline_artifact,
+            has_inline_artifact: has_inline_artifact || has_image_block && !has_image,
         }
     }
 }

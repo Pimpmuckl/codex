@@ -1249,6 +1249,7 @@ impl ChatWidget {
     }
 
     fn flush_active_cell(&mut self) {
+        self.retain_fast_compact_completion_status();
         if let Some(active) = self.transcript.take_active_cell() {
             self.transcript.needs_final_message_separator = true;
             let active = self.compact_history_cell(active);

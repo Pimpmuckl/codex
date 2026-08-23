@@ -99,7 +99,6 @@ impl ChatWidget {
             cell.update(action.clone(), query.clone());
             cell.complete();
             self.bump_active_cell_revision();
-            self.retain_fast_compact_completion_status();
             self.flush_active_cell();
             handled = true;
         }
@@ -272,7 +271,6 @@ impl ChatWidget {
             }
         };
 
-        self.retain_fast_compact_completion_status();
         self.flush_active_cell();
         if let Some(extra) = extra_cell {
             self.add_boxed_history(extra);

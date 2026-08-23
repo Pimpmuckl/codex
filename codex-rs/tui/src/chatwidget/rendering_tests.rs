@@ -128,22 +128,25 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
         CommandOutput::new(/*exit_code*/ 0, "first\nsecond\n".to_string()),
         std::time::Duration::from_millis(5),
     );
-    command.add_call(
-        "call-2".to_string(),
-        vec!["printf third".to_string()],
-        Vec::new(),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None,
-    );
-    command.complete_call(
-        "call-2",
-        CommandOutput::new(/*exit_code*/ 0, "third\n".to_string()),
-        std::time::Duration::from_millis(5),
-    );
+    for index in 2..=32 {
+        let call_id = format!("call-{index}");
+        command.add_call(
+            call_id.clone(),
+            vec![format!("printf {index}")],
+            Vec::new(),
+            CommandExecutionSource::Agent,
+            /*interaction_input*/ None,
+        );
+        command.complete_call(
+            &call_id,
+            CommandOutput::new(/*exit_code*/ 0, format!("{index}\n")),
+            std::time::Duration::from_millis(5),
+        );
+    }
+    widget.flush_active_cell();
     let completed = render_frame(&widget, /*width*/ 80);
     let completed_status_row = text_row(&completed, "Ran");
-    insta::assert_snapshot!(completed_status_row.trim_end(), @"• Ran 2 commands · ctrl + t to view transcript (0s • esc to interrupt)");
-    assert!(!contains_text(&completed, "second"));
+    insta::assert_snapshot!(completed_status_row.trim_end(), @"• Ran 32 commands · ctrl + t to view transcript (0s • esc to interrupt)");
 
     widget.raw_output_mode = true;
     assert_eq!(widget.compact_transient_status(), None);

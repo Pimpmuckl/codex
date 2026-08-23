@@ -73,7 +73,7 @@ fn projected_image_marker_still_requires_a_complete_image() {
     let valid = json!({"type": "image", "mimeType": "image/png", "data": format!("data:image/png;base64,{PNG}")});
 
     let projected = McpToolResult::new(result(vec![invalid.clone()]), McpResultKind::Standard);
-    assert!(!projected.has_image);
+    assert!(!projected.has_image && projected.has_inline_artifact);
     assert_eq!(projected.content[0].render(/*width*/ 80), "<image content>");
 
     let projected = McpToolResult::new(result(vec![invalid, valid]), McpResultKind::Standard);
