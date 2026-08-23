@@ -64,7 +64,7 @@ impl ChatWidget {
         &self,
         cell: Box<dyn HistoryCell>,
     ) -> Box<dyn HistoryCell> {
-        if !self.compact_tool_activity_enabled() {
+        if !self.compact_tool_activity_configured() {
             return cell;
         }
         let main = if cell.as_any().is::<PatchHistoryCell>() {

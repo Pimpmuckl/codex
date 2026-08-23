@@ -38,7 +38,9 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
         CommandOutput::new(/*exit_code*/ 0, "one\n".to_string()),
         Duration::from_millis(5),
     );
+    chat.raw_output_mode = true;
     let exec = chat.compact_history_cell(Box::new(exec));
+    chat.raw_output_mode = false;
 
     let mut mcp = history_cell::new_active_mcp_tool_call(
         "mcp".to_string(),

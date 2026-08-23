@@ -8,9 +8,11 @@ mod compact_activity;
 
 impl ChatWidget {
     pub(super) fn compact_tool_activity_enabled(&self) -> bool {
-        !self.raw_output_mode
-            && self.config.codex_plus_plus_tool_activity
-                == codex_config::ToolActivityPresentation::Compact
+        !self.raw_output_mode && self.compact_tool_activity_configured()
+    }
+
+    fn compact_tool_activity_configured(&self) -> bool {
+        self.config.codex_plus_plus_tool_activity == codex_config::ToolActivityPresentation::Compact
     }
 
     pub(super) fn ensure_compact_activity_status(&mut self) {

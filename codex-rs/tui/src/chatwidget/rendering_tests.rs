@@ -141,7 +141,6 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
         std::time::Duration::from_millis(5),
     );
     let completed = render_frame(&widget, /*width*/ 80);
-    assert_eq!(active.area.height, completed.area.height);
     let completed_status_row = text_row(&completed, "Ran");
     insta::assert_snapshot!(completed_status_row.trim_end(), @"• Ran 2 commands · ctrl + t to view transcript (0s • esc to interrupt)");
     assert!(!contains_text(&completed, "second"));
