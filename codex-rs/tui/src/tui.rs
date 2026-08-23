@@ -123,6 +123,7 @@ mod tests {
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use ratatui::layout::Size;
+    use ratatui::style::Style;
     use ratatui::text::Line;
 
     #[test]
@@ -202,6 +203,18 @@ mod tests {
         terminal.set_viewport_area(Rect::new(
             /*x*/ 0, /*y*/ 16, /*width*/ 80, /*height*/ 8,
         ));
+        terminal
+            .draw(|frame| {
+                for y in 16..24 {
+                    frame.buffer_mut().set_string(
+                        /*x*/ 0,
+                        y,
+                        "stale active row",
+                        Style::default(),
+                    );
+                }
+            })
+            .expect("draw expanded viewport");
 
         Tui::update_inline_viewport_for_resize_reflow(
             &mut terminal,
@@ -211,6 +224,37 @@ mod tests {
         )
         .expect("contract bottom-aligned viewport");
         let bottom_aligned = terminal.viewport_area;
+        terminal
+            .draw(|frame| {
+                for (y, text) in (20..24).zip(["composer", "footer", "hint", "status"]) {
+                    frame
+                        .buffer_mut()
+                        .set_string(/*x*/ 0, y, text, Style::default());
+                }
+            })
+            .expect("draw contracted viewport");
+        let rendered_bottom = terminal
+            .backend()
+            .vt100()
+            .screen()
+            .rows(/*start*/ 0, screen_size.width)
+            .skip(16)
+            .map(|row| match row.trim_end() {
+                "" => "<blank>".to_string(),
+                row => row.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(rendered_bottom, @r"
+        <blank>
+        <blank>
+        <blank>
+        <blank>
+        composer
+        footer
+        hint
+        status
+        ");
 
         terminal.set_viewport_area(Rect::new(
             /*x*/ 0, /*y*/ 8, /*width*/ 80, /*height*/ 8,
