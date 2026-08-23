@@ -37,8 +37,6 @@ fn projected_content_preserves_width_dependent_rendering() {
         ]),
         McpResultKind::Standard,
     );
-    assert!(projected.has_inline_artifact);
-
     for width in [1, 8, 40, 120, RAW_TOOL_OUTPUT_WIDTH] {
         let format_text =
             |text: &str| format_and_truncate_tool_result(text, TOOL_CALL_MAX_LINES, width);

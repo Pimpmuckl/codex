@@ -4,7 +4,6 @@ use crate::diff_model::FileChange;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::new_active_exec_command;
 use crate::history_cell;
-use codex_app_server_protocol::WebSearchAction;
 use codex_protocol::mcp::CallToolResult;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
@@ -73,7 +72,7 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
     let web = chat.compact_history_cell(Box::new(history_cell::new_web_search_call(
         "web".to_string(),
         "compact policy".to_string(),
-        WebSearchAction::Other,
+        codex_app_server_protocol::WebSearchAction::Other,
     )));
     let patch = chat.compact_history_cell(Box::new(history_cell::new_patch_event(
         HashMap::from([(
@@ -113,4 +112,5 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
         1 -old
         1 +new
     "###);
+    assert!(text(exec.raw_lines()).contains("one"));
 }
