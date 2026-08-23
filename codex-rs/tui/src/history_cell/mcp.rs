@@ -112,6 +112,10 @@ impl McpToolCallCell {
         }
     }
 
+    pub(crate) fn has_inline_artifact(&self) -> bool {
+        matches!(self.result.as_ref(), Some(Ok(result)) if result.has_inline_artifact)
+    }
+
     pub(crate) fn mark_failed(&mut self) {
         let elapsed = self.start_time.elapsed();
         self.duration = Some(elapsed);

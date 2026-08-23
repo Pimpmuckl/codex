@@ -49,7 +49,8 @@ impl ChatWidget {
                 || cell
                     .as_any()
                     .downcast_ref::<WebSearchCell>()
-                    .is_some_and(WebSearchCell::is_active))
+                    .is_some_and(WebSearchCell::is_active)
+                || compact_activity::compact_success_is_transcript_only(cell))
             .then(|| transient_status(cell))
             .flatten()
         })

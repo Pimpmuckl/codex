@@ -94,7 +94,7 @@ impl ChatWidget {
     }
 }
 
-fn compact_success_is_transcript_only(cell: &dyn HistoryCell) -> bool {
+pub(super) fn compact_success_is_transcript_only(cell: &dyn HistoryCell) -> bool {
     cell.as_any()
         .downcast_ref::<ExecCell>()
         .is_some_and(|exec| {
@@ -112,7 +112,7 @@ fn compact_success_is_transcript_only(cell: &dyn HistoryCell) -> bool {
         || cell
             .as_any()
             .downcast_ref::<McpToolCallCell>()
-            .is_some_and(|mcp| mcp.success() == Some(true))
+            .is_some_and(|mcp| mcp.success() == Some(true) && !mcp.has_inline_artifact())
         || cell
             .as_any()
             .downcast_ref::<WebSearchCell>()

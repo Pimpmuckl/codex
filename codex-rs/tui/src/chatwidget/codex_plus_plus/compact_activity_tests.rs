@@ -14,12 +14,7 @@ use std::time::Duration;
 fn text(lines: Vec<Line<'static>>) -> String {
     lines
         .into_iter()
-        .map(|line| {
-            line.spans
-                .into_iter()
-                .map(|span| span.content.into_owned())
-                .collect::<String>()
-        })
+        .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -32,7 +27,7 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
 
     let mut exec = new_active_exec_command(
         "exec".to_string(),
-        vec!["printf one\nprintf two".to_string()],
+        vec!["printf one".to_string()],
         Vec::new(),
         CommandExecutionSource::Agent,
         /*interaction_input*/ None,
@@ -40,22 +35,9 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
     );
     exec.complete_call(
         "exec",
-        CommandOutput::new(/*exit_code*/ 0, "one\ntwo\n".to_string()),
+        CommandOutput::new(/*exit_code*/ 0, "one\n".to_string()),
         Duration::from_millis(5),
     );
-    exec.add_call(
-        "exec-2".to_string(),
-        vec!["printf three".to_string()],
-        Vec::new(),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None,
-    );
-    exec.complete_call(
-        "exec-2",
-        CommandOutput::new(/*exit_code*/ 0, "three\n".to_string()),
-        Duration::from_millis(5),
-    );
-    let rich_exec = text(exec.display_lines(80));
     let exec = chat.compact_history_cell(Box::new(exec));
 
     let mut mcp = history_cell::new_active_mcp_tool_call(
@@ -107,7 +89,7 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
     )));
 
     insta::assert_snapshot!(format!(
-        "rich before compact:\n{rich_exec}\nmain:\n{}\n{}\n{}\n{}\ntranscript:\n{}\n{}\n{}\n{}\nraw exec:\n{}",
+        "main:\n{}\n{}\n{}\n{}\ntranscript:\n{}\n{}\n{}\n{}",
         text(exec.display_lines(80)),
         text(mcp.display_lines(80)),
         text(web.display_lines(80)),
@@ -116,24 +98,15 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
         text(mcp.transcript_lines(80)),
         text(web.transcript_lines(80)),
         text(patch.transcript_lines(80)),
-        text(exec.raw_lines()),
     ), @r###"
-    rich before compact:
-    • Ran 2 commands · ctrl + t to view transcript
     main:
 
 
 
     • Edited src/lib.rs (+1 -1)
     transcript:
-    $ 'printf one
-        printf two'
+    $ 'printf one'
     one
-    two
-    ✓ • 5ms
-
-    $ 'printf three'
-    three
     ✓ • 5ms
     • Called workspace.inspect({"path":"README.md"})
       └ full result
@@ -141,17 +114,7 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
     • Edited src/lib.rs (+1 -1)
         1 -old
         1 +new
-    raw exec:
-    $ 'printf one
-        printf two'
-    one
-    two
-    ✓ • 5ms
-
-    $ 'printf three'
-    three
-    ✓ • 5ms
     "###);
 
-    assert_eq!(exec.display_lines(80), Vec::<Line<'static>>::new());
+    assert_eq!(text(exec.raw_lines()), text(exec.transcript_lines(80)));
 }

@@ -27,6 +27,7 @@ pub(super) struct McpToolResult {
     pub(super) content: Vec<McpContentBlock>,
     pub(super) is_error: bool,
     pub(super) has_image: bool,
+    pub(super) has_inline_artifact: bool,
 }
 
 #[derive(Debug)]
@@ -51,6 +52,7 @@ impl McpToolResult {
     /// valid image.
     pub(super) fn new(result: CallToolResult, kind: McpResultKind) -> Self {
         let mut has_image = false;
+        let mut has_inline_artifact = false;
         let content = result
             .content
             .into_iter()
@@ -76,9 +78,11 @@ impl McpToolResult {
                         McpContentDisplay::Summary("<image content>".into())
                     }
                     Ok(ContentBlock::Audio(_)) => {
+                        has_inline_artifact = true;
                         McpContentDisplay::Summary("<audio content>".into())
                     }
                     Ok(ContentBlock::Resource(resource)) => {
+                        has_inline_artifact = true;
                         let summary = match resource.resource {
                             ResourceContents::TextResourceContents { uri, .. }
                             | ResourceContents::BlobResourceContents { uri, .. } => {
@@ -89,6 +93,7 @@ impl McpToolResult {
                         McpContentDisplay::Summary(summary)
                     }
                     Ok(ContentBlock::ResourceLink(link)) => {
+                        has_inline_artifact = true;
                         McpContentDisplay::Summary(format!("link: {}", link.uri).into())
                     }
                     Ok(_) | Err(_) => McpContentDisplay::Json(block.to_string()),
@@ -104,6 +109,7 @@ impl McpToolResult {
             content,
             is_error: result.is_error.unwrap_or(false),
             has_image,
+            has_inline_artifact,
         }
     }
 }

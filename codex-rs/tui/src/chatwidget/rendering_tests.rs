@@ -1,5 +1,6 @@
 use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
+use crate::exec_cell::CommandOutput;
 use crate::exec_cell::new_active_exec_command;
 use codex_app_server_protocol::CommandExecutionSource;
 use pretty_assertions::assert_eq;
@@ -81,6 +82,15 @@ fn contains_text(buffer: &Buffer, text: &str) -> bool {
         })
 }
 
+fn text_row(buffer: &Buffer, text: &str) -> String {
+    buffer
+        .content
+        .chunks(usize::from(buffer.area.width))
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+        .find(|row: &String| row.contains(text))
+        .expect("matching row")
+}
+
 #[tokio::test]
 async fn compact_live_tool_reuses_status_row_without_changing_height() {
     let (mut widget, _sender, _events, _operations) = make_chatwidget_manual_with_sender().await;
@@ -102,19 +112,39 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
     let active = render_frame(&widget, /*width*/ 80);
 
     assert_eq!(working.area.height, active.area.height);
-    let status_row = active
-        .content
-        .chunks(usize::from(active.area.width))
-        .map(|row| {
-            row.iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect::<String>()
-        })
-        .find(|row| row.contains("Running"))
-        .expect("status row");
+    let status_row = text_row(&active, "Running");
     insta::assert_snapshot!(status_row.trim_end(), @"• Running 'printf first (0s • esc to interrupt)");
     assert!(!contains_text(&active, "printf second"));
     assert!(!contains_text(&active, "streamed output"));
+
+    let command = widget
+        .transcript
+        .active_cell
+        .as_mut()
+        .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
+        .expect("grouped exec");
+    command.complete_call(
+        "call-1",
+        CommandOutput::new(/*exit_code*/ 0, "first\nsecond\n".to_string()),
+        std::time::Duration::from_millis(5),
+    );
+    command.add_call(
+        "call-2".to_string(),
+        vec!["printf third".to_string()],
+        Vec::new(),
+        CommandExecutionSource::Agent,
+        /*interaction_input*/ None,
+    );
+    command.complete_call(
+        "call-2",
+        CommandOutput::new(/*exit_code*/ 0, "third\n".to_string()),
+        std::time::Duration::from_millis(5),
+    );
+    let completed = render_frame(&widget, /*width*/ 80);
+    assert_eq!(active.area.height, completed.area.height);
+    let completed_status_row = text_row(&completed, "Ran");
+    insta::assert_snapshot!(completed_status_row.trim_end(), @"• Ran 2 commands · ctrl + t to view transcript (0s • esc to interrupt)");
+    assert!(!contains_text(&completed, "second"));
 
     widget.raw_output_mode = true;
     assert_eq!(widget.compact_transient_status(), None);
