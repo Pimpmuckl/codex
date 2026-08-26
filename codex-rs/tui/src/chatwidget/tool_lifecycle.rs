@@ -229,7 +229,6 @@ impl ChatWidget {
             result,
             error,
             duration_ms,
-            status,
             ..
         } = item
         else {

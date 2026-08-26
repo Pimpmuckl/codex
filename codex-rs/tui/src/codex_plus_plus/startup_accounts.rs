@@ -248,7 +248,8 @@ fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
                 | AuthMode::Headers
                 | AuthMode::AgentIdentity
                 | AuthMode::PersonalAccessToken
-                | AuthMode::BedrockApiKey,
+                | AuthMode::BedrockApiKey
+                | AuthMode::BedrockAccessKeys,
             ) => false,
             None => {
                 auth.openai_api_key.is_none()

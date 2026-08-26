@@ -36,7 +36,8 @@ async fn permission_shortcut_rejections_leave_state_unchanged() -> Result<()> {
             /*log_db*/ None,
             /*state_db*/ None,
             Arc::clone(&app.environment_manager),
-            |mut args| {
+            /*initial_account_id*/ None,
+            |mut args, _initial_account_id| {
                 args.experimental_api = experimental_api;
                 codex_app_server_client::InProcessAppServerClient::start(args)
             },
