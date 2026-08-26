@@ -133,13 +133,12 @@ fn agent_status_marks_unread_user_messages() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    insta::assert_snapshot!(rendered, @r###"
+    insta::assert_snapshot!(rendered, @"
     /subagents
     Sub-agents running
 
       • Main [default]  New message
-
       • `/root/reviewer`  New message
         No recent activity yet.
-    "###);
+    ");
 }

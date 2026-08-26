@@ -86,7 +86,10 @@ impl AccountStore {
             CodexAuth::PersonalAccessToken(auth) => {
                 super::account_id_for_workspace(auth.account_id())
             }
-            CodexAuth::ApiKey(_) | CodexAuth::Headers(_) | CodexAuth::BedrockApiKey(_) => {
+            CodexAuth::ApiKey(_)
+            | CodexAuth::Headers(_)
+            | CodexAuth::BedrockApiKey(_)
+            | CodexAuth::BedrockAccessKeys(_) => {
                 return Ok(None);
             }
         };

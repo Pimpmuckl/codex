@@ -224,11 +224,11 @@ impl ChatWidget {
             id,
             server,
             tool,
+            status,
             arguments,
             result,
             error,
             duration_ms,
-            status,
             ..
         } = item
         else {

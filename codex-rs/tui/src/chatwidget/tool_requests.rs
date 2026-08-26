@@ -54,6 +54,9 @@ impl ChatWidget {
                     .ok()
                     .or_else(|| Some(command.join(" ")))
             }
+            GuardianAssessmentAction::WriteStdin { .. } => {
+                Some(auto_review_denials::action_summary(action))
+            }
             GuardianAssessmentAction::ApplyPatch { files, .. } => Some(if files.len() == 1 {
                 format!("apply_patch touching {}", files[0].display())
             } else {
@@ -81,9 +84,7 @@ impl ChatWidget {
                         .get("command")
                         .and_then(serde_json::Value::as_str)
                 {
-                    let command = command
-                        .replace("\r\n", " ↵ ")
-                        .replace(['\n', '\r'], " ↵ ");
+                    let command = command.replace("\r\n", " ↵ ").replace(['\n', '\r'], " ↵ ");
                     Some(truncate_text(&command, /*max_graphemes*/ 80))
                 } else {
                     Some(format!("{tool_name}: {reason}"))
@@ -103,7 +104,8 @@ impl ChatWidget {
                 argv.clone()
             })
             .filter(|command| !command.is_empty()),
-            GuardianAssessmentAction::ApplyPatch { .. }
+            GuardianAssessmentAction::WriteStdin { .. }
+            | GuardianAssessmentAction::ApplyPatch { .. }
             | GuardianAssessmentAction::NetworkAccess { .. }
             | GuardianAssessmentAction::McpToolCall { .. }
             | GuardianAssessmentAction::PreToolUse { .. }
@@ -179,6 +181,12 @@ impl ChatWidget {
                 )
             } else {
                 match &ev.action {
+                    GuardianAssessmentAction::WriteStdin { .. } => {
+                        history_cell::new_guardian_timed_out_action_request(format!(
+                            "codex could {}",
+                            auto_review_denials::action_summary(&ev.action)
+                        ))
+                    }
                     GuardianAssessmentAction::ApplyPatch { files, .. } => {
                         let files = files
                             .iter()
@@ -228,6 +236,12 @@ impl ChatWidget {
             )
         } else {
             match &ev.action {
+                GuardianAssessmentAction::WriteStdin { .. } => {
+                    history_cell::new_guardian_denied_action_request(format!(
+                        "codex to {}",
+                        auto_review_denials::action_summary(&ev.action)
+                    ))
+                }
                 GuardianAssessmentAction::ApplyPatch { files, .. } => {
                     let files = files
                         .iter()

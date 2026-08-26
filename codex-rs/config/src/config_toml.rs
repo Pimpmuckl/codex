@@ -11,6 +11,8 @@ use crate::ModelCapacityRetryMode;
 use crate::ToolActivityPresentation;
 use crate::UserMessageInbox;
 use crate::WeeklyUsageWindowAutoStart;
+use crate::browser_use::BrowserUseConfigToml;
+use crate::computer_use::ComputerUseConfigToml;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
@@ -187,6 +189,10 @@ pub struct ConfigToml {
     /// Optional policy instructions for the guardian auto-reviewer.
     #[serde(default)]
     pub auto_review: Option<AutoReviewToml>,
+
+    pub browser_use: Option<BrowserUseConfigToml>,
+
+    pub computer_use: Option<ComputerUseConfigToml>,
 
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,

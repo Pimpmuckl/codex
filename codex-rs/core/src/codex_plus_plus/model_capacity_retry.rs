@@ -21,7 +21,7 @@ const RETRY_SCHEDULE: [(Duration, &str); 4] = [
 
 pub(crate) fn applies_to_sampling(err: &CodexErr, session_source: &SessionSource) -> bool {
     matches!(err.details(), CodexErrorDetails::ServerOverloaded)
-        && !crate::guardian::is_guardian_reviewer_source(session_source)
+        && !crate::guardian::is_basic_session_source(session_source)
 }
 
 pub(crate) async fn handle(
