@@ -59,6 +59,25 @@ fn startup_picker_preflight_is_conservative_for_enabled_or_unreadable_accounts()
     assert!(!may_run_startup_account_picker(codex_home.path()));
 }
 
+#[tokio::test]
+async fn mode_less_bedrock_access_keys_skip_imported_account_picker() {
+    let codex_home = tempfile::tempdir().expect("create Codex home");
+    std::fs::write(
+        codex_home.path().join("auth.json"),
+        r#"{"bedrock_access_keys":{"access_key_id":"access-key-id","secret_access_key":"secret-access-key"}}"#,
+    )
+    .expect("write mode-less Bedrock access keys");
+    let mut config = crate::legacy_core::config::ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await
+        .expect("build config");
+    config.cli_auth_credentials_store_mode = codex_config::types::AuthCredentialsStoreMode::File;
+    config.automatic_account_selection = AutomaticAccountSelection::Enabled;
+
+    assert!(!root_auth_allows_imported_account_picker(&config));
+}
+
 #[test]
 fn automatic_default_ignores_automation_disabled_current_account() {
     let current = account_candidate("acct_current", /*automation_enabled*/ false);
