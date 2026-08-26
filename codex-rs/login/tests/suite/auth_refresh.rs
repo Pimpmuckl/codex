@@ -1278,6 +1278,7 @@ async fn concurrent_auth_managers_refresh_a_rotating_token_once() -> Result<()> 
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     };
     ctx.write_auth(&initial_auth).await?;
     let second_manager = shared_auth_manager(ctx.codex_home.path()).await;
@@ -1945,6 +1946,7 @@ fn account_auth(account_id: &str, access_token: &str, refresh_token: &str) -> Au
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     }
 }
 

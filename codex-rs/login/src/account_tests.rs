@@ -1088,6 +1088,7 @@ fn test_auth(account_id: &str, user_id: &str, email: &str) -> AuthDotJson {
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     }
 }
 
@@ -1100,6 +1101,7 @@ fn api_key_auth() -> AuthDotJson {
         agent_identity: None,
         personal_access_token: None,
         bedrock_api_key: None,
+        bedrock_access_keys: None,
     }
 }
 
