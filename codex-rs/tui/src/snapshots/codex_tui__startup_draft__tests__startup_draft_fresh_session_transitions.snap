@@ -5,7 +5,7 @@ expression: "snapshots.join(\"\\n---\\n\")"
 resume lookup fallback:
 before:
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (v<VERSION>)              │
+│ >_ OpenAI Codex (v<VERSION>)            │
 │                                       │
 │ model:     loading   /model to change │
 │ directory: loading                    │
@@ -17,7 +17,7 @@ before:
 
 after:
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (v<VERSION>)              │
+│ >_ OpenAI Codex (v<VERSION>)            │
 │                                       │
 │ model:     loading   /model to change │
 │ directory: loading                    │
@@ -31,7 +31,7 @@ after:
 fork lookup fallback:
 before:
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (v<VERSION>)              │
+│ >_ OpenAI Codex (v<VERSION>)            │
 │                                       │
 │ model:     loading   /model to change │
 │ directory: loading                    │
@@ -43,7 +43,7 @@ before:
 
 after:
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (v<VERSION>)              │
+│ >_ OpenAI Codex (v<VERSION>)            │
 │                                       │
 │ model:     loading   /model to change │
 │ directory: loading                    │
@@ -59,7 +59,7 @@ before:
 hidden while picker owns input
 after:
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (v<VERSION>)              │
+│ >_ OpenAI Codex (v<VERSION>)            │
 │                                       │
 │ model:     loading   /model to change │
 │ directory: loading                    │
@@ -75,7 +75,7 @@ before:
 hidden while picker owns input
 after:
 ╭───────────────────────────────────────╮
-│ >_ OpenAI Codex (v<VERSION>)              │
+│ >_ OpenAI Codex (v<VERSION>)            │
 │                                       │
 │ model:     loading   /model to change │
 │ directory: loading                    │
