@@ -677,7 +677,8 @@ fn is_managed_chatgpt_auth(auth: &AuthDotJson) -> bool {
             | AuthMode::ChatgptAuthTokens
             | AuthMode::AgentIdentity
             | AuthMode::PersonalAccessToken
-            | AuthMode::BedrockApiKey,
+            | AuthMode::BedrockApiKey
+            | AuthMode::BedrockAccessKeys,
         ) => false,
         None => auth.openai_api_key.is_none() && auth.tokens.is_some(),
     }

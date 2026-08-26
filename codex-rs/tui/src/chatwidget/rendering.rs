@@ -3,6 +3,7 @@
 use super::transcript::ActiveCellLayoutCache;
 use super::transcript::ActiveCellLayoutCacheKey;
 use super::*;
+use crate::terminal_hyperlinks::HyperlinkParagraph;
 use std::cell::Cell;
 
 impl ChatWidget {
@@ -126,8 +127,8 @@ impl Renderable for TranscriptAreaRenderable<'_> {
         let area = self.child_area(area);
         let lines = self
             .child
-            .display_lines_for_mode(area.width, self.history_render_mode);
-        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+            .display_hyperlink_lines_for_mode(area.width, self.history_render_mode);
+        let paragraph = HyperlinkParagraph::new(&lines, Style::default());
         let y = if area.height == 0 {
             0
         } else {
@@ -147,7 +148,7 @@ impl Renderable for TranscriptAreaRenderable<'_> {
             u16::try_from(overflow).unwrap_or(u16::MAX)
         };
         Clear.render(area, buf);
-        paragraph.scroll((y, 0)).render(area, buf);
+        paragraph.scroll(y).render(area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
