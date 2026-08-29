@@ -89,7 +89,7 @@ impl ChatWidget {
     pub(in crate::chatwidget) fn retain_fast_compact_completion_status(&mut self) {
         let status = self
             .compact_tool_activity_enabled()
-            .then(|| self.transcript.active_cell.as_deref())
+            .then_some(self.transcript.active_cell.as_deref())
             .flatten()
             .filter(|cell| compact_success_is_transcript_only(*cell))
             .and_then(transient_status);

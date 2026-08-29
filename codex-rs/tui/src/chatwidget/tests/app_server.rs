@@ -1,4 +1,6 @@
 use super::*;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use pretty_assertions::assert_eq;
 
 const SAFETY_BUFFERING_HEADER_TEXT: &str =
@@ -1207,6 +1209,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
+                misalignment: None,
                 message: "permission denied".to_string(),
                 codex_error_info: None,
                 additional_details: None,
@@ -1230,6 +1233,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
                 items: Vec::new(),
                 status: AppServerTurnStatus::Failed,
                 error: Some(AppServerTurnError {
+                    misalignment: None,
                     message: "permission denied".to_string(),
                     codex_error_info: None,
                     additional_details: None,
@@ -1364,6 +1368,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
+                misalignment: None,
                 message: "Reconnecting... 1/5".to_string(),
                 codex_error_info: Some(CodexErrorInfo::Other),
                 additional_details: None,
@@ -1398,6 +1403,26 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
 }
 
 #[tokio::test]
+async fn live_app_server_rate_limit_error_renders_upstream_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let error = CodexErr::from(CodexErrorDetails::RateLimitExceeded(
+        "Please try again in 10s.".to_string(),
+    ));
+
+    handle_error(
+        &mut chat,
+        error.to_string(),
+        Some(error.to_codex_protocol_error().into()),
+    );
+
+    let lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_chatwidget_snapshot!("rate_limit_exceeded_error", lines_to_single_string(&lines));
+}
+
+#[tokio::test]
 async fn live_app_server_server_overloaded_error_renders_warning() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1422,6 +1447,7 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
+                misalignment: None,
                 message: "server overloaded".to_string(),
                 codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 additional_details: None,
@@ -1464,6 +1490,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
+                misalignment: None,
                 message: "server fallback message".to_string(),
                 codex_error_info: Some(CodexErrorInfo::CyberPolicy),
                 additional_details: None,

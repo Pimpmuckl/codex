@@ -313,8 +313,15 @@ async fn unauthorized_recovery_retries_only_identity_preserving_reloads() {
 #[tokio::test]
 async fn ambiguous_outcomes_are_not_replayed_and_the_attempt_is_bounded() {
     assert_eq!(
-        classify_error(&ApiError::UsageNotIncluded),
-        WeeklyWindowPingOutcome::Rejected { status: None }
+        [
+            ApiError::UsageNotIncluded,
+            ApiError::RateLimitExceeded {
+                message: "retry later".to_string(),
+                delay: Some(Duration::from_secs(1)),
+            },
+        ]
+        .map(|error| classify_error(&error)),
+        [WeeklyWindowPingOutcome::Rejected { status: None }; 2]
     );
 
     let server = MockServer::start().await;

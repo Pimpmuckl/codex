@@ -131,9 +131,13 @@ async fn run_startup_account_picker_with_events(
                             draw_view(tui, &view)?;
                         }
                     }
-                    TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
+                    TuiEvent::Draw
+                    | TuiEvent::Resume
+                    | TuiEvent::Resize(_)
+                    | TuiEvent::FocusGained => {
                         draw_view(tui, &view)?
                     }
+                    TuiEvent::FocusLost => {}
                 }
             }
             _ = tokio::time::sleep_until(deadline), if auto_pick => {

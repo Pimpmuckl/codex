@@ -13,6 +13,7 @@ use codex_network_proxy::NetworkProxyConfig;
 use codex_network_proxy::NetworkProxyState;
 use codex_network_proxy::build_config_state;
 use codex_windows_sandbox::ChildConsoleMode;
+use codex_windows_sandbox::LaunchDesktop;
 use codex_windows_sandbox::LocalSid;
 use codex_windows_sandbox::ProcessExecutionMode;
 use codex_windows_sandbox::create_process;
@@ -448,7 +449,9 @@ fn run_restricted_child_blocking(
             /*logs_base_dir*/ None,
             /*stdio*/ None,
             /*console_mode*/ ChildConsoleMode::Inherit,
-            /*use_private_desktop*/ false,
+            LaunchDesktop::prepare(
+                /*use_private_desktop*/ false, /*logs_base_dir*/ None,
+            )?,
         )?
     };
     let process = unsafe {
