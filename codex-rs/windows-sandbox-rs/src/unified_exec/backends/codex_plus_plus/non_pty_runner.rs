@@ -47,6 +47,7 @@ pub async fn spawn_current_user_runner_session(
         tty: false,
         stdin_open,
         use_private_desktop: false,
+        private_desktop_name: None,
     };
     let transport = tokio::task::spawn_blocking(move || {
         client::spawn_runner_transport(
@@ -55,6 +56,7 @@ pub async fn spawn_current_user_runner_session(
             client::RunnerLaunch::CurrentUser,
             /*log_dir*/ None,
             request,
+            /*desktop_policy*/ None,
         )
     })
     .await

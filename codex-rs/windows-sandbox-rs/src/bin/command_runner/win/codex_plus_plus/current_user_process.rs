@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_windows_sandbox::LaunchDesktop;
 use codex_windows_sandbox::ProcessExecutionMode;
 use codex_windows_sandbox::SpawnRequest;
 use codex_windows_sandbox::StderrMode;
@@ -19,6 +20,10 @@ pub(in super::super) fn spawn_current_user_process(
         true => StdinMode::Open,
         false => StdinMode::Closed,
     };
+    let desktop = LaunchDesktop::prepare(
+        /*use_private_desktop*/ false,
+        Some(req.codex_home.as_path()),
+    )?;
     let pipes = spawn_process_with_pipes(
         ProcessExecutionMode::CurrentUser,
         &req.command,
@@ -27,7 +32,7 @@ pub(in super::super) fn spawn_current_user_process(
         stdin_mode,
         StderrMode::InheritOutput,
         req.child_console_mode,
-        req.use_private_desktop,
+        desktop,
         Some(req.codex_home.as_path()),
     )?;
     if unsafe { ResumeThread(pipes.process.hThread) } == u32::MAX {

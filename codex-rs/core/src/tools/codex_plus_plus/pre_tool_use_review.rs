@@ -126,7 +126,7 @@ pub(crate) fn review<'a>(
                 ))
             }
             ReviewDecision::Denied { rejection } => Err(rejection),
-            ReviewDecision::TimedOut => Err(guardian_timeout_message(&invocation.turn.model_info)),
+            ReviewDecision::TimedOut => Err(guardian_timeout_message(invocation.turn.model_info())),
             ReviewDecision::Abort => Err(
                 "Automatic approval review was cancelled. The tool call was blocked.".to_string(),
             ),

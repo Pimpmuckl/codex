@@ -1,4 +1,5 @@
 use super::batch_command_line;
+use crate::desktop::LaunchDesktop;
 use crate::ipc_framed::ChildConsoleMode;
 use crate::process::ProcessExecutionMode;
 use crate::process::create_process;
@@ -47,7 +48,10 @@ fn current_user_process_is_assigned_before_create_process_returns() {
                 stderr.as_raw_handle() as HANDLE,
             )),
             ChildConsoleMode::NoWindow,
-            /*use_private_desktop*/ false,
+            LaunchDesktop::prepare(
+                /*use_private_desktop*/ false, /*logs_base_dir*/ None,
+            )
+            .unwrap(),
         )
     }
     .unwrap();

@@ -11,6 +11,7 @@ fn app_server_error(
 ) -> ServerNotification {
     ServerNotification::Error(ErrorNotification {
         error: AppServerTurnError {
+            misalignment: None,
             message: "retry status".to_string(),
             codex_error_info,
             additional_details: None,

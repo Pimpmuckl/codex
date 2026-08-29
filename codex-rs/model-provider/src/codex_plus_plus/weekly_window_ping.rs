@@ -257,6 +257,7 @@ fn classify_error(error: &ApiError) -> WeeklyWindowPingOutcome {
         ApiError::QuotaExceeded
         | ApiError::UsageLimitReached { .. }
         | ApiError::UsageNotIncluded
+        | ApiError::RateLimitExceeded { .. }
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
         | ApiError::CyberPolicy { .. }

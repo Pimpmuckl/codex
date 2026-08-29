@@ -1,4 +1,6 @@
 use crate::codex_plus_plus::current_user_runner;
+use crate::desktop::DesktopPolicy;
+use crate::desktop::shared_private_desktop_for_user;
 use crate::identity::SandboxCreds;
 use crate::ipc_framed::ErrorPayload;
 use crate::ipc_framed::ErrorStage;
@@ -351,7 +353,8 @@ pub(crate) fn spawn_runner_transport(
     cwd: &Path,
     launch: RunnerLaunch<'_>,
     log_dir: Option<&Path>,
-    spawn_request: SpawnRequest,
+    mut spawn_request: SpawnRequest,
+    desktop_policy: Option<&DesktopPolicy>,
 ) -> Result<RunnerTransport> {
     fn current_username() -> Result<String> {
         let mut len: u32 = 0;
@@ -364,6 +367,12 @@ pub(crate) fn spawn_runner_transport(
         }
         Ok(String::from_utf16_lossy(&buffer[..len as usize]))
     }
+    spawn_request.private_desktop_name = match launch {
+        RunnerLaunch::CurrentUser => None,
+        RunnerLaunch::Logon(sandbox_creds) => desktop_policy
+            .map(|policy| shared_private_desktop_for_user(&sandbox_creds.username, policy, log_dir))
+            .transpose()?,
+    };
     let (pipe_in_name, pipe_out_name) = pipe_pair();
     let pipe_username = match launch {
         RunnerLaunch::CurrentUser => current_username()?,

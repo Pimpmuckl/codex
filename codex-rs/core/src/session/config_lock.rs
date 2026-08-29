@@ -115,16 +115,17 @@ fn session_configuration_to_lock_config_toml(
 /// These values are not always present in the raw layer stack, so copy them
 /// from the live session when the lockfile should be fully self-contained.
 fn save_session_resolved_fields(sc: &SessionConfiguration, lock_config: &mut ConfigToml) {
-    lock_config.model = Some(sc.collaboration_mode.model().to_string());
-    lock_config.model_reasoning_effort = sc.collaboration_mode.reasoning_effort();
-    lock_config.model_reasoning_summary = sc.model_reasoning_summary;
-    lock_config.service_tier = sc.service_tier.clone();
+    let settings = sc.step_settings.as_ref();
+    lock_config.model = Some(settings.collaboration_mode.model().to_string());
+    lock_config.model_reasoning_effort = settings.collaboration_mode.reasoning_effort();
+    lock_config.model_reasoning_summary = settings.reasoning_summary;
+    lock_config.service_tier = settings.service_tier.clone();
     lock_config.instructions = Some(sc.base_instructions.clone());
     lock_config.developer_instructions = sc.developer_instructions.clone();
     lock_config.compact_prompt = sc.original_config_do_not_use.compact_prompt.clone();
-    lock_config.personality = sc.personality;
-    lock_config.approval_policy = Some(sc.approval_policy.value());
-    lock_config.approvals_reviewer = Some(sc.approvals_reviewer);
+    lock_config.personality = settings.personality;
+    lock_config.approval_policy = Some(settings.approval_policy.value());
+    lock_config.approvals_reviewer = Some(settings.approvals_reviewer);
 }
 
 /// Saves values stored on `Config` after higher-level resolution,
@@ -318,10 +319,13 @@ mod tests {
             lock.compact_prompt,
             sc.original_config_do_not_use.compact_prompt
         );
-        assert_eq!(lock.model, Some(sc.collaboration_mode.model().to_string()));
+        assert_eq!(
+            lock.model,
+            Some(sc.step_settings.collaboration_mode.model().to_string())
+        );
         assert_eq!(
             lock.model_reasoning_effort,
-            sc.collaboration_mode.reasoning_effort()
+            sc.step_settings.collaboration_mode.reasoning_effort()
         );
         assert_eq!(lock.profile, None);
         assert!(lock.profiles.is_empty());
@@ -451,7 +455,7 @@ mod tests {
         sc.original_config_do_not_use = Arc::new(config);
         sc.base_instructions = "catalog instructions".to_string();
         sc.developer_instructions = Some("catalog developer instructions".to_string());
-        sc.service_tier = Some("flex".to_string());
+        Arc::make_mut(&mut sc.step_settings).service_tier = Some("flex".to_string());
 
         let lockfile = sc.to_config_lockfile_toml().expect("lock should serialize");
         let lock = &lockfile.config;

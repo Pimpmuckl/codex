@@ -26,7 +26,7 @@ use std::path::PathBuf;
 const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
 
 /// Protocol version shared by the parent process and elevated command runner.
-pub const IPC_PROTOCOL_VERSION: u8 = 5;
+pub const IPC_PROTOCOL_VERSION: u8 = 6;
 
 /// Length-prefixed, JSON-encoded frame.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -76,6 +76,8 @@ pub struct SpawnRequest {
     pub stdin_open: bool,
     #[serde(default)]
     pub use_private_desktop: bool,
+    /// Private desktop kept alive by the parent across command runners.
+    pub private_desktop_name: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -247,7 +249,8 @@ mod tests {
                     timeout_ms: Some(1000),
                     tty: false,
                     stdin_open: false,
-                    use_private_desktop: false,
+                    use_private_desktop: true,
+                    private_desktop_name: Some("CodexSandboxDesktop-1234".to_string()),
                 }),
             },
         };
@@ -265,6 +268,10 @@ mod tests {
         };
         assert_eq!(PermissionProfile::read_only(), payload.permission_profile);
         assert_eq!(workspace_roots, payload.workspace_roots);
+        assert_eq!(
+            Some("CodexSandboxDesktop-1234"),
+            payload.private_desktop_name.as_deref()
+        );
         assert_eq!(
             Some("S-1-5-21-100-200-300-400"),
             payload.network_proxy_restricting_sid.as_deref()
