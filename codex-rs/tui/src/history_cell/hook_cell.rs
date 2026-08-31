@@ -160,6 +160,19 @@ impl HookCell {
         self.runs.iter().any(|run| run.state.should_render())
     }
 
+    pub(crate) fn has_only_successful_completions(&self) -> bool {
+        !self.runs.is_empty()
+            && self.runs.iter().all(|run| {
+                matches!(
+                    &run.state,
+                    HookRunState::Completed {
+                        status: HookRunStatus::Completed,
+                        ..
+                    }
+                )
+            })
+    }
+
     pub(crate) fn compact_transient_status(&self) -> Option<String> {
         if self
             .runs
