@@ -2,6 +2,7 @@ use super::ChatWidget;
 use super::transient_status;
 use crate::exec_cell::ExecCell;
 use crate::history_cell::HistoryCell;
+use crate::history_cell::HookCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PatchHistoryCell;
 use crate::history_cell::WebSearchCell;
@@ -122,6 +123,10 @@ pub(super) fn compact_success_is_transcript_only(cell: &dyn HistoryCell) -> bool
             .as_any()
             .downcast_ref::<WebSearchCell>()
             .is_some_and(WebSearchCell::is_completed)
+        || cell
+            .as_any()
+            .downcast_ref::<HookCell>()
+            .is_some_and(HookCell::has_only_successful_completions)
 }
 
 #[cfg(test)]

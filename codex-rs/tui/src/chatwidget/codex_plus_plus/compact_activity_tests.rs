@@ -14,7 +14,7 @@ fn text(lines: Vec<Line<'static>>) -> String {
 }
 #[tokio::test]
 async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
-    let (mut chat, _sender, _events, _operations) = make_chatwidget_manual_with_sender().await;
+    let (mut chat, _sender, mut events, _operations) = make_chatwidget_manual_with_sender().await;
     chat.config.codex_plus_plus_tool_activity = codex_config::ToolActivityPresentation::Compact;
     let mut exec = new_active_exec_command(
         "exec".to_string(),
@@ -68,6 +68,54 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
         "compact policy".to_string(),
         codex_app_server_protocol::WebSearchAction::Other,
     )));
+    let hook_source_path = chat.config.cwd.clone();
+    let hook_run = |id: &str,
+                    event_name: codex_app_server_protocol::HookEventName,
+                    status: codex_app_server_protocol::HookRunStatus,
+                    entries: Vec<codex_app_server_protocol::HookOutputEntry>| {
+        codex_app_server_protocol::HookRunSummary {
+            id: id.to_string(),
+            event_name,
+            handler_type: codex_app_server_protocol::HookHandlerType::Command,
+            execution_mode: codex_app_server_protocol::HookExecutionMode::Sync,
+            scope: codex_app_server_protocol::HookScope::Turn,
+            source_path: hook_source_path.clone(),
+            source: codex_app_server_protocol::HookSource::User,
+            display_order: 0,
+            status,
+            status_message: Some("checking command policy".to_string()),
+            started_at: 1,
+            completed_at: Some(2),
+            duration_ms: Some(1),
+            entries,
+        }
+    };
+    chat.on_hook_completed(hook_run(
+        "pre-tool-use:0:/tmp/hooks.json",
+        codex_app_server_protocol::HookEventName::PreToolUse,
+        codex_app_server_protocol::HookRunStatus::Completed,
+        vec![codex_app_server_protocol::HookOutputEntry {
+            kind: codex_app_server_protocol::HookOutputEntryKind::Feedback,
+            text: "DCG flagged core.git:git-alias-semantic-unverified".to_string(),
+        }],
+    ));
+    let completed_hook = match events.try_recv().expect("completed hook history") {
+        crate::app_event::AppEvent::InsertHistoryCell(cell) => cell,
+        event => panic!("expected completed hook history, got {event:?}"),
+    };
+    chat.on_hook_completed(hook_run(
+        "post-tool-use:0:/tmp/hooks.json",
+        codex_app_server_protocol::HookEventName::PostToolUse,
+        codex_app_server_protocol::HookRunStatus::Failed,
+        vec![codex_app_server_protocol::HookOutputEntry {
+            kind: codex_app_server_protocol::HookOutputEntryKind::Error,
+            text: "hook exited with code 7".to_string(),
+        }],
+    ));
+    let failed_hook = match events.try_recv().expect("failed hook history") {
+        crate::app_event::AppEvent::InsertHistoryCell(cell) => cell,
+        event => panic!("expected failed hook history, got {event:?}"),
+    };
     let patch = chat.compact_history_cell(Box::new(history_cell::new_patch_event(
         std::collections::HashMap::from([(
             std::path::PathBuf::from("src/lib.rs"),
@@ -78,17 +126,21 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
         &chat.config.cwd,
     )));
     insta::assert_snapshot!(format!(
-        "status:\n{}\nmain:\n{}\n{}\n{}\n{}\n{}\ntranscript:\n{}\n{}\n{}\n{}\n{}",
+        "status:\n{}\nmain:\n{}\n{}\n{}\n{}\n{}\n{}\n{}\ntranscript:\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
         chat.status_state.current_status.header,
         text(exec.display_lines(80)),
         text(parallel.display_lines(80)),
         text(mcp.display_lines(80)),
         text(web.display_lines(80)),
+        text(completed_hook.display_lines(80)),
+        text(failed_hook.display_lines(80)),
         text(patch.display_lines(80)),
         text(exec.transcript_lines(80)),
         text(parallel.transcript_lines(80)),
         text(mcp.transcript_lines(80)),
         text(web.transcript_lines(80)),
+        text(completed_hook.transcript_lines(80)),
+        text(failed_hook.transcript_lines(80)),
         text(patch.transcript_lines(80)),
     ), @r###"
     status:
@@ -98,6 +150,9 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
 
 
 
+
+    • PostToolUse hook (failed)
+      error: hook exited with code 7
     • Added src/lib.rs (+1 -0)
     transcript:
     $ 'printf one'
@@ -107,6 +162,10 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
     • Called workspace.inspect({"path":"README.md"})
       └ full result
     • Searched the web for compact policy
+    • PreToolUse hook (completed)
+      feedback: DCG flagged core.git:git-alias-semantic-unverified
+    • PostToolUse hook (failed)
+      error: hook exited with code 7
     • Added src/lib.rs (+1 -0)
         1 +new
     "###);
