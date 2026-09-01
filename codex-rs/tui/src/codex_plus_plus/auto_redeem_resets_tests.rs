@@ -73,6 +73,9 @@ fn usage(used_percent: f64, resets_at: Option<i64>, reached: bool) -> RateLimits
             rate_limit_reached_type: reached.then_some(RateLimitReachedType::RateLimitReached),
         }],
         rate_limit_reset_credits: None,
+        account_id: None,
+        user_id: None,
+        rate_limit_upsell: None,
     }
 }
 

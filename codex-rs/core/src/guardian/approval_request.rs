@@ -38,6 +38,8 @@ pub(crate) enum GuardianApprovalRequest {
         input: String,
         cwd: PathUri,
         tty: bool,
+        sandbox_permissions: crate::sandboxing::SandboxPermissions,
+        additional_permissions: Option<AdditionalPermissionProfile>,
     },
     #[cfg(unix)]
     Execve {
@@ -140,6 +142,8 @@ struct WriteStdinApprovalAction<'a> {
     chars: &'a str,
     cwd: LegacyAppPathString,
     sandbox_permissions: crate::sandboxing::SandboxPermissions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    additional_permissions: Option<&'a AdditionalPermissionProfile>,
     tty: bool,
 }
 
@@ -347,6 +351,8 @@ pub(crate) fn guardian_approval_request_to_json(
             input,
             cwd,
             tty,
+            sandbox_permissions,
+            additional_permissions,
             ..
         } => serialize_guardian_action(WriteStdinApprovalAction {
             tool: "write_stdin",
@@ -354,7 +360,8 @@ pub(crate) fn guardian_approval_request_to_json(
             session_id: *process_id,
             chars: input,
             cwd: cwd.clone().into(),
-            sandbox_permissions: crate::sandboxing::SandboxPermissions::RequireEscalated,
+            sandbox_permissions: *sandbox_permissions,
+            additional_permissions: additional_permissions.as_ref(),
             tty: *tty,
         }),
         #[cfg(unix)]
