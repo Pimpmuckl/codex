@@ -13,6 +13,7 @@ use codex_features::RolloutBudgetConfigToml;
 use codex_features::TokenBudgetConfigToml;
 use codex_features::ToolRegistryConfigToml;
 use codex_protocol::ThreadId;
+use codex_protocol::models::BaseInstructionsProvenance;
 
 use crate::config::Config;
 use crate::config_lock::ConfigLockReplayOptions;
@@ -25,6 +26,7 @@ use super::SessionConfiguration;
 
 pub(crate) async fn validate_config_lock_if_configured(
     session_configuration: &SessionConfiguration,
+    base_instructions_provenance: Option<&BaseInstructionsProvenance>,
 ) -> anyhow::Result<()> {
     if session_configuration.session_source.is_non_root_agent() {
         return Ok(());
@@ -36,7 +38,8 @@ pub(crate) async fn validate_config_lock_if_configured(
     else {
         return Ok(());
     };
-    let actual = session_configuration.to_config_lockfile_toml()?;
+    let actual = session_configuration
+        .to_config_lockfile_toml_with_provenance(base_instructions_provenance)?;
     let config = session_configuration.original_config_do_not_use.as_ref();
     let options = ConfigLockReplayOptions {
         allow_codex_version_mismatch: config.config_lock_allow_codex_version_mismatch,
@@ -48,6 +51,7 @@ pub(crate) async fn validate_config_lock_if_configured(
 
 pub(crate) async fn export_config_lock_if_configured(
     session_configuration: &SessionConfiguration,
+    base_instructions_provenance: Option<&BaseInstructionsProvenance>,
     conversation_id: ThreadId,
 ) -> anyhow::Result<()> {
     let config = session_configuration.original_config_do_not_use.as_ref();
@@ -55,7 +59,8 @@ pub(crate) async fn export_config_lock_if_configured(
         return Ok(());
     };
 
-    let lock = session_configuration.to_config_lockfile_toml()?;
+    let lock = session_configuration
+        .to_config_lockfile_toml_with_provenance(base_instructions_provenance)?;
     let lock = toml::to_string_pretty(&lock).context("failed to serialize config lock")?;
     let path = export_dir.join(format!("{conversation_id}.config.lock.toml"));
 
@@ -75,15 +80,25 @@ pub(crate) async fn export_config_lock_if_configured(
 }
 
 impl SessionConfiguration {
+    #[cfg(test)]
     pub(crate) fn to_config_lockfile_toml(&self) -> anyhow::Result<ConfigLockfileToml> {
+        self.to_config_lockfile_toml_with_provenance(None)
+    }
+
+    fn to_config_lockfile_toml_with_provenance(
+        &self,
+        base_instructions_provenance: Option<&BaseInstructionsProvenance>,
+    ) -> anyhow::Result<ConfigLockfileToml> {
         Ok(config_lockfile(session_configuration_to_lock_config_toml(
             self,
+            base_instructions_provenance,
         )?))
     }
 }
 
 fn session_configuration_to_lock_config_toml(
     sc: &SessionConfiguration,
+    base_instructions_provenance: Option<&BaseInstructionsProvenance>,
 ) -> anyhow::Result<ConfigToml> {
     let config = sc.original_config_do_not_use.as_ref();
     // Start from the resolved layer stack, then patch in values that are only
@@ -95,7 +110,7 @@ fn session_configuration_to_lock_config_toml(
         .try_into()
         .context("failed to deserialize effective config for config lock")?;
     if config.config_lock_save_fields_resolved_from_model_catalog {
-        save_session_resolved_fields(sc, &mut lock_config);
+        save_session_resolved_fields(sc, base_instructions_provenance, &mut lock_config);
     }
 
     save_config_resolved_fields(config, &mut lock_config)?;
@@ -114,13 +129,29 @@ fn session_configuration_to_lock_config_toml(
 ///
 /// These values are not always present in the raw layer stack, so copy them
 /// from the live session when the lockfile should be fully self-contained.
-fn save_session_resolved_fields(sc: &SessionConfiguration, lock_config: &mut ConfigToml) {
+fn save_session_resolved_fields(
+    sc: &SessionConfiguration,
+    base_instructions_provenance: Option<&BaseInstructionsProvenance>,
+    lock_config: &mut ConfigToml,
+) {
     let settings = sc.step_settings.as_ref();
     lock_config.model = Some(settings.collaboration_mode.model().to_string());
     lock_config.model_reasoning_effort = settings.collaboration_mode.reasoning_effort();
     lock_config.model_reasoning_summary = settings.reasoning_summary;
     lock_config.service_tier = settings.service_tier.clone();
-    lock_config.instructions = Some(sc.base_instructions.clone());
+    lock_config.instructions = Some(
+        if !sc.original_config_do_not_use.update_plan_enabled
+            && sc.original_config_do_not_use.model_catalog.is_none()
+            && matches!(
+                base_instructions_provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            )
+        {
+            crate::context::without_update_plan_instructions(&sc.base_instructions)
+        } else {
+            sc.base_instructions.clone()
+        },
+    );
     lock_config.developer_instructions = sc.developer_instructions.clone();
     lock_config.compact_prompt = sc.original_config_do_not_use.compact_prompt.clone();
     lock_config.personality = settings.personality;
@@ -419,6 +450,28 @@ mod tests {
         );
 
         assert_eq!(lockfile.version, crate::config_lock::CONFIG_LOCK_VERSION);
+    }
+
+    #[tokio::test]
+    async fn lock_stores_the_rendered_model_prompt_when_update_plan_is_disabled() {
+        let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
+        let mut config = (*sc.original_config_do_not_use).clone();
+        config.update_plan_enabled = false;
+        config.model_catalog = None;
+        sc.original_config_do_not_use = Arc::new(config);
+        sc.base_instructions = "Base\n\n## `update_plan`\nYou have access to an `update_plan` tool.\n\n## Keep\nKeep me.\n".to_string();
+        let provenance = BaseInstructionsProvenance::Model {
+            model: sc.step_settings.collaboration_mode.model().to_string(),
+        };
+
+        let lock = sc
+            .to_config_lockfile_toml_with_provenance(Some(&provenance))
+            .expect("lock should serialize");
+
+        assert_eq!(
+            lock.config.instructions.as_deref(),
+            Some("Base\n\n## Keep\nKeep me.\n")
+        );
     }
 
     #[tokio::test]

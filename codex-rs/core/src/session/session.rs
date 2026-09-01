@@ -1243,8 +1243,17 @@ impl Session {
                 );
             }
             session_configuration.thread_name = thread_name.clone();
-            validate_config_lock_if_configured(&session_configuration).await?;
-            export_config_lock_if_configured(&session_configuration, thread_id).await?;
+            validate_config_lock_if_configured(
+                &session_configuration,
+                base_instructions_provenance.as_ref(),
+            )
+            .await?;
+            export_config_lock_if_configured(
+                &session_configuration,
+                base_instructions_provenance.as_ref(),
+                thread_id,
+            )
+            .await?;
             let mut state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
