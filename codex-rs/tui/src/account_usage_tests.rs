@@ -46,6 +46,9 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
             rate_limit_reached_type: None,
         }],
         rate_limit_reset_credits: None,
+        account_id: None,
+        user_id: None,
+        rate_limit_upsell: None,
     };
 
     assert_eq!(
@@ -131,6 +134,9 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
             rate_limit_reached_type: None,
         }],
         rate_limit_reset_credits: None,
+        account_id: None,
+        user_id: None,
+        rate_limit_upsell: None,
     };
 
     assert_eq!(

@@ -303,6 +303,7 @@ impl App {
                         codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm {
                             ..
                         }
+                        | codex_app_server_protocol::McpServerElicitationRequest::OpenAiElicitationForm { .. }
                         | codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => {
                             self.app_event_tx.resolve_elicitation(
                                 thread_id,
@@ -1667,7 +1668,10 @@ impl App {
 
         match &params.request {
             codex_app_server_protocol::McpServerElicitationRequest::Form { .. } => true,
-            codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm { .. } => false,
+            codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm { .. }
+            | codex_app_server_protocol::McpServerElicitationRequest::OpenAiElicitationForm {
+                ..
+            } => false,
             request @ codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => {
                 let thread_id = ThreadId::from_string(&params.thread_id)
                     .unwrap_or_else(|_| self.chat_widget.thread_id().unwrap_or_default());

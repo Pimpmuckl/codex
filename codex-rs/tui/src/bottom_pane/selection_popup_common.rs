@@ -455,6 +455,12 @@ fn adjust_start_for_wrapped_selection_visibility(
 /// and behavior for selection popups.
 /// Returns the number of terminal lines actually rendered (including the
 /// single-line empty placeholder when shown).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RenderedRows {
+    pub(crate) lines: u16,
+    pub(crate) items: usize,
+}
+
 fn render_rows_inner(
     area: Rect,
     buf: &mut Buffer,
@@ -463,18 +469,21 @@ fn render_rows_inner(
     max_results: usize,
     empty_message: &str,
     column_width: ColumnWidthConfig,
-) -> u16 {
+) -> RenderedRows {
     if rows_all.is_empty() {
         if area.height > 0 {
             Line::from(empty_message.dim().italic()).render(area, buf);
         }
         // Count the placeholder line only when there is vertical space to draw it.
-        return u16::from(area.height > 0);
+        return RenderedRows {
+            lines: u16::from(area.height > 0),
+            items: 0,
+        };
     }
 
     let max_items = max_results.min(rows_all.len());
     if max_items == 0 {
-        return 0;
+        return RenderedRows::default();
     }
     let desc_measure_items = max_items.min(area.height.max(1) as usize);
 
@@ -502,6 +511,7 @@ fn render_rows_inner(
     // shared description column. Stop when we run out of vertical space.
     let mut cur_y = area.y;
     let mut rendered_lines: u16 = 0;
+    let mut rendered_items = 0;
     for (i, row) in rows_all.iter().enumerate().skip(start_idx).take(max_items) {
         if cur_y >= area.y + area.height {
             break;
@@ -516,6 +526,7 @@ fn render_rows_inner(
         );
 
         // Render the wrapped lines.
+        let mut rendered_item = false;
         for line in wrapped {
             if cur_y >= area.y + area.height {
                 break;
@@ -531,10 +542,17 @@ fn render_rows_inner(
             );
             cur_y = cur_y.saturating_add(1);
             rendered_lines = rendered_lines.saturating_add(1);
+            rendered_item = true;
+        }
+        if rendered_item {
+            rendered_items += 1;
         }
     }
 
-    rendered_lines
+    RenderedRows {
+        lines: rendered_lines,
+        items: rendered_items,
+    }
 }
 
 /// Render a list of rows using the provided ScrollState, with shared styling
@@ -562,6 +580,7 @@ pub(crate) fn render_rows(
         empty_message,
         ColumnWidthConfig::default(),
     )
+    .lines
 }
 
 /// Render a list of rows using the provided ScrollState and explicit
@@ -569,7 +588,7 @@ pub(crate) fn render_rows(
 ///
 /// This is the low-level entry point for callers that need to thread a mode
 /// through higher-level configuration.
-/// Returns the number of terminal lines actually rendered.
+/// Returns the terminal lines and selectable items actually rendered.
 pub(crate) fn render_rows_with_col_width_mode(
     area: Rect,
     buf: &mut Buffer,
@@ -578,7 +597,7 @@ pub(crate) fn render_rows_with_col_width_mode(
     max_results: usize,
     empty_message: &str,
     column_width: ColumnWidthConfig,
-) -> u16 {
+) -> RenderedRows {
     render_rows_inner(
         area,
         buf,
@@ -612,10 +631,12 @@ pub(crate) fn render_rows_single_line(
         empty_message,
         ColumnWidthConfig::default(),
     )
+    .lines
 }
 
 /// Render a list of rows as a single line each (no wrapping), truncating overflow with an
 /// ellipsis while honoring the configured column width behavior.
+/// Returns the terminal lines and selectable items actually rendered.
 pub(crate) fn render_rows_single_line_with_col_width_mode(
     area: Rect,
     buf: &mut Buffer,
@@ -624,13 +645,16 @@ pub(crate) fn render_rows_single_line_with_col_width_mode(
     max_results: usize,
     empty_message: &str,
     column_width: ColumnWidthConfig,
-) -> u16 {
+) -> RenderedRows {
     if rows_all.is_empty() {
         if area.height > 0 {
             Line::from(empty_message.dim().italic()).render(area, buf);
         }
         // Count the placeholder line only when there is vertical space to draw it.
-        return u16::from(area.height > 0);
+        return RenderedRows {
+            lines: u16::from(area.height > 0),
+            items: 0,
+        };
     }
 
     let visible_items = max_results
@@ -689,7 +713,10 @@ pub(crate) fn render_rows_single_line_with_col_width_mode(
         rendered_lines = rendered_lines.saturating_add(1);
     }
 
-    rendered_lines
+    RenderedRows {
+        lines: rendered_lines,
+        items: rendered_lines as usize,
+    }
 }
 
 /// Compute the number of terminal rows required to render up to `max_results`

@@ -24,6 +24,29 @@ fn transcript_v2_resolves_explicit_config_overrides() {
 }
 
 #[test]
+fn sleep_tool_config_rejects_unknown_mode() {
+    assert!(toml::from_str::<FeaturesToml>("[sleep_tool]\nmode = 'off'").is_err());
+}
+
+#[test]
+fn materializing_sleep_tool_preserves_mode() {
+    let mut config = toml::from_str::<FeaturesToml>("[sleep_tool]\nmode = 'always_on'")
+        .expect("sleep tool config should deserialize");
+    let mut features = Features::with_defaults();
+    features.disable(Feature::SleepTool);
+
+    config.materialize_resolved_enabled(&features);
+
+    assert_eq!(
+        config.sleep_tool,
+        Some(FeatureToml::Config(crate::SleepToolConfigToml {
+            enabled: Some(false),
+            mode: Some(crate::SleepToolMode::AlwaysOn),
+        }))
+    );
+}
+
+#[test]
 fn under_development_features_are_disabled_by_default() {
     for spec in crate::FEATURES {
         if matches!(spec.stage, Stage::UnderDevelopment) {
