@@ -50,6 +50,9 @@ add local requirements but must not weaken these rules.
   opportunistic upstream fixes in an integration.
 - Reviews of upstream integrations may fix only fork regressions and incorrect conflict
   resolutions. Upstream defects are report-only.
+- Do not run automated reviews against upstream commits or the full upstream integration diff.
+  Review only when the tool can target the fork-authored commits or exact conflict/seam diff;
+  otherwise use the bounded conflict audit and focused validation.
 
 ## Maintain the fork ledger
 

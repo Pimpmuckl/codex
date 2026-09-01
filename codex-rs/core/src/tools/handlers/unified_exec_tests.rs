@@ -349,22 +349,17 @@ async fn exec_command_pre_tool_use_payload_resolves_remote_target() -> anyhow::R
 #[tokio::test]
 async fn exec_command_pre_tool_use_payload_resolves_local_shell_identity() -> anyhow::Result<()> {
     let temp_dir = tempfile::tempdir()?;
-    let cases: [(&str, ShellType, &str, &[&str]); 5] = [
-        ("bash", ShellType::Bash, "Bash", &[]),
-        ("sh", ShellType::Sh, "Bash", &[]),
-        ("zsh", ShellType::Zsh, "Bash", &[]),
-        (
-            "powershell.exe",
-            ShellType::PowerShell,
-            "PowerShell",
-            &["Bash"],
-        ),
-        ("cmd.exe", ShellType::Cmd, "cmd.exe", &["Bash"]),
-    ];
+    let cases = ["bash", "sh", "zsh", "powershell.exe", "cmd.exe"];
 
-    for (shell_name, shell_type, hook_name, matcher_aliases) in cases {
+    for shell_name in cases {
         let shell_path = temp_dir.path().join(shell_name);
         std::fs::write(&shell_path, "")?;
+        let resolved_shell = crate::shell::get_shell_by_model_provided_path(&shell_path);
+        let (hook_name, matcher_aliases): (&str, &[&str]) = match resolved_shell.shell_type {
+            ShellType::Bash | ShellType::Sh | ShellType::Zsh => ("Bash", &[]),
+            ShellType::PowerShell => ("PowerShell", &["Bash"]),
+            ShellType::Cmd => ("cmd.exe", &["Bash"]),
+        };
         let payload = ToolPayload::Function {
             arguments: serde_json::json!({
                 "cmd": "echo exact shell",
@@ -382,8 +377,8 @@ async fn exec_command_pre_tool_use_payload_resolves_local_shell_identity() -> an
             );
         expected_target.exec_command_shell = Some(
             crate::tools::codex_plus_plus::pre_tool_use_review::ExecCommandShellTarget {
-                shell_type,
-                executable_path: shell_path.clone(),
+                shell_type: resolved_shell.shell_type,
+                executable_path: resolved_shell.shell_path,
             },
         );
         let hook_payload = ExecCommandHandler::default()
