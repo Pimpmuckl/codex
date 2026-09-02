@@ -69,6 +69,14 @@ pub struct Cli {
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
 
+    /// Immediately select the recommended eligible account without showing the startup picker.
+    #[arg(
+        long = "auto-account",
+        default_value_t = false,
+        help = "Immediately select the recommended eligible account without showing the startup picker."
+    )]
+    pub auto_account: bool,
+
     /// Disable alternate screen mode
     ///
     /// Runs the TUI in inline mode, preserving terminal scrollback history.
