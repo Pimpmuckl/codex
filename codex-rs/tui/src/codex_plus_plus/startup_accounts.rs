@@ -44,16 +44,14 @@ pub(crate) async fn run_startup_account_picker(
     tui: &mut Tui,
     config: &Config,
     app_server_target: &AppServerTarget,
+    auto_account: bool,
 ) -> color_eyre::Result<StartupAccountSelection> {
     if !app_server_target.supports_startup_account_picker()
         || !config.model_provider.requires_openai_auth
         || config.forced_login_method == Some(ForcedLoginMethod::Api)
-        || !root_auth_allows_imported_account_picker(config)
+        || !root_auth_allows_imported_account_picker(config, auto_account)
     {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
+        return continue_without_account(auto_account);
     }
 
     let store = AccountStore::new(config.codex_home.to_path_buf());
@@ -77,13 +75,11 @@ pub(crate) async fn run_startup_account_picker(
     if !auth_config
         .is_login_method_allowed(codex_protocol::config_types::ForcedLoginMethod::Chatgpt)
     {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
+        return continue_without_account(auto_account);
     }
     let mut selectable_accounts = store.enabled_file_accounts()?;
     if config.automatic_account_selection == AutomaticAccountSelection::Disabled
+        && !auto_account
         && root_auth_is_marker
         && let Some(current_account_id) = current_account_id.as_ref()
         && let Some(current_account) = store
@@ -126,10 +122,7 @@ pub(crate) async fn run_startup_account_picker(
         .filter(|candidate| candidate.enabled && selectable_homes.contains_key(&candidate.id))
         .collect();
     if candidates.is_empty() {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
+        return continue_without_account(auto_account);
     }
 
     let usage = account_usage::load(config, &selectable_accounts, &store).await;
@@ -147,15 +140,13 @@ pub(crate) async fn run_startup_account_picker(
     .await??;
     candidates.retain(|candidate| {
         !login_required.contains(&candidate.id)
-            || (config.automatic_account_selection == AutomaticAccountSelection::Disabled
+            || (!auto_account
+                && config.automatic_account_selection == AutomaticAccountSelection::Disabled
                 && root_auth_is_marker
                 && current_account_id.as_ref() == Some(&candidate.id))
     });
     if candidates.is_empty() {
-        return Ok(StartupAccountSelection::Continue {
-            selected_account_id: None,
-            reload_cloud_config: false,
-        });
+        return continue_without_account(auto_account);
     }
     stop_cloud_config_refresh_before_account_picker().await;
     let mut picker_candidates: Vec<_> = candidates
@@ -170,25 +161,36 @@ pub(crate) async fn run_startup_account_picker(
         })
         .collect();
     let automatic_default_idx = automatic_default_index(&candidates, &picker_candidates);
-    let manual_default_idx = account_picker::recommended_candidate_index(&picker_candidates);
-    let (default_idx, mode) = match (config.automatic_account_selection, automatic_default_idx) {
-        (AutomaticAccountSelection::Enabled, Some(default_idx)) => {
-            (default_idx, account_picker::StartupAccountPickerMode::Timed)
+    let (selected_id, reload_cloud_config) = if auto_account {
+        let Some(default_idx) = automatic_default_idx else {
+            return continue_without_account(auto_account);
+        };
+        (candidates[default_idx].id.to_string(), true)
+    } else {
+        let manual_default_idx = account_picker::recommended_candidate_index(&picker_candidates);
+        let (default_idx, mode) = match (config.automatic_account_selection, automatic_default_idx)
+        {
+            (AutomaticAccountSelection::Enabled, Some(default_idx)) => {
+                (default_idx, account_picker::StartupAccountPickerMode::Timed)
+            }
+            (AutomaticAccountSelection::Enabled, None)
+            | (AutomaticAccountSelection::Disabled, _) => (
+                manual_default_idx,
+                account_picker::StartupAccountPickerMode::Manual,
+            ),
+        };
+        picker_candidates[default_idx].is_default = true;
+        let Some(selection) =
+            account_picker::run_startup_account_picker(tui, picker_candidates, mode).await?
+        else {
+            return Ok(StartupAccountSelection::Exit);
+        };
+        match selection {
+            account_picker::StartupAccountPickerSelection::Automatic(account_id) => {
+                (account_id, true)
+            }
+            account_picker::StartupAccountPickerSelection::User(account_id) => (account_id, true),
         }
-        (AutomaticAccountSelection::Enabled, None) | (AutomaticAccountSelection::Disabled, _) => (
-            manual_default_idx,
-            account_picker::StartupAccountPickerMode::Manual,
-        ),
-    };
-    picker_candidates[default_idx].is_default = true;
-    let Some(selection) =
-        account_picker::run_startup_account_picker(tui, picker_candidates, mode).await?
-    else {
-        return Ok(StartupAccountSelection::Exit);
-    };
-    let (selected_id, reload_cloud_config) = match selection {
-        account_picker::StartupAccountPickerSelection::Automatic(account_id) => (account_id, true),
-        account_picker::StartupAccountPickerSelection::User(account_id) => (account_id, true),
     };
 
     let selected_account = candidates
@@ -230,7 +232,17 @@ fn automatic_default_index(
     })
 }
 
-fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
+fn continue_without_account(auto_account: bool) -> color_eyre::Result<StartupAccountSelection> {
+    if auto_account {
+        color_eyre::eyre::bail!("no eligible account is available for --auto-account");
+    }
+    Ok(StartupAccountSelection::Continue {
+        selected_account_id: None,
+        reload_cloud_config: false,
+    })
+}
+
+fn root_auth_allows_imported_account_picker(config: &Config, auto_account: bool) -> bool {
     match load_auth_dot_json(
         config.codex_home.as_path(),
         config.cli_auth_credentials_store_mode,
@@ -238,7 +250,8 @@ fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
     ) {
         Ok(Some(auth)) => match auth.auth_mode {
             Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens) => {
-                config.automatic_account_selection == AutomaticAccountSelection::Enabled
+                auto_account
+                    || config.automatic_account_selection == AutomaticAccountSelection::Enabled
                     || auth
                         .tokens
                         .is_some_and(|tokens| tokens.refresh_token.is_empty())
@@ -257,7 +270,8 @@ fn root_auth_allows_imported_account_picker(config: &Config) -> bool {
                     && auth.bedrock_api_key.is_none()
                     && auth.bedrock_access_keys.is_none()
                     && auth.agent_identity.is_none()
-                    && (config.automatic_account_selection == AutomaticAccountSelection::Enabled
+                    && (auto_account
+                        || config.automatic_account_selection == AutomaticAccountSelection::Enabled
                         || auth
                             .tokens
                             .is_none_or(|tokens| tokens.refresh_token.is_empty()))

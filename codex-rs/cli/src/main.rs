@@ -2858,6 +2858,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
         strict_config,
         approval_policy,
         web_search,
+        auto_account,
         no_alt_screen,
         prompt,
         mut config_overrides,
@@ -2878,6 +2879,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
     if web_search {
         interactive.web_search = true;
     }
+    interactive.auto_account |= auto_account;
     interactive.no_alt_screen |= no_alt_screen;
     if strict_config {
         interactive.strict_config = true;
@@ -3327,6 +3329,19 @@ mod tests {
 
             assert!(!help.contains("--not-so-yolo"), "{help}");
         }
+    }
+
+    #[test]
+    fn auto_account_is_exposed_in_help() {
+        let help = help_from_args(&["codex", "--help"]);
+
+        assert!(help.contains("--auto-account"), "{help}");
+        assert!(
+            help.contains(
+                "Immediately select the recommended eligible account without showing the startup picker."
+            ),
+            "{help}"
+        );
     }
 
     #[test]

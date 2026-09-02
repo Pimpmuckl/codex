@@ -75,7 +75,19 @@ async fn mode_less_bedrock_access_keys_skip_imported_account_picker() {
     config.cli_auth_credentials_store_mode = codex_config::types::AuthCredentialsStoreMode::File;
     config.automatic_account_selection = AutomaticAccountSelection::Enabled;
 
-    assert!(!root_auth_allows_imported_account_picker(&config));
+    assert!(!root_auth_allows_imported_account_picker(
+        &config, /*auto_account*/ false
+    ));
+}
+
+#[test]
+fn auto_account_requires_an_eligible_account() {
+    assert_eq!(
+        continue_without_account(/*auto_account*/ true)
+            .expect_err("auto account must fail")
+            .to_string(),
+        "no eligible account is available for --auto-account"
+    );
 }
 
 #[test]

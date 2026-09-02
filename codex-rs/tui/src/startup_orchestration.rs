@@ -66,6 +66,11 @@ pub(super) async fn run_main_inner(
         launch_loader_overrides.user_config_profile = Some(profile_v2.clone());
     }
     let workload_identity_selected = is_workload_identity_selected();
+    if workload_identity_selected && cli.auto_account {
+        return Err(std::io::Error::other(
+            "no eligible account is available for --auto-account",
+        ));
+    }
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         let validation_target = app_server_target_for_launch(
@@ -151,7 +156,8 @@ pub(super) async fn run_main_inner(
         && !cli.bypass_hook_trust;
     let initial_screen = if cli.resume_picker || cli.fork_picker || cli.agents_overview {
         startup_draft::StartupDraftInitialScreen::SessionPicker
-    } else if !cli.oss
+    } else if !cli.auto_account
+        && !cli.oss
         && explicit_remote_endpoint.is_none()
         && (reuse_implicit_local_daemon || search_only_config_override)
         && launch_loader_overrides.packaged_defaults_path.is_none()
@@ -163,7 +169,8 @@ pub(super) async fn run_main_inner(
         )
     {
         startup_draft::StartupDraftInitialScreen::Onboarding
-    } else if !cli.oss
+    } else if !cli.auto_account
+        && !cli.oss
         && explicit_remote_endpoint.is_none()
         && !workload_identity_selected
         && codex_plus_plus::may_run_startup_account_picker(&codex_home)
@@ -365,6 +372,7 @@ pub(super) async fn run_main_inner(
             startup_draft.tui_mut(),
             &config,
             &app_server_target,
+            cli.auto_account,
         )
         .await
         .map_err(std::io::Error::other)?
