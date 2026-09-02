@@ -51,7 +51,11 @@ fn response_item_rollout_line_preserves_shape() -> Result<()> {
         },
     });
 
-    let line = serde_json::from_value::<RolloutLine>(legacy_line.clone())?;
+    let line = RolloutLine {
+        timestamp: "2025-01-03T12:00:00.000Z".to_string(),
+        ordinal: Some(7),
+        item: serde_json::from_value(legacy_line.clone())?,
+    };
     let RolloutItem::ResponseItem(envelope) = &line.item else {
         panic!("expected response item");
     };
@@ -90,8 +94,8 @@ fn response_item_envelope_stores_metadata_beside_rollout_payload() -> Result<()>
     );
     assert_eq!(serialized["payload"].get("metadata"), None);
 
-    let restored = serde_json::from_value::<RolloutLine>(serialized)?;
-    let RolloutItem::ResponseItem(envelope) = restored.item else {
+    let restored = serde_json::from_value(serialized)?;
+    let RolloutItem::ResponseItem(envelope) = restored else {
         panic!("expected response item");
     };
     assert_eq!(
@@ -107,7 +111,7 @@ fn response_item_envelope_stores_metadata_beside_rollout_payload() -> Result<()>
 #[test]
 /// Keeps future metadata fields from making older binaries reject persisted items.
 fn response_item_envelope_ignores_unknown_harness_metadata_fields() -> Result<()> {
-    let line = serde_json::from_value::<RolloutLine>(json!({
+    let line = serde_json::from_value(json!({
         "timestamp": "2025-01-03T12:00:00.000Z",
         "ordinal": 7,
         "type": "response_item",
@@ -124,7 +128,7 @@ fn response_item_envelope_ignores_unknown_harness_metadata_fields() -> Result<()
         },
     }))?;
 
-    let RolloutItem::ResponseItem(envelope) = line.item else {
+    let RolloutItem::ResponseItem(envelope) = line else {
         panic!("expected response item");
     };
     assert_eq!(envelope.metadata, Some(CodexHarnessMetadata::default()));

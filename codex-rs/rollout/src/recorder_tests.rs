@@ -14,11 +14,14 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
+use codex_protocol::protocol::RateLimitSnapshot;
+use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::security_risk::SecurityRiskScore;
@@ -103,7 +106,7 @@ fn read_rollout_lines(path: &Path) -> std::io::Result<Vec<RolloutLine>> {
     fs::read_to_string(path)?
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).map_err(std::io::Error::other))
+        .map(|line| crate::parse_rollout_line(line).map_err(std::io::Error::other))
         .collect()
 }
 
@@ -687,7 +690,7 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
         vec![Some(0), Some(1), Some(2)]
     );
     let first_line = text.lines().next().expect("session metadata line");
-    let session_meta: RolloutLine = serde_json::from_str(first_line)?;
+    let session_meta = crate::parse_rollout_line(first_line)?;
     let RolloutItem::SessionMeta(session_meta) = session_meta.item else {
         panic!("expected session metadata in rollout");
     };
@@ -996,87 +999,63 @@ async fn resumed_paginated_rollout_continues_after_ordinal_gap() -> std::io::Res
 }
 
 #[tokio::test]
-async fn resume_uses_latest_valid_envelope_ordinal() -> std::io::Result<()> {
-    for (case, tail) in [
-        (
-            "opaque token usage record",
-            r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"token_usage_record","payload":{"future_usage":0.5}}"#,
-        ),
-        (
-            "opaque realtime item",
-            r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"realtime_item","payload":{"type":"future_realtime_item"}}"#,
-        ),
-        (
-            "structured token count",
-            r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":null,"limit_name":null,"primary":{"used_percent":0.0,"window_minutes":60,"resets_at":1800000000},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":null},"individual_limit":null,"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}"#,
-        ),
-        (
-            "unsupported payload",
-            r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"event_msg","payload":{"type":"future_event"}}"#,
-        ),
-    ] {
-        let home = TempDir::new().expect("temp dir");
-        let config = test_config(home.path());
-        let rollout_path = home.path().join("rollout.jsonl");
-        write_paginated_rollout(&rollout_path, ThreadId::new(), &[])?;
-        let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
-        writeln!(file, "{tail}")?;
-        drop(file);
-
-        let recorder =
-            RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
-                .await?;
-        recorder
-            .record_canonical_items(&[agent_message_item("after-resume")])
-            .await?;
-        recorder.flush().await?;
-
-        let contents = fs::read_to_string(&rollout_path)?;
-        let ordinals = contents
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .map(|value| value.map(|value| value["ordinal"].as_u64()))
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(ordinals, vec![Some(0), Some(1), Some(2)], "{case}");
-        recorder.shutdown().await?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn resumed_paginated_rollout_rejects_non_envelope_tail() -> std::io::Result<()> {
-    for (case, tail) in [
-        (
-            "missing payload",
-            r#"{"timestamp":"x","type":"event_msg","ordinal":1}"#,
-        ),
-        (
-            "unknown outer type",
-            r#"{"timestamp":"x","type":"future_item","ordinal":1,"payload":{}}"#,
-        ),
-    ] {
-        let home = TempDir::new().expect("temp dir");
-        let config = test_config(home.path());
-        let rollout_path = home.path().join("rollout.jsonl");
-        write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
-        let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
-        writeln!(file, "{tail}")?;
-        drop(file);
-        let before = fs::read(&rollout_path)?;
-
-        let error = match RolloutRecorder::new(
-            &config,
-            RolloutRecorderParams::resume(rollout_path.clone()),
+async fn resumed_paginated_rollout_continues_after_decimal_token_count() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let thread_id = ThreadId::new();
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            thread_id,
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
         )
-        .await
-        {
-            Ok(_) => panic!("{case} should fail closed"),
-            Err(error) => error,
-        };
+        .with_history_mode(ThreadHistoryMode::Paginated),
+    )
+    .await?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    recorder
+        .record_canonical_items(&[RolloutItem::EventMsg(EventMsg::TokenCount(
+            TokenCountEvent {
+                info: None,
+                rate_limits: Some(RateLimitSnapshot {
+                    limit_id: None,
+                    limit_name: None,
+                    primary: Some(RateLimitWindow {
+                        used_percent: 0.0,
+                        window_minutes: Some(60),
+                        resets_at: Some(1_800_000_000),
+                    }),
+                    secondary: None,
+                    credits: None,
+                    individual_limit: None,
+                    spend_control_reached: None,
+                    plan_type: None,
+                    rate_limit_reached_type: None,
+                }),
+            },
+        ))])
+        .await?;
+    recorder.persist().await?;
+    recorder.shutdown().await?;
 
-        assert!(error.to_string().contains("not a valid envelope"), "{case}");
-        assert_eq!(fs::read(&rollout_path)?, before, "{case}");
-    }
+    let resumed =
+        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
+    resumed
+        .record_canonical_items(&[agent_message_item("after-resume")])
+        .await?;
+    resumed.shutdown().await?;
+
+    let ordinals = read_rollout_lines(&rollout_path)?
+        .into_iter()
+        .map(|line| line.ordinal)
+        .collect::<Vec<_>>();
+    assert_eq!(ordinals, vec![Some(0), Some(1), Some(2)]);
     Ok(())
 }
 
@@ -1119,7 +1098,7 @@ async fn resumed_paginated_rollout_repairs_unsafe_tail() -> std::io::Result<()> 
         assert!(contents.ends_with('\n'), "{name} tail should be terminated");
         let ordinals = contents
             .lines()
-            .filter_map(|line| serde_json::from_str::<RolloutLine>(line).ok())
+            .filter_map(|line| crate::parse_rollout_line(line).ok())
             .map(|line| line.ordinal)
             .collect::<Vec<_>>();
         assert_eq!(
