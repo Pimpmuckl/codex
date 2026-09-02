@@ -69,6 +69,7 @@ add local requirements but must not weaken these rules.
 
 ## Keep validation bounded
 
+- If Review Suite is installed, run it only in `fast` mode.
 - Serialize heavyweight Rust validation. Keep Cargo targets inside their worktree, default Cargo
   builds and Rust test harnesses to four threads, and select `--lib` or one exact `--test` target
   for focused tests.
