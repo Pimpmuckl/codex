@@ -15,6 +15,8 @@ pub enum UpdateAction {
     NpmGlobalLatest,
     /// Update via `bun install -g @openai/codex@latest`.
     BunGlobalLatest,
+    /// Update via `vp install -g @openai/codex@latest`.
+    VitePlusGlobalLatest,
     /// Update via `pnpm add -g @openai/codex@latest`.
     PnpmGlobalLatest,
     /// Update via `brew upgrade codex`.
@@ -46,6 +48,7 @@ impl UpdateAction {
             UpdateTarget::PackageManager { manager, .. } => Some(match manager {
                 PackageManager::Npm => Self::NpmGlobalLatest,
                 PackageManager::Bun => Self::BunGlobalLatest,
+                PackageManager::VitePlus => Self::VitePlusGlobalLatest,
                 PackageManager::Pnpm => Self::PnpmGlobalLatest,
             }),
             UpdateTarget::Standalone { platform, .. } => Some(match platform {
@@ -76,6 +79,7 @@ impl UpdateAction {
         match self {
             Self::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
             Self::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            Self::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
             Self::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
             Self::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             Self::StandaloneUnix => (
@@ -133,6 +137,7 @@ mod tests {
     use codex_install_context::codex_plus_plus::PackageManager::Bun;
     use codex_install_context::codex_plus_plus::PackageManager::Npm;
     use codex_install_context::codex_plus_plus::PackageManager::Pnpm;
+    use codex_install_context::codex_plus_plus::PackageManager::VitePlus;
     use codex_install_context::codex_plus_plus::UpdateTarget::Standalone;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
@@ -165,6 +170,13 @@ mod tests {
                 package_layout: None,
             }),
             Some(UpdateAction::CodexPlusPlusPackageManager(Bun))
+        );
+        assert_eq!(
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::VitePlus,
+                package_layout: None,
+            }),
+            Some(UpdateAction::CodexPlusPlusPackageManager(VitePlus))
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {

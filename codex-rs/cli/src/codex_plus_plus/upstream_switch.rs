@@ -432,6 +432,7 @@ fn uninstall_package(manager: PackageManager, package: &str) -> anyhow::Result<(
         PackageManager::Npm => command.args(["uninstall", "-g", package]),
         PackageManager::Bun => command.args(["remove", "-g", package]),
         PackageManager::Pnpm => command.args(["remove", "-g", package]),
+        PackageManager::VitePlus => command.args(["uninstall", "-g", package]),
     };
     run_quiet(command, "uninstall current package")
 }
@@ -439,7 +440,9 @@ fn uninstall_package(manager: PackageManager, package: &str) -> anyhow::Result<(
 fn install_package(manager: PackageManager, package: &str) -> anyhow::Result<()> {
     let mut command = package_command(manager);
     match manager {
-        PackageManager::Npm | PackageManager::Bun => command.args(["install", "-g", package]),
+        PackageManager::Npm | PackageManager::Bun | PackageManager::VitePlus => {
+            command.args(["install", "-g", package])
+        }
         PackageManager::Pnpm => command.args(["add", "-g", package]),
     };
     run_quiet(command, "install package")
@@ -450,6 +453,7 @@ fn package_command(manager: PackageManager) -> Command {
         PackageManager::Npm => "npm",
         PackageManager::Bun => "bun",
         PackageManager::Pnpm => "pnpm",
+        PackageManager::VitePlus => "vp",
     };
     if cfg!(windows) {
         let mut command = Command::new("cmd");
@@ -469,15 +473,19 @@ fn ensure_manager_targets_root(
     match manager {
         PackageManager::Npm | PackageManager::Pnpm => command.args(["root", "-g"]),
         PackageManager::Bun => command.args(["pm", "bin", "-g"]),
+        PackageManager::VitePlus => command.args(["list", "-g", package, "--json"]),
     };
     let output = command
         .output()
         .context("failed to inspect package-manager root")?;
     anyhow::ensure!(output.status.success(), "package-manager root check failed");
     let stdout = String::from_utf8(output.stdout).context("package-manager root was not UTF-8")?;
+    let running = running_root.canonicalize()?;
+    if manager == PackageManager::VitePlus {
+        return ensure_vite_plus_manager_targets_root(package, &running, &stdout);
+    }
     let bun_global_dir = std::env::var_os("BUN_INSTALL_GLOBAL_DIR").map(PathBuf::from);
     let target = manager_global_root(manager, &stdout, bun_global_dir.as_deref())?.join(package);
-    let running = running_root.canonicalize()?;
     let target = target.canonicalize()?;
     anyhow::ensure!(running == target, "wrong package-manager target");
     Ok(())
@@ -497,7 +505,54 @@ fn manager_global_root(
             .ok_or_else(|| anyhow::anyhow!("Bun returned an invalid global bin directory"))?
             .join("install/global/node_modules")),
         (PackageManager::Npm | PackageManager::Pnpm, _) => Ok(PathBuf::from(reported)),
+        (PackageManager::VitePlus, _) => anyhow::bail!("Vite+ does not expose an npm-style root"),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VitePlusPackageMetadata {
+    name: String,
+    #[serde(default)]
+    install_id: String,
+}
+
+fn ensure_vite_plus_manager_targets_root(
+    package: &str,
+    running_root: &Path,
+    stdout: &str,
+) -> anyhow::Result<()> {
+    let [metadata]: [VitePlusPackageMetadata; 1] = serde_json::from_str::<Vec<_>>(stdout)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Vite+ returned an unexpected package inventory"))?;
+    anyhow::ensure!(metadata.name == package, "wrong Vite+ package target");
+    let install_id = metadata.install_id;
+    anyhow::ensure!(
+        install_id.is_empty()
+            || (install_id != "."
+                && install_id != ".."
+                && !install_id.contains('/')
+                && !install_id.contains('\\')),
+        "Vite+ returned an invalid install ID"
+    );
+
+    let packages_dir = PathBuf::from("packages");
+    let install_dir = if install_id.is_empty() {
+        packages_dir.join(package)
+    } else if install_id.starts_with('#') {
+        packages_dir.join(format!("{package}{install_id}"))
+    } else {
+        packages_dir.join(package).join(install_id)
+    };
+    let targets = [
+        install_dir.join("lib/node_modules").join(package),
+        install_dir.join("node_modules").join(package),
+    ];
+    anyhow::ensure!(
+        targets.iter().any(|target| running_root.ends_with(target)),
+        "wrong Vite+ package target"
+    );
+    Ok(())
 }
 
 pub(super) fn run_quiet(mut command: Command, label: &str) -> anyhow::Result<()> {

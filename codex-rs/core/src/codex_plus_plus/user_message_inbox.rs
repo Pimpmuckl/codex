@@ -117,6 +117,7 @@ impl ToolExecutor<ToolInvocation> for LeaveUserMessageHandler {
                 phase: Some(MessagePhase::Commentary),
                 delivery: None,
                 memory_citation: None,
+                questions: None,
             });
 
             session.emit_turn_item_started(turn.as_ref(), &item).await;

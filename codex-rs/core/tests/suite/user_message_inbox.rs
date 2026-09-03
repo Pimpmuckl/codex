@@ -128,6 +128,7 @@ fn user_message_item() -> AgentMessageItem {
         phase: Some(MessagePhase::Commentary),
         delivery: None,
         memory_citation: None,
+        questions: None,
     }
 }
 

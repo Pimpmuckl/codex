@@ -57,6 +57,7 @@ pub(super) async fn make_test_app() -> App {
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         app_server_target: crate::AppServerTarget::Embedded,
         weekly_window_scheduler: None,
+        reconnect: Default::default(),
         pending_update_action: None,
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),

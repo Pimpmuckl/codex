@@ -14,8 +14,6 @@ use crate::session::step_context::StepContext;
 use codex_history::CodexHarnessMetadata;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
 use tracing::info;
@@ -25,6 +23,7 @@ pub(super) struct RemoteCompactV2Attempt {
     pub(super) prompt_input: Vec<ResponseItem>,
     pub(super) prompt_input_metadata: Vec<Option<CodexHarnessMetadata>>,
     pub(super) compaction_output: ResponseItem,
+    pub(super) compaction_response_id: String,
     pub(super) token_usage: Option<TokenUsage>,
     /// Keeps a session created for standalone compaction alive through lifecycle completion.
     pub(super) owned_client_session: Option<ModelClientSession>,
@@ -122,19 +121,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         compaction_output,
         response_id,
         token_usage,
-        usage_metadata,
     } = compaction_output_result?;
-    // TODO: Emit this before compaction output validation so malformed completed
-    // responses still surface their raw upstream usage.
-    sess.send_event(
-        turn_context,
-        EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
-            response_id,
-            token_usage: token_usage.clone(),
-            usage_metadata,
-        }),
-    )
-    .await;
     let mut prompt_input = prompt.input;
     prompt_input.pop();
     Ok(RemoteCompactV2Attempt {
@@ -142,6 +129,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         prompt_input,
         prompt_input_metadata,
         compaction_output,
+        compaction_response_id: response_id,
         token_usage,
         owned_client_session,
     })

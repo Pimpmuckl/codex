@@ -47,7 +47,6 @@ use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -87,6 +86,7 @@ pub(crate) struct CompactedHistoryMetadata {
     pub(crate) message: String,
     pub(crate) window_number: u64,
     pub(crate) window_ids: AutoCompactWindowIds,
+    pub(crate) compaction_response_id: Option<String>,
 }
 
 pub(crate) async fn build_compaction_initial_context(
@@ -284,7 +284,7 @@ async fn run_compact_task_inner_impl(
         )
         .await;
 
-    loop {
+    let compaction_response_id = loop {
         // Clone is required because of the loop
         let turn_input = history
             .clone()
@@ -306,8 +306,8 @@ async fn run_compact_task_inner_impl(
         .await;
 
         match attempt_result {
-            Ok(()) => {
-                break;
+            Ok(response_id) => {
+                break response_id;
             }
             Err(err)
                 if matches!(
@@ -359,7 +359,7 @@ async fn run_compact_task_inner_impl(
                 }
             }
         }
-    }
+    };
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.annotated_items();
@@ -396,6 +396,7 @@ async fn run_compact_task_inner_impl(
             message: summary_text,
             window_number,
             window_ids,
+            compaction_response_id: Some(compaction_response_id),
         },
     )
     .await;
@@ -751,7 +752,7 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
     usage_limit_account_attempts: &mut HashSet<String>,
-) -> CodexResult<()> {
+) -> CodexResult<String> {
     client_session.begin_usage_limit_failover_tracking(usage_limit_account_attempts);
     let stream = client_session
         .stream(
@@ -799,18 +800,16 @@ async fn drain_to_completed(
                 usage_metadata,
                 ..
             }) => {
-                sess.send_event(
+                sess.record_observed_response_completed(
                     turn_context,
-                    EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
-                        response_id,
-                        token_usage: token_usage.clone(),
-                        usage_metadata,
-                    }),
+                    &response_id,
+                    token_usage.as_ref(),
+                    usage_metadata.as_ref(),
                 )
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await?;
-                return Ok(());
+                return Ok(response_id);
             }
             Ok(_) => continue,
             Err(e) => return Err(e),

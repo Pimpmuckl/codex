@@ -1,15 +1,12 @@
 use super::ExecApprovalRequest;
-#[cfg(windows)]
 use super::ExecPolicyCommandOrigin;
-#[cfg(windows)]
 use super::ExecPolicyCommands;
 use super::ExecPolicyManager;
-use super::commands_for_exec_policy;
+use super::commands_for_exec_policy_for_platform;
 use crate::shell::Shell;
 use crate::tools::sandboxing::ExecApprovalRequirement;
-#[cfg(windows)]
+use codex_shell_command::is_dangerous_command::DangerousCommandPlatform;
 use codex_shell_command::powershell::extract_powershell_command;
-#[cfg(windows)]
 use codex_shell_command::powershell::parse_powershell_script_into_plain_commands;
 use codex_tools::UnifiedExecShellMode;
 use std::path::Path;
@@ -20,6 +17,7 @@ impl ExecPolicyManager {
         mut request: ExecApprovalRequest<'_>,
         configured_shell: &Shell,
         shell_mode: &UnifiedExecShellMode,
+        command_platform: DangerousCommandPlatform,
         exact_pre_tool_use_approval: bool,
     ) -> ExecApprovalRequirement {
         let command = request.command;
@@ -28,23 +26,24 @@ impl ExecPolicyManager {
             return self
                 .create_exec_approval_requirement_with_guardian(
                     request,
+                    command_platform,
                     exact_pre_tool_use_approval,
                 )
                 .await;
         }
 
-        #[cfg(windows)]
-        let mut policy_commands = match extract_powershell_command(command) {
-            Some((_, script)) => ExecPolicyCommands {
-                commands: parse_powershell_script_into_plain_commands(script)
-                    .unwrap_or_else(|| vec![command.to_vec()]),
-                command_origin: ExecPolicyCommandOrigin::PowerShell,
-            },
-            None => commands_for_exec_policy(command),
+        let mut policy_commands = if command_platform == DangerousCommandPlatform::Windows {
+            match extract_powershell_command(command) {
+                Some((_, script)) => ExecPolicyCommands {
+                    commands: parse_powershell_script_into_plain_commands(script)
+                        .unwrap_or_else(|| vec![command.to_vec()]),
+                    command_origin: ExecPolicyCommandOrigin::PowerShell,
+                },
+                None => commands_for_exec_policy_for_platform(command, command_platform),
+            }
+        } else {
+            commands_for_exec_policy_for_platform(command, command_platform)
         };
-
-        #[cfg(not(windows))]
-        let mut policy_commands = commands_for_exec_policy(command);
 
         // Evaluate the executable alongside its apparent commands. Inner
         // commands can add restrictions, but cannot grant the executable trust.
@@ -53,6 +52,7 @@ impl ExecPolicyManager {
         self.create_exec_approval_requirement_for_parsed_commands(
             request,
             policy_commands,
+            command_platform,
             exact_pre_tool_use_approval,
         )
         .await

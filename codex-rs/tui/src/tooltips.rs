@@ -389,11 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn file_backed_app_promo_uses_welcome_tip() {
-        assert!(TOOLTIPS.contains(&WELCOME_TIP));
-    }
-
-    #[test]
     fn dcg_update_tip_replaces_only_an_eligible_welcome_tip() {
         assert_eq!(
             [

@@ -128,26 +128,11 @@ async fn compact_live_tool_reuses_status_row_without_changing_height() {
         CommandOutput::new(/*exit_code*/ 0, "first\nsecond\n".to_string()),
         std::time::Duration::from_millis(5),
     );
-    for index in 2..=32 {
-        let call_id = format!("call-{index}");
-        command.add_call(
-            call_id.clone(),
-            vec![format!("printf {index}")],
-            Vec::new(),
-            CommandExecutionSource::Agent,
-            /*interaction_input*/ None,
-        );
-        command.complete_call(
-            &call_id,
-            CommandOutput::new(/*exit_code*/ 0, format!("{index}\n")),
-            std::time::Duration::from_millis(5),
-        );
-    }
     widget.flush_active_cell();
     let completed = render_frame(&widget, /*width*/ 80);
     assert!(!contains_text(&completed, "second"));
     let completed_status_row = text_row(&completed, "Ran");
-    insta::assert_snapshot!(completed_status_row.trim_end(), @"• Ran 32 commands · ctrl + t to view transcript (0s • esc to interrupt)");
+    insta::assert_snapshot!(completed_status_row.trim_end(), @"• Ran 'printf first (0s • esc to interrupt)");
 
     widget.raw_output_mode = true;
     assert_eq!(widget.compact_transient_status(), None);

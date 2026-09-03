@@ -29,11 +29,6 @@ impl ChatWidget {
             return None;
         }
 
-        if let Some(hook) = self.active_hook_cell.as_ref()
-            && hook.should_render()
-        {
-            return hook.compact_transient_status();
-        }
         self.transcript.active_cell.as_deref().and_then(|cell| {
             (cell
                 .as_any()

@@ -49,6 +49,7 @@ impl UpdateChannel {
 pub enum PackageManager {
     Npm,
     Bun,
+    VitePlus,
     Pnpm,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +87,7 @@ impl UpdatePlan {
         let target = match &context.method {
             InstallMethod::Npm => package_manager_target(PackageManager::Npm, channel),
             InstallMethod::Bun => package_manager_target(PackageManager::Bun, channel),
+            InstallMethod::VitePlus => package_manager_target(PackageManager::VitePlus, channel),
             InstallMethod::Pnpm => package_manager_target(PackageManager::Pnpm, channel),
             InstallMethod::Standalone { platform, .. } => standalone_target(*platform, channel),
             InstallMethod::Brew if channel == UpdateChannel::Upstream => UpdateTarget::Homebrew,
