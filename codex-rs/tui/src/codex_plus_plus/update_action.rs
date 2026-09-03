@@ -25,6 +25,9 @@ pub(super) fn package_manager_command_args(manager: planner::PackageManager) -> 
     match manager {
         planner::PackageManager::Npm => ("npm", &["install", "-g", "@jjliebig/codex-plus-plus"]),
         planner::PackageManager::Bun => ("bun", &["install", "-g", "@jjliebig/codex-plus-plus"]),
+        planner::PackageManager::VitePlus => {
+            ("vp", &["install", "-g", "@jjliebig/codex-plus-plus"])
+        }
         planner::PackageManager::Pnpm => ("pnpm", &["add", "-g", "@jjliebig/codex-plus-plus"]),
     }
 }

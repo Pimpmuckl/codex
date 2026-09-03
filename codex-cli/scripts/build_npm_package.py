@@ -265,10 +265,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         codex_plus_plus_dir = bin_dir / "codex_plus_plus"
         codex_plus_plus_dir.mkdir()
         shutil.copy2(
-            CODEX_CLI_ROOT
-            / "bin"
-            / "codex_plus_plus"
-            / "windows_upstream_launcher.js",
+            CODEX_CLI_ROOT / "bin" / "codex_plus_plus" / "windows_upstream_launcher.js",
             codex_plus_plus_dir / "windows_upstream_launcher.js",
         )
 

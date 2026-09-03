@@ -33,7 +33,9 @@ def load_stage_module():
 
 
 def load_release_module():
-    spec = importlib.util.spec_from_file_location("codex_plus_plus_release_test", RELEASE_SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "codex_plus_plus_release_test", RELEASE_SCRIPT
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load {RELEASE_SCRIPT}")
     module = importlib.util.module_from_spec(spec)
@@ -207,7 +209,9 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             npm_dir = Path(temp_dir)
             entries = self._write_publish_tarballs(npm_dir)
-            integrities = [release.tarball_integrity(path) for path, _version, _tag in entries]
+            integrities = [
+                release.tarball_integrity(path) for path, _version, _tag in entries
+            ]
             views = [None, ROOT_PACKAGE, integrities[0]]
             for integrity in integrities[1:]:
                 views.extend([None, integrity])
@@ -228,10 +232,14 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
                 patch.object(release.subprocess, "run") as run,
             ):
                 release.publish(VERSION, npm_dir)
-            self.assertEqual([call.args[0][-1] for call in run.call_args_list], ["linux-x64"])
+            self.assertEqual(
+                [call.args[0][-1] for call in run.call_args_list], ["linux-x64"]
+            )
 
             with (
-                patch.object(release, "npm_view", side_effect=[ROOT_PACKAGE, "sha512-wrong"]),
+                patch.object(
+                    release, "npm_view", side_effect=[ROOT_PACKAGE, "sha512-wrong"]
+                ),
                 patch.object(release.subprocess, "run") as run,
                 self.assertRaisesRegex(RuntimeError, "Refusing to skip"),
             ):
@@ -246,7 +254,10 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
                 release.publish(VERSION, npm_dir)
             self.assertEqual(
                 [call.args for call in view.call_args_list],
-                [(ROOT_PACKAGE, "name"), (f"{ROOT_PACKAGE}@{VERSION}-linux-x64", "name")],
+                [
+                    (ROOT_PACKAGE, "name"),
+                    (f"{ROOT_PACKAGE}@{VERSION}-linux-x64", "name"),
+                ],
             )
             run.assert_not_called()
 
@@ -254,7 +265,9 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "codex-plus-plus-release.yml"
         ).read_text(encoding="utf-8")
-        push_trigger = workflow[workflow.index("  push:") : workflow.index("\n\npermissions:")]
+        push_trigger = workflow[
+            workflow.index("  push:") : workflow.index("\n\npermissions:")
+        ]
         warm_dependencies = workflow[
             workflow.index("  warm-dependencies:") : workflow.index("\n  build:")
         ]
@@ -277,7 +290,9 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             warm_dependencies,
         )
         self.assertIn("- name: Warm full-release dependencies", warm_dependencies)
-        build = workflow[workflow.index("\n  build:") : workflow.index("\n  stage-npm:")]
+        build = workflow[
+            workflow.index("\n  build:") : workflow.index("\n  stage-npm:")
+        ]
         for job, build_step in (
             (warm_dependencies, "- name: Warm full-release dependencies"),
             (build, "- name: Build package archive"),
@@ -301,10 +316,14 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         self.assertIn("source_run_id:", workflow)
         self.assertIn("release_tag:", workflow)
         self.assertIn("run-id: ${{ needs.prepare.outputs.source_run_id }}", workflow)
-        self.assertIn("SOURCE_RUN_ID: ${{ needs.prepare.outputs.source_run_id }}", workflow)
+        self.assertIn(
+            "SOURCE_RUN_ID: ${{ needs.prepare.outputs.source_run_id }}", workflow
+        )
         self.assertIn('run_workflow_id" == "$workflow_id', workflow)
         self.assertIn('run_sha" == "$tag_sha', workflow)
-        self.assertIn("format('refs/tags/{0}', inputs.release_tag) || github.ref", workflow)
+        self.assertIn(
+            "format('refs/tags/{0}', inputs.release_tag) || github.ref", workflow
+        )
         self.assertIn('node-version: "24"', workflow)
         self.assertEqual(workflow.count("package-manager-cache: false"), 2)
         self.assertIn("--generate-notes", github_job)

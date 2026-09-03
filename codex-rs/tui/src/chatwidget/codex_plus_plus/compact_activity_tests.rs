@@ -151,8 +151,8 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
 
 
 
-    • PostToolUse hook (failed)
-      error: hook exited with code 7
+    • Hook failed
+      └ hook exited with code 7
     • Added src/lib.rs (+1 -0)
     transcript:
     $ 'printf one'
@@ -162,10 +162,10 @@ async fn compact_history_policy_keeps_complete_transcript_and_raw_output() {
     • Called workspace.inspect({"path":"README.md"})
       └ full result
     • Searched the web for compact policy
-    • PreToolUse hook (completed)
-      feedback: DCG flagged core.git:git-alias-semantic-unverified
-    • PostToolUse hook (failed)
-      error: hook exited with code 7
+    • Hook completed
+      └ DCG flagged core.git:git-alias-semantic-unverified
+    • Hook failed
+      └ hook exited with code 7
     • Added src/lib.rs (+1 -0)
         1 +new
     "###);

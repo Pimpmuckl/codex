@@ -20,6 +20,7 @@ async fn durable_user_message_uses_shared_live_replay_path_and_deduplicates() {
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
+        questions: None,
     };
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -404,6 +405,7 @@ async fn replayed_nested_review_prompts_do_not_render_or_seed_composer_history()
                         phase: Some(MessagePhase::FinalAnswer),
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     },
                 ],
                 ..app_server_turn(

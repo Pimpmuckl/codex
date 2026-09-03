@@ -49,21 +49,8 @@ impl ChatWidget {
             }
             Some(_) | None => RenderableItem::Owned(Box::new(())),
         };
-        let active_hook_cell_renderable = match &self.active_hook_cell {
-            Some(cell) if cell.should_render() && compact_transient_status.is_none() => {
-                RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
-                    child: cell,
-                    top: 1,
-                    right: active_cell_right_reserve,
-                    history_render_mode,
-                    persistent_layout: None,
-                }))
-            }
-            _ => RenderableItem::Owned(Box::new(())),
-        };
         let mut flex = FlexRenderable::new();
         flex.push(/*flex*/ 1, active_cell_renderable);
-        flex.push(/*flex*/ 0, active_hook_cell_renderable);
         if let Some(cell) = self.pending_token_activity_output() {
             flex.push(
                 /*flex*/ 1,

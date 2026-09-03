@@ -14,6 +14,7 @@ fn item(id: &str, text: &str, phase: Option<MessagePhase>) -> AgentMessageItem {
         phase,
         delivery: None,
         memory_citation: None,
+        questions: None,
     }
 }
 fn user_message(id: impl Into<String>, body: impl Into<String>) -> UserMessage {

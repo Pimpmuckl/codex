@@ -13,6 +13,7 @@ fn package_manager_plans_preserve_the_manager() {
     for (method, manager) in [
         (InstallMethod::Npm, PackageManager::Npm),
         (InstallMethod::Bun, PackageManager::Bun),
+        (InstallMethod::VitePlus, PackageManager::VitePlus),
         (InstallMethod::Pnpm, PackageManager::Pnpm),
     ] {
         assert_eq!(

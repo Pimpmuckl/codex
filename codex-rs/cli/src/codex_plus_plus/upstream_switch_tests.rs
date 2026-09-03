@@ -250,3 +250,28 @@ fn package_manager_roots_cover_npm_pnpm_and_bun() {
         );
     }
 }
+
+#[test]
+fn vite_plus_root_must_match_active_install_metadata() {
+    let metadata = r#"[{"name":"@jjliebig/codex-plus-plus","installId":"123e4567-e89b-42d3-a456-426614174000"}]"#;
+    assert!(
+        ensure_vite_plus_manager_targets_root(
+            "@jjliebig/codex-plus-plus",
+            Path::new(
+                "data/packages/@jjliebig/codex-plus-plus/123e4567-e89b-42d3-a456-426614174000/lib/node_modules/@jjliebig/codex-plus-plus"
+            ),
+            metadata,
+        )
+        .is_ok()
+    );
+    assert!(
+        ensure_vite_plus_manager_targets_root(
+            "@jjliebig/codex-plus-plus",
+            Path::new(
+                "data/packages/@jjliebig/codex-plus-plus/different/lib/node_modules/@jjliebig/codex-plus-plus"
+            ),
+            metadata,
+        )
+        .is_err()
+    );
+}

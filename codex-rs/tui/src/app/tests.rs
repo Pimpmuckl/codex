@@ -2,6 +2,8 @@
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/agents_navigation_tests.rs"]
+mod agents_navigation_tests;
 #[path = "tests/backend_banner_fallback_tests.rs"]
 mod backend_banner_fallback_tests;
 #[path = "tests/backend_banner_recovery_tests.rs"]
@@ -12,6 +14,8 @@ mod backend_banner_startup_tests;
 mod background_exit_tests;
 #[path = "tests/connector_policy.rs"]
 mod connector_policy;
+#[path = "tests/disconnect_tests.rs"]
+mod disconnect;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
 #[path = "tests/mcp_startup.rs"]
@@ -3802,6 +3806,7 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             },
         }),
         /*replay_kind*/ None,
@@ -4109,6 +4114,8 @@ async fn inactive_thread_started_notification_does_not_read_rollout_model() -> R
                 project_id: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
+                model: None,
+                reasoning_effort: None,
                 created_at: 1,
                 updated_at: 2,
                 recency_at: Some(2),
@@ -4213,6 +4220,8 @@ async fn inactive_thread_started_notification_does_not_inherit_primary_model() -
                 project_id: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
+                model: None,
+                reasoning_effort: None,
                 created_at: 1,
                 updated_at: 2,
                 recency_at: Some(2),
@@ -4279,6 +4288,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         project_id: None,
         history_mode: Default::default(),
         model_provider: "read-provider".to_string(),
+        model: None,
+        reasoning_effort: None,
         created_at: 1,
         updated_at: 2,
         recency_at: Some(2),
@@ -5532,6 +5543,7 @@ async fn make_test_app() -> App {
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         app_server_target: crate::AppServerTarget::Embedded,
         weekly_window_scheduler: None,
+        reconnect: Default::default(),
         pending_update_action: None,
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
@@ -5616,6 +5628,7 @@ async fn make_test_app_with_channels() -> (
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             app_server_target: crate::AppServerTarget::Embedded,
             weekly_window_scheduler: None,
+            reconnect: Default::default(),
             pending_update_action: None,
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
@@ -6357,6 +6370,7 @@ fn user_message_notification(thread_id: ThreadId, item_id: &str) -> ServerNotifi
             phase: Some(codex_protocol::models::MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         },
         thread_id: thread_id.to_string(),
         turn_id: "turn-user-message".to_string(),
@@ -7640,6 +7654,7 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
                             phase: None,
                             memory_citation: None,
                             delivery: None,
+                            questions: None,
                         },
                     ],
                     status: TurnStatus::Completed,
@@ -8729,3 +8744,10 @@ async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
 async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSession> {
     Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await
 }
+
+#[path = "tests/active_reconnect_tests.rs"]
+mod active_reconnect;
+
+#[cfg(unix)]
+#[path = "tests/navigation_reconnect_tests.rs"]
+mod navigation_reconnect;
