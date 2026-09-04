@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -73,22 +75,120 @@ version = "not-a-package-version"
             CODEX_RS / "app-server" / "Cargo.toml",
         )
 
-    def test_build_restores_crlf_manifest_byte_for_byte_and_lockfile(self) -> None:
+    def test_build_restores_source_bytes_and_caches_temporary_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            manifest = root / "codex-rs" / "cli" / "Cargo.toml"
+            codex_rs = root / "codex-rs"
+            workspace_manifest = codex_rs / "Cargo.toml"
+            package_manifest = codex_rs / "cli" / "Cargo.toml"
+            lockfile = codex_rs / "Cargo.lock"
+            state = codex_rs / "target" / "source-mtimes.json"
+            package_manifest.parent.mkdir(parents=True)
+            original_workspace_manifest = (
+                b'[workspace]\r\nmembers = ["cli"]\r\n\r\n'
+                b'[workspace.package]\r\nversion = "0.153.1"\r\n'
+            )
+            original_package_manifest = (
+                b'[package]\r\nname = "codex-cli"\r\nversion.workspace = true\r\n'
+            )
+            workspace_manifest.write_bytes(original_workspace_manifest)
+            package_manifest.write_bytes(original_package_manifest)
+            lockfile.write_text("original lock\n", encoding="utf-8")
+
+            def normalize_lock(command: list[str], **_kwargs: object) -> object:
+                self.assertEqual(
+                    command,
+                    [
+                        "cargo",
+                        "update",
+                        "--workspace",
+                        "--manifest-path",
+                        str(workspace_manifest),
+                    ],
+                )
+                self.assertEqual(
+                    workspace_manifest.read_bytes(), original_workspace_manifest
+                )
+                self.assertIn(b"0.153.1-fork.2", package_manifest.read_bytes())
+                lockfile.write_text("normalized lock\n", encoding="utf-8")
+                return object()
+
+            def build_package(command: list[str], **_kwargs: object) -> int:
+                self.assertEqual(
+                    workspace_manifest.read_bytes(), original_workspace_manifest
+                )
+                self.assertIn(b"0.153.1-fork.2", package_manifest.read_bytes())
+                self.assertEqual(command[-2:], ["--package-version", "0.153.1-fork.2"])
+                self.assertEqual(lockfile.read_text(), "normalized lock\n")
+                return 0
+
+            with (
+                patch.object(build, "REPO_ROOT", root),
+                patch.object(build, "CODEX_RS", codex_rs),
+                patch.object(build, "WORKSPACE_MANIFEST", workspace_manifest),
+                patch.object(build, "CARGO_LOCK", lockfile),
+                patch.dict(
+                    build.VERSIONED_PACKAGE_MANIFESTS,
+                    {"codex": package_manifest},
+                    clear=True,
+                ),
+                patch.object(build, "read_workspace_version", return_value="0.153.1"),
+                patch.object(build.subprocess, "run", side_effect=normalize_lock),
+                patch.object(build.subprocess, "call", side_effect=build_package),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "build_codex_plus_plus.py",
+                        "--fork-version",
+                        "0.153.1-fork.2",
+                        "--build-cache-state",
+                        str(state),
+                        "--",
+                        "--package-dir",
+                        "dist/package",
+                    ],
+                ),
+            ):
+                self.assertEqual(build.main(), 0)
+
+            self.assertEqual(
+                workspace_manifest.read_bytes(), original_workspace_manifest
+            )
+            self.assertEqual(package_manifest.read_bytes(), original_package_manifest)
+            self.assertEqual(lockfile.read_text(), "original lock\n")
+
+            cached = json.loads(state.read_text(encoding="utf-8"))["files"]
+            self.assertEqual(
+                cached["Cargo.toml"]["sha256"],
+                hashlib.sha256(original_workspace_manifest).hexdigest(),
+            )
+            self.assertEqual(
+                cached["cli/Cargo.toml"]["sha256"],
+                hashlib.sha256(
+                    replace_package_version(
+                        original_package_manifest.decode("utf-8"),
+                        "0.153.1-fork.2",
+                    ).encode("utf-8")
+                ).hexdigest(),
+            )
+            self.assertNotIn("target/source-mtimes.json", cached)
+
+    def test_prebuilt_entrypoint_skips_manifest_and_cargo_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            package_manifest = root / "codex-rs" / "cli" / "Cargo.toml"
             lockfile = root / "codex-rs" / "Cargo.lock"
-            manifest.parent.mkdir(parents=True)
+            package_manifest.parent.mkdir(parents=True)
             original_manifest = (
                 b'[package]\r\nname = "codex-cli"\r\nversion.workspace = true\r\n'
             )
-            manifest.write_bytes(original_manifest)
+            package_manifest.write_bytes(original_manifest)
             lockfile.write_text("original lock\n", encoding="utf-8")
 
             def build_package(command: list[str], **_kwargs: object) -> int:
-                self.assertIn(b"0.153.1-fork.2", manifest.read_bytes())
-                self.assertEqual(command[-2:], ["--package-version", "0.153.1-fork.2"])
-                lockfile.write_text("updated lock\n", encoding="utf-8")
+                self.assertIn("--entrypoint-bin", command)
+                self.assertEqual(package_manifest.read_bytes(), original_manifest)
                 return 0
 
             with (
@@ -96,10 +196,11 @@ version = "not-a-package-version"
                 patch.object(build, "CARGO_LOCK", lockfile),
                 patch.dict(
                     build.VERSIONED_PACKAGE_MANIFESTS,
-                    {"codex": manifest},
+                    {"codex": package_manifest},
                     clear=True,
                 ),
                 patch.object(build, "read_workspace_version", return_value="0.153.1"),
+                patch.object(build.subprocess, "run") as run,
                 patch.object(build.subprocess, "call", side_effect=build_package),
                 patch.object(
                     sys,
@@ -109,6 +210,8 @@ version = "not-a-package-version"
                         "--fork-version",
                         "0.153.1-fork.2",
                         "--",
+                        "--entrypoint-bin",
+                        "prebuilt-codex",
                         "--package-dir",
                         "dist/package",
                     ],
@@ -116,7 +219,8 @@ version = "not-a-package-version"
             ):
                 self.assertEqual(build.main(), 0)
 
-            self.assertEqual(manifest.read_bytes(), original_manifest)
+            run.assert_not_called()
+            self.assertEqual(package_manifest.read_bytes(), original_manifest)
             self.assertEqual(lockfile.read_text(), "original lock\n")
 
 

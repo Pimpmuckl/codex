@@ -17,10 +17,13 @@ on:
     tags:
       - "codex-plus-plus-v*"
     paths:
+      - ".github/actions/setup-msvc-env/**"
+      - ".github/scripts/install-musl-build-tools.sh"
       - ".github/workflows/codex-plus-plus-release.yml"
-      - "codex-rs/**/Cargo.toml"
-      - "codex-rs/Cargo.lock"
-      - "codex-rs/rust-toolchain.toml"
+      - "codex-rs/**"
+      - "scripts/build_codex_plus_plus.py"
+      - "scripts/build_codex_package.py"
+      - "scripts/codex_package/**"
 
 permissions: {}
 
@@ -113,12 +116,14 @@ jobs:
       - name: Validate release helpers
         run: |
           python scripts/codex_package/test_build_codex_plus_plus.py
+          python scripts/codex_package/tests/test_source_mtime_cache.py
           python scripts/codex_package/tests/test_codex_plus_plus_release.py
           python -m py_compile \
             scripts/build_codex_plus_plus.py \
+            scripts/codex_package/codex_plus_plus/source_mtime_cache.py \
             scripts/codex_package/codex_plus_plus/release.py
 
-  warm-dependencies:
+  warm-build-cache:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -138,6 +143,7 @@ jobs:
       AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && '1' || '' }}
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+      SOURCE_MTIME_STATE: codex-rs/target/codex-plus-plus-source-mtimes-${{ matrix.target }}.json
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -162,15 +168,36 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      - name: Restore and save Codex++ dependency cache
+      - name: Resolve release build cache identity
+        id: release-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          image="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"
+          toolchain="${{ hashFiles('codex-rs/rust-toolchain.toml') }}"
+          build_inputs="${{ hashFiles('.github/actions/setup-msvc-env/**', '.github/scripts/install-musl-build-tools.sh', '.github/workflows/codex-plus-plus-release.yml') }}"
+          prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"
+          echo "key=${prefix}-${tree}" >> "$GITHUB_OUTPUT"
+          echo "prefix=${prefix}-" >> "$GITHUB_OUTPUT"
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Codex++ release build cache
+        id: restore-build-cache
         continue-on-error: true
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          workspaces: codex-rs -> target
-          shared-key: codex-plus-plus-${{ env.TARGET }}-release
-          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER LIBSQLITE3_FLAGS TARGET
-          cache-bin: false
-          cache-workspace-crates: false
+          key: ${{ steps.release-cache.outputs.key }}
+          restore-keys: |
+            ${{ steps.release-cache.outputs.prefix }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/codex-package
+            codex-rs/target/release
+            codex-rs/target/${{ matrix.target }}/release
+            codex-rs/target/.rustc_info.json
+            ${{ env.SOURCE_MTIME_STATE }}
 
       - name: Regenerate v8 after cache restore
         working-directory: codex-rs
@@ -208,7 +235,7 @@ jobs:
           echo "BWRAP=${GITHUB_WORKSPACE}/codex-rs/${bwrap}" >> "$GITHUB_ENV"
           echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
 
-      - name: Warm full-release dependencies
+      - name: Warm full-release build
         shell: bash
         run: |
           package_args=(
@@ -220,7 +247,26 @@ jobs:
           if [[ -n "${BWRAP:-}" ]]; then
             package_args+=(--bwrap-bin "$BWRAP")
           fi
-          python scripts/build_codex_plus_plus.py --suffix cache -- "${package_args[@]}"
+          python scripts/build_codex_plus_plus.py \
+            --suffix cache \
+            --build-cache-state "$SOURCE_MTIME_STATE" \
+            -- \
+            "${package_args[@]}"
+
+      - name: Save Codex++ release build cache
+        if: steps.restore-build-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.release-cache.outputs.key }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/codex-package
+            codex-rs/target/release
+            codex-rs/target/${{ matrix.target }}/release
+            codex-rs/target/.rustc_info.json
+            ${{ env.SOURCE_MTIME_STATE }}
 
   build:
     needs: prepare
@@ -252,6 +298,7 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
       LIBSQLITE3_FLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'SQLITE_DISABLE_INTRINSIC' || '' }}
+      SOURCE_MTIME_STATE: codex-rs/target/codex-plus-plus-source-mtimes-${{ matrix.target }}.json
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -275,16 +322,36 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      - name: Restore Codex++ dependency cache
+      - name: Resolve release build cache identity
+        id: release-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          image="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"
+          toolchain="${{ hashFiles('codex-rs/rust-toolchain.toml') }}"
+          build_inputs="${{ hashFiles('.github/actions/setup-msvc-env/**', '.github/scripts/install-musl-build-tools.sh', '.github/workflows/codex-plus-plus-release.yml') }}"
+          prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"
+          echo "key=${prefix}-${tree}" >> "$GITHUB_OUTPUT"
+          echo "prefix=${prefix}-" >> "$GITHUB_OUTPUT"
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Codex++ release build cache
+        id: restore-build-cache
         continue-on-error: true
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          workspaces: codex-rs -> target
-          shared-key: codex-plus-plus-${{ env.TARGET }}-release
-          env-vars: AWS_LC_SYS_NO_JITTER_ENTROPY CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER LIBSQLITE3_FLAGS TARGET
-          cache-bin: false
-          cache-workspace-crates: false
-          save-if: false
+          key: ${{ steps.release-cache.outputs.key }}
+          restore-keys: |
+            ${{ steps.release-cache.outputs.prefix }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/codex-package
+            codex-rs/target/release
+            codex-rs/target/${{ matrix.target }}/release
+            codex-rs/target/.rustc_info.json
+            ${{ env.SOURCE_MTIME_STATE }}
 
       - name: Regenerate v8 after cache restore
         working-directory: codex-rs
@@ -338,6 +405,7 @@ jobs:
           fi
           python scripts/build_codex_plus_plus.py \
             --fork-version "$VERSION" \
+            --build-cache-state "$SOURCE_MTIME_STATE" \
             -- \
             --cargo-profile release \
             "${package_args[@]}"
