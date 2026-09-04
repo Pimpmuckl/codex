@@ -268,8 +268,11 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         push_trigger = workflow[
             workflow.index("  push:") : workflow.index("\n\npermissions:")
         ]
-        warm_dependencies = workflow[
-            workflow.index("  warm-dependencies:") : workflow.index("\n  build:")
+        warm_build_cache = workflow[
+            workflow.index("  warm-build-cache:") : workflow.index("\n  build:")
+        ]
+        build = workflow[
+            workflow.index("\n  build:") : workflow.index("\n  stage-npm:")
         ]
         github_job = workflow[workflow.index("  publish-github:") :]
         self.assertEqual(
@@ -280,35 +283,83 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
     tags:
       - "codex-plus-plus-v*"
     paths:
+      - ".github/actions/setup-msvc-env/**"
+      - ".github/scripts/install-musl-build-tools.sh"
       - ".github/workflows/codex-plus-plus-release.yml"
-      - "codex-rs/**/Cargo.toml"
-      - "codex-rs/Cargo.lock"
-      - "codex-rs/rust-toolchain.toml"''',
+      - "codex-rs/**"
+      - "scripts/build_codex_plus_plus.py"
+      - "scripts/build_codex_package.py"
+      - "scripts/codex_package/**"''',
         )
         self.assertIn(
             "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
-            warm_dependencies,
+            warm_build_cache,
         )
-        self.assertIn("- name: Warm full-release dependencies", warm_dependencies)
-        build = workflow[
-            workflow.index("\n  build:") : workflow.index("\n  stage-npm:")
-        ]
+        self.assertIn("- name: Warm full-release build", warm_build_cache)
+        self.assertIn("actions/cache/save@", warm_build_cache)
+        self.assertNotIn("actions/cache/save@", build)
         for job, build_step in (
-            (warm_dependencies, "- name: Warm full-release dependencies"),
+            (warm_build_cache, "- name: Warm full-release build"),
             (build, "- name: Build package archive"),
         ):
             self.assertLess(
                 job.index("rustup toolchain uninstall stable"),
-                job.index("Swatinem/rust-cache@"),
+                job.index("Resolve release build cache identity"),
             )
             self.assertLess(
                 job.index("uses: ./.github/actions/setup-msvc-env"),
-                job.index("Swatinem/rust-cache@"),
+                job.index("Resolve release build cache identity"),
             )
-            self.assertLess(job.index("Swatinem/rust-cache@"), job.index(build_step))
+            self.assertLess(
+                job.index("actions/cache/restore@"),
+                job.index("Regenerate v8 after cache restore"),
+            )
+            self.assertLess(job.index("actions/cache/restore@"), job.index(build_step))
+            self.assertIn(
+                'prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"',
+                job,
+            )
+            self.assertIn("tree=\"$(git rev-parse 'HEAD^{tree}')\"", job)
+            self.assertIn(
+                'image="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"', job
+            )
+            self.assertIn(
+                "toolchain=\"${{ hashFiles('codex-rs/rust-toolchain.toml') }}\"",
+                job,
+            )
+            self.assertIn('build_inputs="${{ hashFiles(', job)
+            for build_input in (
+                ".github/actions/setup-msvc-env/**",
+                ".github/scripts/install-musl-build-tools.sh",
+                ".github/workflows/codex-plus-plus-release.yml",
+            ):
+                self.assertIn(build_input, job)
+            self.assertNotIn("sha256sum codex-rs/rust-toolchain.toml", job)
+            self.assertIn("~/.cargo/registry", job)
+            self.assertIn("~/.cargo/git", job)
+            self.assertNotIn("~/.cargo/registry/index", job)
+            self.assertNotIn("~/.cargo/git/db", job)
+            self.assertIn(
+                "codex-rs/target/${{ matrix.target }}/release",
+                job,
+            )
+            self.assertIn("${{ runner.temp }}/codex-package", job)
+            self.assertIn("${{ env.SOURCE_MTIME_STATE }}", job)
+            self.assertIn("${{ steps.release-cache.outputs.prefix }}", job)
+        self.assertEqual(workflow.count("actions/cache/restore@"), 2)
+        self.assertEqual(workflow.count("actions/cache/save@"), 1)
+        self.assertNotIn("Swatinem/rust-cache@", workflow)
+        self.assertNotIn("cache-workspace-crates:", workflow)
         self.assertEqual(workflow.count("rustup toolchain uninstall stable"), 2)
         self.assertEqual(workflow.count("uses: ./.github/actions/setup-msvc-env"), 2)
         self.assertNotIn("  warm-cache:", workflow)
+        self.assertIn("--cargo-profile release", warm_build_cache)
+        self.assertIn('--build-cache-state "$SOURCE_MTIME_STATE"', warm_build_cache)
+        self.assertIn("--cargo-profile release", build)
+        self.assertIn('--build-cache-state "$SOURCE_MTIME_STATE"', build)
+        self.assertIn("test_source_mtime_cache.py", workflow)
+        self.assertIn("source_mtime_cache.py", workflow)
+        self.assertEqual(workflow.count("SOURCE_MTIME_STATE:"), 2)
         self.assertIn("      - publish-npm", github_job)
         self.assertIn("      id-token: write", workflow)
         self.assertEqual(workflow.count("npm@11.18.0"), 2)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a Codex++ package with a temporary fork version."""
+"""Build a Codex++ package with a temporary public fork version."""
 
 import argparse
 import os
@@ -11,6 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CODEX_RS = REPO_ROOT / "codex-rs"
+WORKSPACE_MANIFEST = CODEX_RS / "Cargo.toml"
 CARGO_LOCK = CODEX_RS / "Cargo.lock"
 DEFAULT_PACKAGE_DIR = "dist/codex-plus-plus"
 PACKAGE_VERSION_PATTERN = re.compile(
@@ -25,6 +26,12 @@ VERSIONED_PACKAGE_MANIFESTS = {
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from codex_package.cli import parse_args as parse_package_args  # noqa: E402
+from codex_package.codex_plus_plus.source_mtime_cache import (  # noqa: E402
+    restore_source_mtimes,
+)
+from codex_package.codex_plus_plus.source_mtime_cache import (  # noqa: E402
+    save_source_mtimes,
+)
 from codex_package.version import read_workspace_version  # noqa: E402
 
 
@@ -43,15 +50,30 @@ def main() -> int:
         fork_version,
     ]
     package_manifest = versioned_package_manifest(package_args)
+    build_cache_state = resolve_build_cache_state(args.build_cache_state)
+    build_entrypoint = parse_package_args(package_args).entrypoint_bin is None
 
-    original_manifest = package_manifest.read_bytes()
-    original_lock = CARGO_LOCK.read_bytes() if CARGO_LOCK.exists() else None
-    package_manifest.write_bytes(
-        replace_package_version(original_manifest.decode("utf-8"), fork_version).encode(
-            "utf-8"
-        )
+    original_package_manifest = (
+        package_manifest.read_bytes() if build_entrypoint else None
     )
+    original_lock = CARGO_LOCK.read_bytes() if CARGO_LOCK.exists() else None
     try:
+        if original_package_manifest is not None:
+            package_manifest.write_bytes(
+                replace_package_version(
+                    original_package_manifest.decode("utf-8"), fork_version
+                ).encode("utf-8")
+            )
+            normalize_workspace_lockfile(package_args)
+        if build_cache_state is not None:
+            try:
+                restore_source_mtimes(CODEX_RS, build_cache_state)
+            except OSError as error:
+                print(
+                    f"Ignoring source mtime cache restore failure: {error}",
+                    file=sys.stderr,
+                )
+
         print(f"Codex++ package version: {fork_version}", flush=True)
         print(f"Suggested git tag: {tag_name}", flush=True)
         build_status = subprocess.call(
@@ -62,8 +84,17 @@ def main() -> int:
             ],
             cwd=REPO_ROOT,
         )
+        if build_status == 0 and build_cache_state is not None:
+            try:
+                save_source_mtimes(CODEX_RS, build_cache_state)
+            except OSError as error:
+                print(
+                    f"Ignoring source mtime cache save failure: {error}",
+                    file=sys.stderr,
+                )
     finally:
-        package_manifest.write_bytes(original_manifest)
+        if original_package_manifest is not None:
+            package_manifest.write_bytes(original_package_manifest)
         if original_lock is None:
             CARGO_LOCK.unlink(missing_ok=True)
         else:
@@ -76,7 +107,7 @@ def main() -> int:
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
-        description="Build Codex++ while temporarily suffixing the package version.",
+        description="Build Codex++ with an exact public package version.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -91,6 +122,14 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--tag-prefix",
         default="codex-plus-plus-v",
         help="Prefix used when printing the suggested fork tag.",
+    )
+    parser.add_argument(
+        "--build-cache-state",
+        type=Path,
+        help=(
+            "Optional source-mtime state file used with a restored Cargo target "
+            "cache. Relative paths are resolved from the repository root."
+        ),
     )
     parser.add_argument(
         "--install",
@@ -170,17 +209,38 @@ def versioned_package_manifest(args: list[str]) -> Path:
         ) from error
 
 
+def normalize_workspace_lockfile(package_args: list[str]) -> None:
+    cargo = getattr(parse_package_args(package_args), "cargo", "cargo")
+    subprocess.run(
+        [
+            cargo,
+            "update",
+            "--workspace",
+            "--manifest-path",
+            str(WORKSPACE_MANIFEST),
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+
+
+def resolve_build_cache_state(path: Path | None) -> Path | None:
+    if path is None or path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
 def replace_package_version(cargo_toml: str, version: str) -> str:
-    in_package = False
+    in_section = False
     lines = cargo_toml.splitlines(keepends=True)
     for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped == "[package]":
-            in_package = True
+            in_section = True
             continue
-        if in_package and stripped.startswith("["):
+        if in_section and stripped.startswith("["):
             break
-        if not in_package:
+        if not in_section:
             continue
 
         body = line.rstrip("\r\n")
@@ -193,7 +253,7 @@ def replace_package_version(cargo_toml: str, version: str) -> str:
             )
             return "".join(lines)
 
-    raise RuntimeError("Could not find [package].version in package manifest")
+    raise RuntimeError("Could not find [package].version in Cargo manifest")
 
 
 def install_package(package_args: list[str]) -> int:
