@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -73,13 +75,14 @@ version = "not-a-package-version"
             CODEX_RS / "app-server" / "Cargo.toml",
         )
 
-    def test_build_restores_source_bytes_and_lockfile(self) -> None:
+    def test_build_restores_source_bytes_and_caches_temporary_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             codex_rs = root / "codex-rs"
             workspace_manifest = codex_rs / "Cargo.toml"
             package_manifest = codex_rs / "cli" / "Cargo.toml"
             lockfile = codex_rs / "Cargo.lock"
+            state = codex_rs / "target" / "source-mtimes.json"
             package_manifest.parent.mkdir(parents=True)
             original_workspace_manifest = (
                 b'[workspace]\r\nmembers = ["cli"]\r\n\r\n'
@@ -121,6 +124,7 @@ version = "not-a-package-version"
 
             with (
                 patch.object(build, "REPO_ROOT", root),
+                patch.object(build, "CODEX_RS", codex_rs),
                 patch.object(build, "WORKSPACE_MANIFEST", workspace_manifest),
                 patch.object(build, "CARGO_LOCK", lockfile),
                 patch.dict(
@@ -138,6 +142,8 @@ version = "not-a-package-version"
                         "build_codex_plus_plus.py",
                         "--fork-version",
                         "0.153.1-fork.2",
+                        "--build-cache-state",
+                        str(state),
                         "--",
                         "--package-dir",
                         "dist/package",
@@ -151,6 +157,22 @@ version = "not-a-package-version"
             )
             self.assertEqual(package_manifest.read_bytes(), original_package_manifest)
             self.assertEqual(lockfile.read_text(), "original lock\n")
+
+            cached = json.loads(state.read_text(encoding="utf-8"))["files"]
+            self.assertEqual(
+                cached["Cargo.toml"]["sha256"],
+                hashlib.sha256(original_workspace_manifest).hexdigest(),
+            )
+            self.assertEqual(
+                cached["cli/Cargo.toml"]["sha256"],
+                hashlib.sha256(
+                    replace_package_version(
+                        original_package_manifest.decode("utf-8"),
+                        "0.153.1-fork.2",
+                    ).encode("utf-8")
+                ).hexdigest(),
+            )
+            self.assertNotIn("target/source-mtimes.json", cached)
 
     def test_prebuilt_entrypoint_skips_manifest_and_cargo_update(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
