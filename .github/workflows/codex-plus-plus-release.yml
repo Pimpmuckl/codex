@@ -178,9 +178,11 @@ jobs:
           toolchain="${{ hashFiles('codex-rs/rust-toolchain.toml') }}"
           build_inputs="${{ hashFiles('.github/actions/setup-msvc-env/**', '.github/scripts/install-musl-build-tools.sh', '.github/workflows/codex-plus-plus-release.yml') }}"
           prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"
-          echo "key=${prefix}-${tree}" >> "$GITHUB_OUTPUT"
-          echo "prefix=${prefix}-" >> "$GITHUB_OUTPUT"
-          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=${prefix}-${tree}"
+            echo "prefix=${prefix}-"
+            echo "tree=${tree}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore Codex++ release build cache
         id: restore-build-cache
@@ -308,35 +310,91 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Resolve native release cache identity
+        id: native-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          {
+            echo "tree=${tree}"
+            echo "key=codex-plus-plus-native-v1-${TARGET}-${tree}-${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact native release cache
+        id: restore-native
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.native-cache.outputs.key }}
+          path: dist/prebuilt-${{ matrix.target }}
+
+      - name: Hydrate cached native package
+        id: hydrate-native
+        if: steps.restore-native.outputs.cache-hit == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          prebuilt="dist/prebuilt-${TARGET}"
+          archive="${prebuilt}/codex-plus-plus-${VERSION}-${TARGET}.${ARCHIVE_SUFFIX}"
+          checksum="${archive}.sha256"
+          rm -rf "dist/package-${TARGET}"
+          python - "$archive" "$checksum" "dist/package-${TARGET}" <<'PY'
+          import hashlib
+          from pathlib import Path
+          import shutil
+          import sys
+
+          archive = Path(sys.argv[1])
+          checksum = Path(sys.argv[2])
+          package_dir = Path(sys.argv[3])
+          expected = checksum.read_text(encoding="utf-8").split()[0]
+          digest = hashlib.sha256()
+          with archive.open("rb") as source:
+              for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          if digest.hexdigest() != expected:
+              raise SystemExit(f"Cached archive checksum mismatch: {archive}")
+          package_dir.mkdir(parents=True)
+          shutil.unpack_archive(archive, package_dir)
+          PY
+          cp "$archive" "dist/codex-plus-plus-${VERSION}-${TARGET}.${ARCHIVE_SUFFIX}"
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        if: steps.hydrate-native.outcome != 'success'
         with:
           targets: ${{ matrix.target }}
 
       - name: Remove runner-provided Rust toolchain
+        if: steps.hydrate-native.outcome != 'success'
         shell: bash
         run: rustup toolchain uninstall stable
 
       - name: Configure LLVM linker
-        if: runner.os == 'Windows'
+        if: steps.hydrate-native.outcome != 'success' && runner.os == 'Windows'
         uses: ./.github/actions/setup-msvc-env
         with:
           target: ${{ matrix.target }}
 
       - name: Resolve release build cache identity
+        if: steps.hydrate-native.outcome != 'success'
         id: release-cache
         shell: bash
         run: |
           set -euo pipefail
-          tree="$(git rev-parse 'HEAD^{tree}')"
+          tree="${{ steps.native-cache.outputs.tree }}"
           image="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"
           toolchain="${{ hashFiles('codex-rs/rust-toolchain.toml') }}"
           build_inputs="${{ hashFiles('.github/actions/setup-msvc-env/**', '.github/scripts/install-musl-build-tools.sh', '.github/workflows/codex-plus-plus-release.yml') }}"
           prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"
-          echo "key=${prefix}-${tree}" >> "$GITHUB_OUTPUT"
-          echo "prefix=${prefix}-" >> "$GITHUB_OUTPUT"
-          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          {
+            echo "key=${prefix}-${tree}"
+            echo "prefix=${prefix}-"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore Codex++ release build cache
+        if: steps.hydrate-native.outcome != 'success'
         id: restore-build-cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -354,6 +412,7 @@ jobs:
             ${{ env.SOURCE_MTIME_STATE }}
 
       - name: Regenerate v8 after cache restore
+        if: steps.hydrate-native.outcome != 'success'
         working-directory: codex-rs
         shell: bash
         run: |
@@ -361,14 +420,14 @@ jobs:
           rm -rf "target/${TARGET}/release/gn_out"
 
       - name: Install Zig
-        if: runner.os == 'Linux'
+        if: steps.hydrate-native.outcome != 'success' && runner.os == 'Linux'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.14.0
           use-cache: false
 
       - name: Install musl build tools
-        if: runner.os == 'Linux'
+        if: steps.hydrate-native.outcome != 'success' && runner.os == 'Linux'
         shell: bash
         run: |
           if [[ -f /etc/apt/apt-mirrors.txt ]]; then
@@ -378,7 +437,7 @@ jobs:
           bash .github/scripts/install-musl-build-tools.sh
 
       - name: Build bundled bwrap
-        if: runner.os == 'Linux'
+        if: steps.hydrate-native.outcome != 'success' && runner.os == 'Linux'
         working-directory: codex-rs
         shell: bash
         run: |
@@ -390,6 +449,7 @@ jobs:
           echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
 
       - name: Build package archive
+        if: steps.hydrate-native.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -418,6 +478,11 @@ jobs:
           set -euo pipefail
           executable="dist/package-${TARGET}/${EXECUTABLE}"
           [[ "$("$executable" --version)" == "codex-cli ${VERSION}" ]]
+
+      - name: Report native cache result
+        shell: bash
+        run: |
+          echo "Native release cache reused: ${{ steps.hydrate-native.outcome == 'success' }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stage release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
