@@ -191,12 +191,20 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
                 )
             }
             published: set[str] = set()
+            delayed_spec = next(iter(integrities))
+            delayed_checks = 0
 
             def npm_view(spec: str, field: str) -> str | None:
+                nonlocal delayed_checks
                 if field == "name":
                     self.assertEqual(spec, release.PACKAGE_NAME)
                     return release.PACKAGE_NAME
-                return integrities[spec] if spec in published else None
+                if spec not in published:
+                    return None
+                if spec == delayed_spec and delayed_checks < 13:
+                    delayed_checks += 1
+                    return None
+                return integrities[spec]
 
             def npm_publish(command: list[str], *, check: bool) -> None:
                 self.assertTrue(check)
@@ -207,10 +215,12 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
             with (
                 patch.object(release, "npm_view", side_effect=npm_view),
                 patch.object(release.subprocess, "run", side_effect=npm_publish) as run,
+                patch.object(release.time, "sleep") as sleep,
             ):
                 release.publish(VERSION, npm_dir)
 
             self.assertEqual(run.call_count, 4)
+            self.assertEqual(sleep.call_count, 13)
 
     def test_publish_continues_after_manual_linux_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -224,7 +224,7 @@ def publish(version: str, npm_dir: Path, *, dry_run: bool = False) -> None:
             ],
             check=True,
         )
-        for attempt in range(12):
+        for _ in range(20 * 60 // 5):
             current = npm_view(spec, "dist.integrity")
             if current == expected:
                 break
@@ -232,8 +232,7 @@ def publish(version: str, npm_dir: Path, *, dry_run: bool = False) -> None:
                 raise RuntimeError(
                     f"Published {spec} has registry integrity {current} != {expected}"
                 )
-            if attempt < 11:
-                time.sleep(5)
+            time.sleep(5)
         else:
             raise RuntimeError(f"Timed out confirming {spec} in the npm registry")
 
