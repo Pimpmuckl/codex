@@ -11,10 +11,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CODEX_RS = REPO_ROOT / "codex-rs"
-CARGO_TOML = CODEX_RS / "Cargo.toml"
 CARGO_LOCK = CODEX_RS / "Cargo.lock"
 DEFAULT_PACKAGE_DIR = "dist/codex-plus-plus"
-WORKSPACE_VERSION_PATTERN = re.compile(r'^(version\s*=\s*")[^"]+(")', re.MULTILINE)
+PACKAGE_VERSION_PATTERN = re.compile(
+    r'^(?P<indent>\s*)version(?:\.workspace)?\s*=\s*(?:true|"[^"]*")'
+    r"(?P<suffix>\s*(?:#.*)?)$"
+)
+VERSIONED_PACKAGE_MANIFESTS = {
+    "codex": CODEX_RS / "cli" / "Cargo.toml",
+    "codex-app-server": CODEX_RS / "app-server" / "Cargo.toml",
+}
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
@@ -31,14 +37,19 @@ def main() -> int:
         else next_fork_version(base_version)
     )
     tag_name = f"{args.tag_prefix}{fork_version}"
-    package_args = default_package_args(package_args)
+    package_args = [
+        *default_package_args(package_args),
+        "--package-version",
+        fork_version,
+    ]
+    package_manifest = versioned_package_manifest(package_args)
 
-    original_toml = CARGO_TOML.read_text(encoding="utf-8")
+    original_manifest = package_manifest.read_bytes()
     original_lock = CARGO_LOCK.read_bytes() if CARGO_LOCK.exists() else None
-    CARGO_TOML.write_text(
-        replace_workspace_version(original_toml, fork_version),
-        encoding="utf-8",
-        newline="",
+    package_manifest.write_bytes(
+        replace_package_version(original_manifest.decode("utf-8"), fork_version).encode(
+            "utf-8"
+        )
     )
     try:
         print(f"Codex++ package version: {fork_version}", flush=True)
@@ -52,7 +63,7 @@ def main() -> int:
             cwd=REPO_ROOT,
         )
     finally:
-        CARGO_TOML.write_text(original_toml, encoding="utf-8", newline="")
+        package_manifest.write_bytes(original_manifest)
         if original_lock is None:
             CARGO_LOCK.unlink(missing_ok=True)
         else:
@@ -70,7 +81,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     )
     parser.add_argument(
         "--fork-version",
-        help="Exact temporary package version to write into codex-rs/Cargo.toml.",
+        help="Exact temporary package version to use for the packaged entrypoint.",
     )
     parser.add_argument(
         "--suffix",
@@ -89,7 +100,10 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "package_args",
         nargs=argparse.REMAINDER,
-        help="Arguments forwarded to scripts/build_codex_package.py. Use -- before these.",
+        help=(
+            "Arguments forwarded to scripts/build_codex_package.py. "
+            "Use -- before these."
+        ),
     )
     args = parser.parse_args()
     package_args = args.package_args
@@ -146,6 +160,42 @@ def package_dir_arg(args: list[str]) -> Path | None:
     return getattr(parse_package_args(args), "package_dir", None)
 
 
+def versioned_package_manifest(args: list[str]) -> Path:
+    variant = parse_package_args(args).variant
+    try:
+        return VERSIONED_PACKAGE_MANIFESTS[variant]
+    except KeyError as error:
+        raise RuntimeError(
+            f"Codex++ does not know which package manifest owns variant {variant!r}"
+        ) from error
+
+
+def replace_package_version(cargo_toml: str, version: str) -> str:
+    in_package = False
+    lines = cargo_toml.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[package]":
+            in_package = True
+            continue
+        if in_package and stripped.startswith("["):
+            break
+        if not in_package:
+            continue
+
+        body = line.rstrip("\r\n")
+        newline = line[len(body) :]
+        match = PACKAGE_VERSION_PATTERN.match(body)
+        if match is not None:
+            lines[index] = (
+                f'{match.group("indent")}version = "{version}"'
+                f"{match.group('suffix')}{newline}"
+            )
+            return "".join(lines)
+
+    raise RuntimeError("Could not find [package].version in package manifest")
+
+
 def install_package(package_args: list[str]) -> int:
     package_dir = package_dir_arg(package_args)
     if package_dir is None:
@@ -179,24 +229,6 @@ def install_package(package_args: list[str]) -> int:
             "--install",
         ]
     return subprocess.call(command, cwd=REPO_ROOT)
-
-
-def replace_workspace_version(cargo_toml: str, version: str) -> str:
-    in_workspace_package = False
-    lines = cargo_toml.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == "[workspace.package]":
-            in_workspace_package = True
-            continue
-        if in_workspace_package and stripped.startswith("["):
-            break
-        if in_workspace_package and WORKSPACE_VERSION_PATTERN.match(stripped):
-            lines[index] = WORKSPACE_VERSION_PATTERN.sub(
-                rf"\g<1>{version}\2", line, count=1
-            )
-            return "".join(lines)
-    raise RuntimeError(f"Could not find [workspace.package].version in {CARGO_TOML}")
 
 
 if __name__ == "__main__":
