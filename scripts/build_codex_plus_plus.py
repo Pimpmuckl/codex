@@ -26,12 +26,6 @@ VERSIONED_PACKAGE_MANIFESTS = {
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from codex_package.cli import parse_args as parse_package_args  # noqa: E402
-from codex_package.codex_plus_plus.source_mtime_cache import (  # noqa: E402
-    restore_source_mtimes,
-)
-from codex_package.codex_plus_plus.source_mtime_cache import (  # noqa: E402
-    save_source_mtimes,
-)
 from codex_package.version import read_workspace_version  # noqa: E402
 
 
@@ -50,7 +44,6 @@ def main() -> int:
         fork_version,
     ]
     package_manifest = versioned_package_manifest(package_args)
-    build_cache_state = resolve_build_cache_state(args.build_cache_state)
     build_entrypoint = parse_package_args(package_args).entrypoint_bin is None
 
     original_package_manifest = (
@@ -65,14 +58,6 @@ def main() -> int:
                 ).encode("utf-8")
             )
             normalize_workspace_lockfile(package_args)
-        if build_cache_state is not None:
-            try:
-                restore_source_mtimes(CODEX_RS, build_cache_state)
-            except OSError as error:
-                print(
-                    f"Ignoring source mtime cache restore failure: {error}",
-                    file=sys.stderr,
-                )
 
         print(f"Codex++ package version: {fork_version}", flush=True)
         print(f"Suggested git tag: {tag_name}", flush=True)
@@ -84,14 +69,6 @@ def main() -> int:
             ],
             cwd=REPO_ROOT,
         )
-        if build_status == 0 and build_cache_state is not None:
-            try:
-                save_source_mtimes(CODEX_RS, build_cache_state)
-            except OSError as error:
-                print(
-                    f"Ignoring source mtime cache save failure: {error}",
-                    file=sys.stderr,
-                )
     finally:
         if original_package_manifest is not None:
             package_manifest.write_bytes(original_package_manifest)
@@ -122,14 +99,6 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--tag-prefix",
         default="codex-plus-plus-v",
         help="Prefix used when printing the suggested fork tag.",
-    )
-    parser.add_argument(
-        "--build-cache-state",
-        type=Path,
-        help=(
-            "Optional source-mtime state file used with a restored Cargo target "
-            "cache. Relative paths are resolved from the repository root."
-        ),
     )
     parser.add_argument(
         "--install",
@@ -222,12 +191,6 @@ def normalize_workspace_lockfile(package_args: list[str]) -> None:
         cwd=REPO_ROOT,
         check=True,
     )
-
-
-def resolve_build_cache_state(path: Path | None) -> Path | None:
-    if path is None or path.is_absolute():
-        return path
-    return REPO_ROOT / path
 
 
 def replace_package_version(cargo_toml: str, version: str) -> str:
