@@ -734,11 +734,11 @@ See the Codex keymap documentation for supported actions and examples."
                 AppRunControl::Exit(exit_reason) => Some(exit_reason),
             }
         } else if app.config.check_for_update_on_startup
-            && !crate::update_versions::is_source_build_version(CODEX_CLI_VERSION)
+            && !crate::update_versions::is_source_build_version(codex_cli_version())
             && let Some(lag_warning) = crate::codex_plus_plus::lag_warning(
                 &UpdateAction::read_cached_fork_release_status(
                     app.config.codex_home.as_path(),
-                    CODEX_CLI_VERSION,
+                    codex_cli_version(),
                 ),
                 app.config.codex_home.as_path(),
             )

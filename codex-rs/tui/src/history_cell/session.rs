@@ -137,7 +137,7 @@ pub(crate) fn new_session_info(
         session.reasoning_effort.clone(),
         show_fast_status,
         config.cwd.to_path_buf(),
-        CODEX_CLI_VERSION,
+        codex_cli_version(),
     )
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,

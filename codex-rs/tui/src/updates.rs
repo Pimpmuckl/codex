@@ -12,12 +12,12 @@ use codex_install_context::codex_plus_plus::UpdateChannel;
 use codex_install_context::codex_plus_plus::UpdatePlan;
 use std::time::SystemTime;
 
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::codex_cli_version;
 
 pub(crate) use crate::updates_cache::dismiss_version;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
+    if !config.check_for_update_on_startup || is_source_build_version(codex_cli_version()) {
         return None;
     }
 
@@ -37,7 +37,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         tokio::spawn(async move {
             crate::codex_plus_plus::refresh_release_status(
                 &version_file,
-                CODEX_CLI_VERSION,
+                codex_cli_version(),
                 plan,
                 upstream_plan,
             )
@@ -48,7 +48,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
     info.and_then(|info| {
         let latest = info.latest_fork_version?;
-        if is_newer(&latest, CODEX_CLI_VERSION).unwrap_or(false) {
+        if is_newer(&latest, codex_cli_version()).unwrap_or(false) {
             Some(latest)
         } else {
             None
@@ -59,7 +59,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 /// Returns the latest version to show in a popup, if it should be shown.
 /// This respects the user's dismissal choice for the current latest version.
 pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
+    if !config.check_for_update_on_startup || is_source_build_version(codex_cli_version()) {
         return None;
     }
 

@@ -175,7 +175,7 @@ fn maybe_dcg_update_tip(
 
 pub(crate) mod announcement {
     use crate::tooltips::ANNOUNCEMENT_TIP_URL;
-    use crate::version::CODEX_CLI_VERSION;
+    use crate::version::codex_cli_version;
     use chrono::NaiveDate;
     use chrono::Utc;
     use codex_http_client::ClientRouteClass;
@@ -294,7 +294,7 @@ pub(crate) mod announcement {
                 .target_oses
                 .as_ref()
                 .is_none_or(|target_oses| target_oses.contains(&CURRENT_OS));
-            if tip.version_matches(CODEX_CLI_VERSION)
+            if tip.version_matches(codex_cli_version())
                 && tip.date_matches(today)
                 && tip.target_app == "cli"
                 && plan_matches

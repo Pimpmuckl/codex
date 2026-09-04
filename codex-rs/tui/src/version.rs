@@ -1,2 +1,1 @@
-/// The current Codex CLI version as embedded at compile time.
-pub const CODEX_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) use crate::codex_plus_plus::runtime_version::codex_cli_version;

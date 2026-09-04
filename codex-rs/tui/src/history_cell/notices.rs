@@ -46,7 +46,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
                 "✨\u{200A}".bold().cyan(),
                 "Update available!".bold().cyan(),
                 " ",
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
+                format!("{} -> {}", codex_cli_version(), self.latest_version).bold(),
             ],
             update_instruction,
             "",
@@ -78,7 +78,11 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             .unwrap_or_else(|| current_plan.channel().release_notes_url());
         vec![
             Line::from("Update available!"),
-            Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
+            Line::from(format!(
+                "{} -> {}",
+                codex_cli_version(),
+                self.latest_version
+            )),
             Line::from(update_instruction),
             Line::from(""),
             Line::from("See full release notes:"),

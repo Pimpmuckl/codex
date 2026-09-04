@@ -162,14 +162,14 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 fn normalize_cli_version(rendered: String) -> String {
-    let padding = " ".repeat(CODEX_CLI_VERSION.len().saturating_sub("0.0.0".len()));
+    let padding = " ".repeat(codex_cli_version().len().saturating_sub("0.0.0".len()));
     rendered
         .lines()
         .map(|line| {
-            if !line.contains(CODEX_CLI_VERSION) {
+            if !line.contains(codex_cli_version()) {
                 return line.to_string();
             }
-            let mut line = line.replace(CODEX_CLI_VERSION, "0.0.0");
+            let mut line = line.replace(codex_cli_version(), "0.0.0");
             if let Some(pipe_idx) = line.rfind('│') {
                 line.insert_str(pipe_idx, &padding);
             }
@@ -1269,7 +1269,7 @@ fn codex_plus_plus_update_available_history_cell_snapshots() {
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 110))
         .join("\n")
-        .replace(CODEX_CLI_VERSION, "0.0.0");
+        .replace(codex_cli_version(), "0.0.0");
     insta::assert_snapshot!(rendered, @r"
     ╭──────────────────────────────────────────────────────╮
     │ ✨ Update available! 0.0.0 -> 9.9.9                │
@@ -1282,7 +1282,7 @@ fn codex_plus_plus_update_available_history_cell_snapshots() {
     let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
     let rendered = render_lines(&cell.display_lines(/*width*/ 110))
         .join("\n")
-        .replace(CODEX_CLI_VERSION, "0.0.0");
+        .replace(codex_cli_version(), "0.0.0");
     insta::assert_snapshot!(rendered, @r"
     ╭────────────────────────────────────────────────────────────────────────────────────╮
     │ ✨ Update available! 0.0.0 -> 9.9.9                                              │
