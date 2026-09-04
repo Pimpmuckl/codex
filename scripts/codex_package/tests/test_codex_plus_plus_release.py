@@ -201,7 +201,7 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
                     return release.PACKAGE_NAME
                 if spec not in published:
                     return None
-                if spec == delayed_spec and delayed_checks < 13:
+                if spec == delayed_spec and delayed_checks < 20 * 60 // 5:
                     delayed_checks += 1
                     return None
                 return integrities[spec]
@@ -220,7 +220,7 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
                 release.publish(VERSION, npm_dir)
 
             self.assertEqual(run.call_count, 4)
-            self.assertEqual(sleep.call_count, 13)
+            self.assertEqual(sleep.call_count, 20 * 60 // 5)
 
     def test_publish_continues_after_manual_linux_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
