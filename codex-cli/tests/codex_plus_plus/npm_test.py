@@ -319,6 +319,7 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
                 'prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"',
                 job,
             )
+            self.assertIn("tree=\"$(git rev-parse 'HEAD^{tree}')\"", job)
             self.assertIn(
                 'image="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"', job
             )
@@ -345,9 +346,7 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
             self.assertIn("${{ runner.temp }}/codex-package", job)
             self.assertIn("${{ env.SOURCE_MTIME_STATE }}", job)
             self.assertIn("${{ steps.release-cache.outputs.prefix }}", job)
-        self.assertIn("tree=\"$(git rev-parse 'HEAD^{tree}')\"", warm_build_cache)
-        self.assertIn('tree="${{ steps.native-cache.outputs.tree }}"', build)
-        self.assertEqual(workflow.count("actions/cache/restore@"), 3)
+        self.assertEqual(workflow.count("actions/cache/restore@"), 2)
         self.assertEqual(workflow.count("actions/cache/save@"), 1)
         self.assertNotIn("Swatinem/rust-cache@", workflow)
         self.assertNotIn("cache-workspace-crates:", workflow)
@@ -361,21 +360,6 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         self.assertIn("test_source_mtime_cache.py", workflow)
         self.assertIn("source_mtime_cache.py", workflow)
         self.assertEqual(workflow.count("SOURCE_MTIME_STATE:"), 2)
-        self.assertIn("Resolve native release cache identity", build)
-        self.assertIn("Restore exact native release cache", build)
-        self.assertIn("Hydrate cached native package", build)
-        self.assertIn(
-            "codex-plus-plus-native-v1-${TARGET}-${tree}-${VERSION}",
-            build,
-        )
-        self.assertIn(
-            "if: steps.hydrate-native.outcome != 'success'",
-            build,
-        )
-        self.assertIn(
-            'cp "$archive" "dist/codex-plus-plus-${VERSION}-${TARGET}.${ARCHIVE_SUFFIX}"',
-            build,
-        )
         self.assertIn("      - publish-npm", github_job)
         self.assertIn("      id-token: write", workflow)
         self.assertEqual(workflow.count("npm@11.18.0"), 2)
@@ -398,58 +382,6 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         self.assertIn('if [[ "$release_is_draft" == "true" ]]', github_job)
         self.assertNotIn("is already published", github_job)
         self.assertNotIn("NODE_AUTH_TOKEN", workflow)
-
-    def test_prebuild_workflow_seeds_exact_native_release_cache(self):
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "codex-plus-plus-release-prebuild.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("  workflow_dispatch:", workflow)
-        self.assertIn("source_ref:", workflow)
-        self.assertIn("release_version:", workflow)
-        self.assertIn(
-            '[[ "$GITHUB_REF" == "refs/heads/main" ]]',
-            workflow,
-        )
-        self.assertIn("ref: ${{ inputs.source_ref }}", workflow)
-        self.assertIn("ref: ${{ needs.prepare.outputs.source_sha }}", workflow)
-        self.assertIn("git rev-parse 'HEAD^{tree}'", workflow)
-        self.assertIn(
-            "codex-plus-plus-native-v1-${{ matrix.target }}-"
-            "${{ env.SOURCE_TREE }}-${{ env.VERSION }}",
-            workflow,
-        )
-        self.assertIn("Restore exact native release cache", workflow)
-        self.assertIn("Restore cached native package", workflow)
-        self.assertIn("Build exact native release", workflow)
-        self.assertIn("Save exact native release cache", workflow)
-        self.assertIn("--cargo-profile release", workflow)
-        self.assertIn('--build-cache-state "$SOURCE_MTIME_STATE"', workflow)
-        self.assertIn("Regenerate v8 after cache restore", workflow)
-        self.assertIn('archive.with_name(f"{archive.name}.sha256")', workflow)
-        self.assertIn(
-            '[[ "$("$executable" --version)" == "codex-cli ${VERSION}" ]]',
-            workflow,
-        )
-        self.assertIn(
-            'prefix="codex-plus-plus-release-v4-${TARGET}-${image}-${toolchain}-${build_inputs}"',
-            workflow,
-        )
-        self.assertIn('build_inputs="${{ hashFiles(', workflow)
-        self.assertIn(
-            'image="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"', workflow
-        )
-        self.assertIn("~/.cargo/registry", workflow)
-        self.assertIn("~/.cargo/git", workflow)
-        self.assertNotIn("~/.cargo/registry/index", workflow)
-        self.assertNotIn("~/.cargo/git/db", workflow)
-        self.assertIn("${{ env.SOURCE_MTIME_STATE }}", workflow)
-        self.assertNotIn("release-fast", workflow)
-        native_restore = workflow[
-            workflow.index(
-                "- name: Restore exact native release cache"
-            ) : workflow.index("- name: Restore cached native package")
-        ]
-        self.assertNotIn("restore-keys:", native_restore)
 
     @staticmethod
     def _write_release_archive(path: Path, package_dir: Path) -> None:
