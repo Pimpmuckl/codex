@@ -109,7 +109,7 @@ impl UpdatePromptScreen {
         Self {
             request_frame,
             latest_version,
-            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            current_version: crate::version::codex_cli_version().to_string(),
             update_action,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,

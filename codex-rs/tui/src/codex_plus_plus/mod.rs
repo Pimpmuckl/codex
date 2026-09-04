@@ -8,6 +8,7 @@ pub(crate) mod destructive_command_guard;
 mod lag_warning;
 mod model_capacity_retry;
 mod release_status;
+pub(crate) mod runtime_version;
 mod startup_accounts;
 mod user_message_inbox;
 mod weekly_window_scheduler;

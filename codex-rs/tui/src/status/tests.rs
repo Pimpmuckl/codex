@@ -20,7 +20,7 @@ use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::codex_cli_version;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache;
@@ -184,7 +184,7 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
-    let version_padding = " ".repeat(CODEX_CLI_VERSION.len().saturating_sub("0.0.0".len()));
+    let version_padding = " ".repeat(codex_cli_version().len().saturating_sub("0.0.0".len()));
     let frame_width = lines
         .iter()
         .find(|line| line.starts_with('╭'))
@@ -192,8 +192,8 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     lines
         .into_iter()
         .map(|line| {
-            let contains_cli_version = line.contains(CODEX_CLI_VERSION);
-            let mut line = line.replace(CODEX_CLI_VERSION, "0.0.0");
+            let contains_cli_version = line.contains(codex_cli_version());
+            let mut line = line.replace(codex_cli_version(), "0.0.0");
             if contains_cli_version && let Some(pipe_idx) = line.rfind('│') {
                 line.insert_str(pipe_idx, &version_padding);
             }

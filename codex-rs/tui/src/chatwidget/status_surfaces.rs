@@ -730,7 +730,7 @@ impl ChatWidget {
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
                 self.status_line_limit_display(Some(window), &label)
             }
-            StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
+            StatusLineItem::CodexVersion => Some(codex_cli_version().to_string()),
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
                 .map(|cws| format!("{} window", format_tokens_compact(cws))),

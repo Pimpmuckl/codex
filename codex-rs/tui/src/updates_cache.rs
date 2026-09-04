@@ -1,5 +1,5 @@
 use crate::legacy_core::config::Config;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::codex_cli_version;
 use codex_install_context::codex_plus_plus::ForkReleaseStatus;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<ForkRelea
 /// the update popup again for this version.
 pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
     let version_file = version_filepath(config);
-    crate::codex_plus_plus::dismiss_version(&version_file, CODEX_CLI_VERSION, version).await
+    crate::codex_plus_plus::dismiss_version(&version_file, codex_cli_version(), version).await
 }
 
 #[cfg(test)]
