@@ -292,6 +292,11 @@ class CodexPlusPlusNpmTest(unittest.TestCase):
         self.assertNotIn("--build-cache-state", workflow)
         self.assertEqual(workflow.count("rustup toolchain uninstall stable"), 1)
         self.assertEqual(workflow.count("uses: ./.github/actions/setup-msvc-env"), 1)
+        self.assertEqual(workflow.count("uses: ./.github/actions/setup-rusty-v8"), 1)
+        self.assertLess(
+            build.index("uses: ./.github/actions/setup-rusty-v8"),
+            build.index("- name: Build package archive"),
+        )
         self.assertNotIn("  warm-cache:", workflow)
         self.assertIn("--cargo-profile release", build)
         self.assertIn("      - publish-npm", github_job)

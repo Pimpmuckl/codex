@@ -180,6 +180,11 @@ jobs:
           fi
           bash .github/scripts/install-musl-build-tools.sh
 
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
       - name: Build bundled bwrap
         if: runner.os == 'Linux'
         working-directory: codex-rs
