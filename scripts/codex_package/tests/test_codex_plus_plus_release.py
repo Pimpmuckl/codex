@@ -178,7 +178,9 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
 
             run.assert_not_called()
 
-    def test_publish_proceeds_when_only_older_versions_exist(self) -> None:
+    def test_publish_submits_platforms_before_waiting_and_latest_after_confirmation(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             npm_dir = Path(temp)
             write_npm_tarballs(npm_dir)
@@ -191,36 +193,75 @@ class CodexPlusPlusReleaseTest(unittest.TestCase):
                 )
             }
             published: set[str] = set()
-            delayed_spec = next(iter(integrities))
-            delayed_checks = 0
+            root_spec = f"{release.PACKAGE_NAME}@{VERSION}"
+            platform_specs = set(integrities) - {root_spec}
+            confirmed: set[str] = set()
+            ticks = 0
+
+            def wait(_seconds: int) -> None:
+                nonlocal ticks
+                ticks += 1
 
             def npm_view(spec: str, field: str) -> str | None:
-                nonlocal delayed_checks
                 if field == "name":
                     self.assertEqual(spec, release.PACKAGE_NAME)
                     return release.PACKAGE_NAME
                 if spec not in published:
                     return None
-                if spec == delayed_spec and delayed_checks < 20 * 60 // 5:
-                    delayed_checks += 1
-                    return None
+                if spec in platform_specs:
+                    self.assertEqual(published, platform_specs)
+                    if ticks < 20 * 60 // 5:
+                        return None
+                    confirmed.add(spec)
                 return integrities[spec]
 
             def npm_publish(command: list[str], *, check: bool) -> None:
                 self.assertTrue(check)
                 self.assertIn("--provenance", command)
                 package_version = release.read_manifest(Path(command[2]))["version"]
+                if package_version == VERSION:
+                    self.assertEqual(confirmed, platform_specs)
                 published.add(f"{release.PACKAGE_NAME}@{package_version}")
 
             with (
                 patch.object(release, "npm_view", side_effect=npm_view),
                 patch.object(release.subprocess, "run", side_effect=npm_publish) as run,
-                patch.object(release.time, "sleep") as sleep,
+                patch.object(release.time, "sleep", side_effect=wait) as sleep,
             ):
                 release.publish(VERSION, npm_dir)
 
             self.assertEqual(run.call_count, 4)
             self.assertEqual(sleep.call_count, 20 * 60 // 5)
+
+    def test_platform_confirmation_failure_does_not_publish_latest(self) -> None:
+        for confirmation in (None, "sha512-conflict"):
+            with (
+                self.subTest(confirmation=confirmation),
+                tempfile.TemporaryDirectory() as temp,
+            ):
+                npm_dir = Path(temp)
+                write_npm_tarballs(npm_dir)
+                tags = []
+
+                def npm_view(_spec: str, field: str) -> str | None:
+                    if field == "name":
+                        return release.PACKAGE_NAME
+                    return confirmation if tags else None
+
+                def npm_publish(command: list[str], *, check: bool) -> None:
+                    tags.append(command[command.index("--tag") + 1])
+
+                with (
+                    patch.object(release, "npm_view", side_effect=npm_view),
+                    patch.object(release.subprocess, "run", side_effect=npm_publish),
+                    patch.object(release.time, "sleep"),
+                    self.assertRaisesRegex(
+                        RuntimeError, "Timed out confirming|has registry integrity"
+                    ),
+                ):
+                    release.publish(VERSION, npm_dir)
+
+                self.assertEqual(tags, [platform.tag for platform in release.PLATFORMS])
 
     def test_publish_continues_after_manual_linux_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

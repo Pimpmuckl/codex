@@ -207,36 +207,48 @@ def publish(version: str, npm_dir: Path, *, dry_run: bool = False) -> None:
             )
         pending.append((path, spec, tag, expected))
 
-    for path, spec, tag, expected in pending:
-        if dry_run:
-            print(f"Would publish {spec} with tag {tag}", flush=True)
-            continue
-        subprocess.run(
-            [
-                "npm",
-                "publish",
-                str(path),
-                "--access",
-                "public",
-                "--tag",
-                tag,
-                "--provenance",
-            ],
-            check=True,
-        )
+    # Submit all platform versions before waiting; latest must wait for every platform.
+    for batch in (
+        [entry for entry in pending if entry[2] != "latest"],
+        [entry for entry in pending if entry[2] == "latest"],
+    ):
+        awaiting = {}
+        for path, spec, tag, expected in batch:
+            if dry_run:
+                print(f"Would publish {spec} with tag {tag}", flush=True)
+                continue
+            subprocess.run(
+                [
+                    "npm",
+                    "publish",
+                    str(path),
+                    "--access",
+                    "public",
+                    "--tag",
+                    tag,
+                    "--provenance",
+                ],
+                check=True,
+            )
+            awaiting[spec] = expected
         confirmation_intervals = 20 * 60 // 5
         for attempt in range(confirmation_intervals + 1):
-            current = npm_view(spec, "dist.integrity")
-            if current == expected:
+            for spec, expected in list(awaiting.items()):
+                current = npm_view(spec, "dist.integrity")
+                if current == expected:
+                    del awaiting[spec]
+                elif current is not None:
+                    raise RuntimeError(
+                        f"Published {spec} has registry integrity {current} != {expected}"
+                    )
+            if not awaiting:
                 break
-            if current is not None:
-                raise RuntimeError(
-                    f"Published {spec} has registry integrity {current} != {expected}"
-                )
             if attempt < confirmation_intervals:
                 time.sleep(5)
         else:
-            raise RuntimeError(f"Timed out confirming {spec} in the npm registry")
+            raise RuntimeError(
+                f"Timed out confirming {', '.join(awaiting)} in the npm registry"
+            )
 
 
 def parse_args() -> argparse.Namespace:
