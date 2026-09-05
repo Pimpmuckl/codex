@@ -1015,7 +1015,8 @@ impl Tui {
         }
 
         if area != terminal.viewport_area {
-            let clear_position = Position::new(/*x*/ 0, previous_area.y.min(area.y));
+            let clear_position =
+                codex_plus_plus::restore_history_on_contraction(terminal, previous_area, area)?;
             terminal.set_viewport_area(area);
             terminal.clear_after_position(clear_position)?;
             needs_full_repaint = true;
