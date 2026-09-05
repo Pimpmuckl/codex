@@ -525,7 +525,7 @@ jobs:
           path: dist/npm
           run-id: ${{ needs.prepare.outputs.source_run_id }}
 
-      - name: Publish npm packages serially
+      - name: Publish npm platforms before latest
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
