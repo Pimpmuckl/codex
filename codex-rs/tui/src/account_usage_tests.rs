@@ -23,6 +23,80 @@ async fn fetch_enforces_forced_workspace_before_network() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn refreshed_usage_reconciles_persisted_account_cooldown() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("auth.json"), format!(r#"{{"OPENAI_API_KEY":null,"tokens":{{"id_token":"{TEST_ID_TOKEN}","access_token":"token","refresh_token":"refresh","account_id":"account-123"}},"last_refresh":"2099-01-01T00:00:00Z"}}"#)).unwrap();
+    let store = AccountStore::new(home.path().to_path_buf());
+    let profile = store
+        .import_current(
+            /*label*/ None,
+            AuthCredentialsStoreMode::File,
+            codex_login::AuthKeyringBackendKind::default(),
+        )
+        .unwrap();
+    let server = MockServer::start().await;
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().into())
+        .build()
+        .await
+        .unwrap();
+    config.chatgpt_base_url = server.uri();
+    let future = chrono::Utc::now().timestamp() + 86_400;
+    let window = |used_percent, seconds| {
+        serde_json::json!({
+            "used_percent": used_percent,
+            "limit_window_seconds": seconds,
+            "reset_after_seconds": 86_400,
+            "reset_at": future,
+        })
+    };
+    for (rate_limit, blocked) in [
+        (
+            serde_json::json!({"primary_window": window(/*used_percent*/ 0, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
+            false,
+        ),
+        (
+            serde_json::json!({"primary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
+            false,
+        ),
+        (
+            serde_json::json!({"primary_window": window(/*used_percent*/ 100, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
+            true,
+        ),
+        (
+            serde_json::json!({"primary_window": window(/*used_percent*/ 0, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 100, /*seconds*/ 604_800)}),
+            true,
+        ),
+        (serde_json::Value::Null, true),
+    ] {
+        store
+            .record_usage_limit_resets_at(&profile.id, future)
+            .unwrap();
+        server.reset().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(/*s*/ 200).set_body_json(
+                serde_json::json!({
+                    "plan_type": "pro",
+                    "rate_limit": rate_limit,
+                }),
+            ))
+            .mount(&server)
+            .await;
+        let loaded = load(
+            &config,
+            &[(profile.id.clone(), store.account_home(&profile.id))],
+            &store,
+        )
+        .await;
+        assert_eq!(loaded.usage.len(), 1);
+        let candidates = AccountStore::new(home.path().to_path_buf())
+            .candidates()
+            .unwrap();
+        assert_eq!(candidates[0].blocked, blocked, "usage: {rate_limit}");
+    }
+}
+
 #[test]
 fn maps_five_hour_and_weekly_windows_to_picker_usage() {
     let response = RateLimitsWithResetCredits {
