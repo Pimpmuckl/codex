@@ -10,6 +10,38 @@ use ratatui::style::Style;
 use std::io::Write;
 
 #[test]
+fn contraction_during_terminal_resize_leaves_history_for_reflow() {
+    let previous_size = Size::new(/*width*/ 24, /*height*/ 12);
+    for size in [
+        Size::new(/*width*/ 24, /*height*/ 10),
+        Size::new(/*width*/ 24, /*height*/ 14),
+        Size::new(/*width*/ 30, /*height*/ 12),
+    ] {
+        let backend = VT100Backend::new(size.width, size.height);
+        let mut terminal = Terminal::with_screen_size_and_cursor_position_for_test(
+            backend,
+            previous_size,
+            Position::default(),
+        );
+        terminal.set_viewport_area(Rect::new(
+            /*x*/ 0, /*y*/ 7, /*width*/ 24, /*height*/ 5,
+        ));
+        write!(terminal.backend_mut(), "history\r\nlast message").unwrap();
+        let history = terminal.backend().vt100().screen().contents();
+
+        Tui::update_inline_viewport_for_resize_reflow(
+            &mut terminal,
+            /*height*/ 2,
+            size,
+            ScrollbackStrategy::Standard,
+        )
+        .unwrap();
+
+        assert_eq!(terminal.backend().vt100().screen().contents(), history);
+    }
+}
+
+#[test]
 fn popup_cycles_restore_visible_history_without_accumulating_blank_rows() {
     let size = Size::new(/*width*/ 24, /*height*/ 12);
     let mut first_closed = None;
