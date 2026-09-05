@@ -23,6 +23,9 @@ use tokio::task::JoinSet;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const MINUTES_PER_WEEK: i64 = 7 * 24 * 60;
 
+#[path = "codex_plus_plus/account_usage_cooldown.rs"]
+mod cooldown;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AccountUsage {
     pub(crate) primary_window_minutes: Option<i64>,
@@ -90,7 +93,7 @@ pub(crate) async fn load(
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok((account_id, Ok(account_usage))) => {
-                if let Some(resets_at) = account_usage.exhausted_until()
+                if let Some(resets_at) = cooldown::reset_at(account_usage)
                     && let Err(err) = store.record_usage_limit_resets_at(&account_id, resets_at)
                 {
                     tracing::warn!(
