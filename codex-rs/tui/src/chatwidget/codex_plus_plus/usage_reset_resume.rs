@@ -63,7 +63,7 @@ impl ChatWidget {
                 && let Some(completed_at) = completed_at
             {
                 // Server time survives independent delivery; exclude its ambiguous whole second.
-                waiting.failed_at = completed_at;
+                waiting.failed_at = waiting.failed_at.min(completed_at);
             }
         }
     }
