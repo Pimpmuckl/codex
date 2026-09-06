@@ -95,10 +95,16 @@ pub(crate) async fn persist_settings(
                     app.config.weekly_usage_window_auto_start =
                         WeeklyUsageWindowAutoStart::Disabled;
                 }
-                if requested_auto_redeem == Some(None) {
-                    cache_auto_redeem_settings(&mut app.config, /*settings*/ None);
+                if let Some(requested) = requested_auto_redeem {
+                    let retained = retained_auto_redeem_settings(
+                        crate::codex_plus_plus::auto_redeem_resets_settings(
+                            &app.config.config_layer_stack,
+                        ),
+                        requested,
+                    );
+                    cache_auto_redeem_settings(&mut app.config, retained);
                 }
-                if disable_weekly || requested_auto_redeem == Some(None) {
+                if disable_weekly || requested_auto_redeem.is_some() {
                     app.chat_widget
                         .sync_codex_plus_plus_settings_config(&app.config);
                     sync_scheduler(app);
@@ -173,10 +179,14 @@ pub(crate) async fn persist_settings(
         if disable_weekly {
             app.config.weekly_usage_window_auto_start = WeeklyUsageWindowAutoStart::Disabled;
         }
-        if requested_auto_redeem == Some(None) {
-            cache_auto_redeem_settings(&mut app.config, /*settings*/ None);
+        if let Some(requested) = requested_auto_redeem {
+            let retained = retained_auto_redeem_settings(
+                crate::codex_plus_plus::auto_redeem_resets_settings(&app.config.config_layer_stack),
+                requested,
+            );
+            cache_auto_redeem_settings(&mut app.config, retained);
         }
-        if disable_weekly || requested_auto_redeem == Some(None) {
+        if disable_weekly || requested_auto_redeem.is_some() {
             app.chat_widget
                 .sync_codex_plus_plus_settings_config(&app.config);
             sync_scheduler(app);
@@ -250,3 +260,23 @@ fn cache_auto_redeem_settings(config: &mut Config, settings: Option<AutoRedeemRe
         Err(err) => tracing::warn!(%err, "failed to update cached Codex++ settings"),
     }
 }
+
+// Failed verification may remove triggers, but must not enable an unverified request.
+fn retained_auto_redeem_settings(
+    current: Option<AutoRedeemResets>,
+    requested: Option<AutoRedeemResets>,
+) -> Option<AutoRedeemResets> {
+    let mut current = current?;
+    let requested = requested?;
+    if requested.before_expiry_minutes.is_none() {
+        current.before_expiry_minutes = None;
+    }
+    if requested.weekly_exhausted_min_wait_hours.is_none() {
+        current.weekly_exhausted_min_wait_hours = None;
+    }
+    Some(current)
+}
+
+#[cfg(test)]
+#[path = "account_policy_tests.rs"]
+mod tests;
