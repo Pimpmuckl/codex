@@ -17,6 +17,7 @@ use UserMessageInbox::Disabled as InboxOff;
 use UserMessageInbox::Enabled as InboxOn;
 use WeeklyUsageWindowAutoStart::Disabled as WeeklyOff;
 use WeeklyUsageWindowAutoStart::Enabled as WeeklyOn;
+use codex_config::AutoRedeemResets;
 use codex_config::ModelCapacityRetryMode;
 use codex_config::ToolActivityPresentation;
 use codex_config::UserMessageInbox;
@@ -47,8 +48,7 @@ impl ChatWidget {
         let params = codex_plus_plus_settings_params(
             self.config.automatic_account_selection,
             self.config.weekly_usage_window_auto_start,
-            crate::codex_plus_plus::auto_redeem_resets_settings(&self.config.config_layer_stack)
-                .is_some(),
+            crate::codex_plus_plus::auto_redeem_resets_settings(&self.config.config_layer_stack),
             self.config.model_capacity_retry_mode,
             crate::codex_plus_plus::user_message_inbox_enabled(&self.config.config_layer_stack),
             self.config.codex_plus_plus_tool_activity,
@@ -113,10 +113,29 @@ impl ChatWidget {
 struct SettingsSelection {
     automatic: Arc<AtomicBool>,
     weekly: Arc<AtomicBool>,
-    auto_redeem: Arc<AtomicBool>,
+    auto_redeem_expiring: Arc<AtomicBool>,
+    auto_redeem_exhausted: Arc<AtomicBool>,
+    auto_redeem_thresholds: AutoRedeemResets,
     capacity_indefinite: Arc<AtomicBool>,
     user_message_inbox: Arc<AtomicBool>,
     compact_tool_activity: Arc<AtomicBool>,
+}
+
+impl SettingsSelection {
+    fn selected_auto_redeem(&self) -> AutoRedeemResets {
+        AutoRedeemResets {
+            before_expiry_minutes: self
+                .auto_redeem_expiring
+                .load(Ordering::Relaxed)
+                .then_some(self.auto_redeem_thresholds.before_expiry_minutes)
+                .flatten(),
+            weekly_exhausted_min_wait_hours: self
+                .auto_redeem_exhausted
+                .load(Ordering::Relaxed)
+                .then_some(self.auto_redeem_thresholds.weekly_exhausted_min_wait_hours)
+                .flatten(),
+        }
+    }
 }
 
 fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
@@ -132,7 +151,7 @@ fn settings_list_keymap(mut keymap: ListKeymap) -> ListKeymap {
 fn codex_plus_plus_settings_params(
     current_automatic: AutomaticAccountSelection,
     current_weekly: WeeklyUsageWindowAutoStart,
-    current_auto_redeem: bool,
+    current_auto_redeem: Option<AutoRedeemResets>,
     current_capacity: ModelCapacityRetryMode,
     current_user_message_inbox: bool,
     current_tool_activity: ToolActivityPresentation,
@@ -140,10 +159,26 @@ fn codex_plus_plus_settings_params(
     dcg_status: Option<DcgStatus>,
     list_keymap: &ListKeymap,
 ) -> SelectionViewParams {
+    let defaults = AutoRedeemResets::default();
+    let thresholds = current_auto_redeem.unwrap_or(defaults);
     let selection = SettingsSelection {
         automatic: Arc::new(AtomicBool::new(current_automatic == AutomaticOn)),
         weekly: Arc::new(AtomicBool::new(current_weekly == WeeklyOn)),
-        auto_redeem: Arc::new(AtomicBool::new(current_auto_redeem)),
+        auto_redeem_expiring: Arc::new(AtomicBool::new(
+            current_auto_redeem.is_some_and(|settings| settings.before_expiry_minutes.is_some()),
+        )),
+        auto_redeem_exhausted: Arc::new(AtomicBool::new(
+            current_auto_redeem
+                .is_some_and(|settings| settings.weekly_exhausted_min_wait_hours.is_some()),
+        )),
+        auto_redeem_thresholds: AutoRedeemResets {
+            before_expiry_minutes: thresholds
+                .before_expiry_minutes
+                .or(defaults.before_expiry_minutes),
+            weekly_exhausted_min_wait_hours: thresholds
+                .weekly_exhausted_min_wait_hours
+                .or(defaults.weekly_exhausted_min_wait_hours),
+        },
         capacity_indefinite: Arc::new(AtomicBool::new(current_capacity == CapacityIndefinite)),
         user_message_inbox: Arc::new(AtomicBool::new(current_user_message_inbox)),
         compact_tool_activity: Arc::new(AtomicBool::new(current_tool_activity == ActivityCompact)),
@@ -170,9 +205,28 @@ fn codex_plus_plus_settings_params(
             true,
         ));
         items.push(settings_item(
-            "Auto-redeem usage resets (Experimental)",
-            "Use earned resets before expiry or a distant weekly reset.",
-            Arc::clone(&selection.auto_redeem),
+            "Auto-redeem expiring resets (Experimental)",
+            &format!(
+                "Within {}m of expiry.",
+                selection
+                    .auto_redeem_thresholds
+                    .before_expiry_minutes
+                    .unwrap()
+            ),
+            Arc::clone(&selection.auto_redeem_expiring),
+            selection.clone(),
+            true,
+        ));
+        items.push(settings_item(
+            "Auto-redeem at exhaustion (Experimental)",
+            &format!(
+                "0% weekly quota; reset ≥{}h.",
+                selection
+                    .auto_redeem_thresholds
+                    .weekly_exhausted_min_wait_hours
+                    .unwrap()
+            ),
+            Arc::clone(&selection.auto_redeem_exhausted),
             selection.clone(),
             true,
         ));
@@ -237,8 +291,7 @@ fn settings_item(
                         WeeklyOff
                     }
                 }),
-                auto_redeem_resets: save_weekly
-                    .then(|| selection.auto_redeem.load(Ordering::Relaxed)),
+                auto_redeem_resets: save_weekly.then(|| selection.selected_auto_redeem()),
                 model_capacity_retry_mode: if selection.capacity_indefinite.load(Ordering::Relaxed)
                 {
                     CapacityIndefinite

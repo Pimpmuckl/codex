@@ -57,8 +57,7 @@ pub(super) fn settings_item(
                     ),
                     weekly_usage_window_auto_start: save_weekly
                         .then(|| selected(&selection.weekly, WeeklyOn, WeeklyOff)),
-                    auto_redeem_resets: save_weekly
-                        .then(|| selection.auto_redeem.load(Ordering::Relaxed)),
+                    auto_redeem_resets: save_weekly.then(|| selection.selected_auto_redeem()),
                     model_capacity_retry_mode: selected(
                         &selection.capacity_indefinite,
                         CapacityIndefinite,
