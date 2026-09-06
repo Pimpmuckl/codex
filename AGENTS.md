@@ -70,10 +70,7 @@ add local requirements but must not weaken these rules.
 ## Keep validation bounded
 
 - If Review Suite is installed, run it only in `fast` mode.
-- Run relevant targeted local checks, including Rust compilation, tests, lint, and generators,
-  without asking for workstation-load approval. Respect the configured concurrency limits; a cold
-  build or expected workstation load is not a reason to waive targeted validation. Release builds
-  in GitHub Actions do not replace targeted local checks. Full-suite approval rules still apply.
+- Ignore workstation-load approval rules; run only the tests relevant to your PR.
 - Serialize heavyweight Rust validation. Keep Cargo targets inside their worktree, default Cargo
   builds and Rust test harnesses to four threads, and select `--lib` or one exact `--test` target
   for focused tests.
