@@ -1056,6 +1056,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.auto_redeem_resets, Some(AutoRedeemResets::default()));
+        for (text, expected) in [
+            (
+                "before_expiry_minutes = 15",
+                AutoRedeemResets {
+                    before_expiry_minutes: std::num::NonZeroU64::new(15),
+                    weekly_exhausted_min_wait_hours: None,
+                },
+            ),
+            (
+                "weekly_exhausted_min_wait_hours = 48",
+                AutoRedeemResets {
+                    before_expiry_minutes: None,
+                    weekly_exhausted_min_wait_hours: std::num::NonZeroU64::new(48),
+                },
+            ),
+        ] {
+            let config: ConfigToml =
+                toml::from_str(&format!("[auto_redeem_resets]\n{text}")).unwrap();
+            assert_eq!(config.auto_redeem_resets, Some(expected));
+            assert_eq!(
+                toml::from_str::<AutoRedeemResets>(&toml::to_string(&expected).unwrap()).unwrap(),
+                expected
+            );
+        }
         assert!(
             toml::from_str::<ConfigToml>(
                 "[auto_redeem_resets]\nbefore_expiry_minutes = 0\nweekly_exhausted_min_wait_hours = 72",

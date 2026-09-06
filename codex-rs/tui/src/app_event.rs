@@ -1138,7 +1138,7 @@ pub(crate) enum AppEvent {
     PersistCodexPlusPlusSettings {
         automatic_account_selection: AutomaticAccountSelection,
         weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
-        auto_redeem_resets: Option<bool>,
+        auto_redeem_resets: Option<codex_config::AutoRedeemResets>,
         model_capacity_retry_mode: ModelCapacityRetryMode,
         user_message_inbox: UserMessageInbox,
         tool_activity: ToolActivityPresentation,

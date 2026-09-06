@@ -16,7 +16,7 @@ pub(crate) async fn persist_settings(
     app_server: &AppServerSession,
     automatic_account_selection: AutomaticAccountSelection,
     weekly_usage_window_auto_start: Option<WeeklyUsageWindowAutoStart>,
-    auto_redeem_resets: Option<bool>,
+    auto_redeem_resets: Option<AutoRedeemResets>,
     model_capacity_retry_mode: Option<ModelCapacityRetryMode>,
     user_message_inbox: UserMessageInbox,
     tool_activity: ToolActivityPresentation,
@@ -38,11 +38,10 @@ pub(crate) async fn persist_settings(
             }),
         ));
     }
-    let requested_auto_redeem = auto_redeem_resets.map(|enabled| {
-        enabled.then(|| {
-            crate::codex_plus_plus::auto_redeem_resets_settings(&app.config.config_layer_stack)
-                .unwrap_or_default()
-        })
+    let requested_auto_redeem = auto_redeem_resets.map(|settings| {
+        (settings.before_expiry_minutes.is_some()
+            || settings.weekly_exhausted_min_wait_hours.is_some())
+        .then_some(settings)
     });
     if let Some(settings) = requested_auto_redeem {
         writes.push(match settings {
@@ -194,7 +193,7 @@ pub(crate) async fn persist_settings(
     // Authoritative readback matching the request is success even if the write RPC was ambiguous.
     if effective_automatic == automatic_account_selection
         && weekly_usage_window_auto_start.is_none_or(|weekly| effective_weekly == weekly)
-        && auto_redeem_resets.is_none_or(|enabled| effective_auto_redeem.is_some() == enabled)
+        && requested_auto_redeem.is_none_or(|requested| effective_auto_redeem == requested)
         && model_capacity_retry_mode.is_none_or(|capacity| effective_capacity == capacity)
         && effective_user_message_inbox == user_message_inbox
         && effective_tool_activity == tool_activity
@@ -218,8 +217,9 @@ pub(crate) async fn persist_settings(
 
 fn sync_scheduler(app: &App) {
     if let Some(scheduler) = &app.weekly_window_scheduler {
-        scheduler.set_weekly(
+        scheduler.set_settings(
             app.config.weekly_usage_window_auto_start == WeeklyUsageWindowAutoStart::Enabled,
+            crate::codex_plus_plus::auto_redeem_resets_settings(&app.config.config_layer_stack),
         );
     }
 }

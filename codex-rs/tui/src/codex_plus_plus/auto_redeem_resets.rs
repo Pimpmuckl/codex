@@ -59,6 +59,10 @@ pub(crate) fn settings(config: &ConfigLayerStack) -> Option<AutoRedeemResets> {
         .get("auto_redeem_resets")
         .cloned()
         .and_then(|value| value.try_into().ok())
+        .filter(|settings: &AutoRedeemResets| {
+            settings.before_expiry_minutes.is_some()
+                || settings.weekly_exhausted_min_wait_hours.is_some()
+        })
 }
 pub(super) async fn process_account(
     config: &Config,
@@ -284,19 +288,25 @@ fn select_credit(
     settings: AutoRedeemResets,
     now: i64,
 ) -> Option<String> {
-    let exhaustion_eligible =
-        weekly_exhausted(usage, now, settings.weekly_exhausted_min_wait_hours.get());
-    let expiry_limit = now.saturating_add(
-        i64::try_from(settings.before_expiry_minutes.get())
-            .unwrap_or(i64::MAX)
-            .saturating_mul(60),
-    );
+    let exhaustion_eligible = settings
+        .weekly_exhausted_min_wait_hours
+        .is_some_and(|hours| weekly_exhausted(usage, now, hours.get()));
+    let expiry_limit = settings.before_expiry_minutes.map(|minutes| {
+        now.saturating_add(
+            i64::try_from(minutes.get())
+                .unwrap_or(i64::MAX)
+                .saturating_mul(60),
+        )
+    });
     credits
         .credits
         .iter()
         .filter_map(|credit| parsed_credit(credit, &credits.credits, now))
         .filter(|(_, expiry)| {
-            exhaustion_eligible || expiry.is_some_and(|expiry| expiry <= expiry_limit)
+            exhaustion_eligible
+                || expiry
+                    .zip(expiry_limit)
+                    .is_some_and(|(expiry, limit)| expiry <= limit)
         })
         .min_by_key(|(id, expiry)| (expiry.is_none(), expiry.unwrap_or(i64::MAX), id.to_string()))
         .map(|(id, _)| id.to_string())

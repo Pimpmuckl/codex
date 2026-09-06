@@ -17,8 +17,8 @@ const TEST_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InV
 
 fn settings() -> AutoRedeemResets {
     AutoRedeemResets {
-        before_expiry_minutes: NonZeroU64::new(60).unwrap(),
-        weekly_exhausted_min_wait_hours: NonZeroU64::new(72).unwrap(),
+        before_expiry_minutes: NonZeroU64::new(60),
+        weekly_exhausted_min_wait_hours: NonZeroU64::new(72),
     }
 }
 
@@ -141,6 +141,67 @@ fn strict_selection_is_deterministic_and_fails_closed() {
         );
     }
     assert!(!FreshRedemption::RecoveryOnly.allowed());
+}
+
+#[test]
+fn redemption_triggers_can_be_enabled_independently() {
+    let credits = RateLimitResetCreditsDetails {
+        available_count: 1,
+        credits: vec![credit("reset", Some(NOW + 60))],
+    };
+    let expiry_only = AutoRedeemResets {
+        weekly_exhausted_min_wait_hours: None,
+        ..settings()
+    };
+    let exhaustion_only = AutoRedeemResets {
+        before_expiry_minutes: None,
+        ..settings()
+    };
+    for (settings, used_percent, expected) in [
+        (expiry_only, 50.0, Some("reset")),
+        (exhaustion_only, 50.0, None),
+        (exhaustion_only, 100.0, Some("reset")),
+        (
+            AutoRedeemResets {
+                before_expiry_minutes: None,
+                weekly_exhausted_min_wait_hours: None,
+            },
+            100.0,
+            None,
+        ),
+    ] {
+        assert_eq!(
+            select_credit(
+                &credits,
+                &usage(
+                    used_percent,
+                    Some(NOW + 73 * 60 * 60),
+                    /*reached*/ true
+                ),
+                settings,
+                NOW
+            )
+            .as_deref(),
+            expected
+        );
+    }
+    let non_expiring = RateLimitResetCreditsDetails {
+        available_count: 1,
+        credits: vec![credit("reset", None)],
+    };
+    assert_eq!(
+        select_credit(
+            &non_expiring,
+            &usage(
+                /*used_percent*/ 100.0,
+                Some(NOW + 73 * 60 * 60),
+                /*reached*/ true
+            ),
+            expiry_only,
+            NOW
+        ),
+        None
+    );
 }
 
 #[test]

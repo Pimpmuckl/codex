@@ -29,7 +29,7 @@ fn settings_view(
             codex_plus_plus_settings_params(
                 automatic,
                 weekly,
-                /*current_auto_redeem*/ false,
+                /*current_auto_redeem*/ None,
                 capacity,
                 /*current_user_message_inbox*/ false,
                 ToolActivityPresentation::Full,
@@ -107,6 +107,69 @@ fn unsupported_settings_save_only_the_visible_settings() {
 }
 
 #[test]
+fn redemption_toggles_save_independently() {
+    for (row, expected) in [
+        (
+            2,
+            AutoRedeemResets {
+                weekly_exhausted_min_wait_hours: None,
+                ..AutoRedeemResets::default()
+            },
+        ),
+        (
+            3,
+            AutoRedeemResets {
+                before_expiry_minutes: None,
+                ..AutoRedeemResets::default()
+            },
+        ),
+    ] {
+        let (mut view, mut rx) = settings_view(AutomaticOn, WeeklyOn, CapacityBounded);
+        for _ in 0..row {
+            view.handle_key_event(KeyEvent::from(KeyCode::Down));
+        }
+        view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
+        view.handle_key_event(KeyEvent::from(KeyCode::Enter));
+        let AppEvent::PersistCodexPlusPlusSettings {
+            auto_redeem_resets, ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("expected settings save")
+        };
+        assert_eq!(auto_redeem_resets, Some(expected));
+    }
+}
+
+#[test]
+fn redemption_rows_describe_configured_thresholds() {
+    let configured = AutoRedeemResets {
+        before_expiry_minutes: std::num::NonZeroU64::new(15),
+        weekly_exhausted_min_wait_hours: std::num::NonZeroU64::new(48),
+    };
+    let params = codex_plus_plus_settings_params(
+        AutomaticOn,
+        WeeklyOn,
+        Some(configured),
+        CapacityBounded,
+        /*current_user_message_inbox*/ false,
+        ActivityFull,
+        /*weekly_supported*/ true,
+        /*dcg_status*/ None,
+        &settings_list_keymap(RuntimeKeymap::defaults().list),
+    );
+    assert_eq!(
+        [
+            params.items[2].description.as_deref(),
+            params.items[3].description.as_deref()
+        ],
+        [
+            Some("Within 15m of expiry."),
+            Some("0% weekly quota; reset ≥48h.")
+        ]
+    );
+}
+
+#[test]
 fn weekly_setting_saves_full_selection() {
     let (mut view, mut rx) = settings_view(
         AutomaticAccountSelection::Enabled,
@@ -123,7 +186,10 @@ fn weekly_setting_saves_full_selection() {
         Ok(AppEvent::PersistCodexPlusPlusSettings {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Disabled),
-            auto_redeem_resets: Some(false),
+            auto_redeem_resets: Some(AutoRedeemResets {
+                before_expiry_minutes: None,
+                weekly_exhausted_min_wait_hours: None
+            }),
             model_capacity_retry_mode: ModelCapacityRetryMode::Bounded,
             user_message_inbox: UserMessageInbox::Disabled,
             tool_activity: ToolActivityPresentation::Full,
@@ -142,6 +208,7 @@ fn capacity_setting_saves_indefinite_mode() {
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
+    view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
     view.handle_key_event(KeyEvent::from(KeyCode::Down));
@@ -153,7 +220,10 @@ fn capacity_setting_saves_indefinite_mode() {
         Ok(AppEvent::PersistCodexPlusPlusSettings {
             automatic_account_selection: AutomaticAccountSelection::Enabled,
             weekly_usage_window_auto_start: Some(WeeklyUsageWindowAutoStart::Enabled),
-            auto_redeem_resets: Some(false),
+            auto_redeem_resets: Some(AutoRedeemResets {
+                before_expiry_minutes: None,
+                weekly_exhausted_min_wait_hours: None
+            }),
             model_capacity_retry_mode: ModelCapacityRetryMode::Indefinite,
             user_message_inbox: UserMessageInbox::Enabled,
             tool_activity: ToolActivityPresentation::Full,
@@ -169,7 +239,7 @@ fn compact_tool_activity_saves_full_selection() {
         ModelCapacityRetryMode::Bounded,
     );
 
-    for _ in 0..4 {
+    for _ in 0..5 {
         view.handle_key_event(KeyEvent::from(KeyCode::Down));
     }
     view.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));

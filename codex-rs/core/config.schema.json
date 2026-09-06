@@ -386,20 +386,18 @@
       "description": "Thresholds for automatic redemption of earned usage-reset credits.",
       "properties": {
         "before_expiry_minutes": {
+          "description": "Redeem credits this close to expiry. Omit to disable expiry-triggered redemption.",
           "format": "uint64",
           "minimum": 1.0,
           "type": "integer"
         },
         "weekly_exhausted_min_wait_hours": {
+          "description": "Redeem at weekly exhaustion when the reset is this far away. Omit to disable.",
           "format": "uint64",
           "minimum": 1.0,
           "type": "integer"
         }
       },
-      "required": [
-        "before_expiry_minutes",
-        "weekly_exhausted_min_wait_hours"
-      ],
       "type": "object"
     },
     "AutoReviewToml": {

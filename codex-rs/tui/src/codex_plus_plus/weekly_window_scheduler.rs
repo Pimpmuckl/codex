@@ -101,11 +101,6 @@ impl WeeklyWindowScheduler {
             .send_if_modified(|settings| std::mem::replace(settings, next) != next);
     }
 
-    pub(crate) fn set_weekly(&self, weekly: bool) {
-        let auto_redeem = self.state.borrow().auto_redeem;
-        self.set_settings(weekly, auto_redeem);
-    }
-
     pub(crate) fn statuses(&self) -> HashMap<AccountId, WeeklyWindowStatus> {
         self.statuses
             .lock()
