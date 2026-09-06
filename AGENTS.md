@@ -70,18 +70,18 @@ add local requirements but must not weaken these rules.
 ## Keep validation bounded
 
 - If Review Suite is installed, run it only in `fast` mode.
-- Do not compile Rust locally or run Cargo-backed tests, lint, or generators unless the caller
-  explicitly requests local execution. Release compilation runs in GitHub Actions. Use lightweight
-  source, formatting, and diff checks locally; unrun local Rust checks must not block PR delivery
-  or an authorized merge, or trigger a build-approval question. Report unrun checks plainly.
+- Run relevant targeted local checks, including Rust compilation, tests, lint, and generators,
+  without asking for workstation-load approval. Respect the configured concurrency limits; a cold
+  build or expected workstation load is not a reason to waive targeted validation. Release builds
+  in GitHub Actions do not replace targeted local checks. Full-suite approval rules still apply.
 - Serialize heavyweight Rust validation. Keep Cargo targets inside their worktree, default Cargo
   builds and Rust test harnesses to four threads, and select `--lib` or one exact `--test` target
   for focused tests.
 - Prefer non-mutating lint checks such as `just clippy`, scoped to the narrowest crate and target.
   During upstream integrations, do not run `just fix`: it may rewrite upstream-owned code. Fix
   only verified fork-owned or required seam findings.
-- Prefer narrow local evidence and the existing GitHub Actions workflows; do not add fork-specific test workflows, shared target
-  caches, or target plumbing.
+- Prefer narrow local evidence and the existing GitHub Actions workflows; do not add fork-specific
+  test workflows, shared target caches, or target plumbing.
 
 # Rust/codex-rs
 
