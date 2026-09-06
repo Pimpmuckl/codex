@@ -66,7 +66,12 @@ async fn reset_resumes_live_failed_turn_once_with_available_matching_quota() {
     let reset_at = failed_at - 1;
     assert_eq!(chat.usage_reset_turn(reset_at), None);
     // A completion was delivered before the failure; authoritative turn time corrects ordering.
-    complete_failure(&mut chat, failed_at / 1_000_000_000);
+    let server_completed_at = failed_at / 1_000_000_000 - 2;
+    complete_failure(&mut chat, server_completed_at);
+    assert_eq!(
+        chat.usage_reset_turn((server_completed_at + 1) * 1_000_000_000 - 1),
+        None
+    );
     assert_eq!(chat.usage_reset_turn(reset_at), Some("failed-turn".into()));
     chat.resume_after_usage_reset("failed-turn", &account(), reset_at, &quota());
     let AppCommand::UserTurn { items, .. } = next_submit_op(&mut ops) else {
@@ -83,8 +88,8 @@ async fn reset_resumes_live_failed_turn_once_with_available_matching_quota() {
     assert_no_submit_op(&mut ops);
     handle_turn_started(&mut chat, "failed-turn");
     chat.handle_server_notification(failure(&chat), /*replay_kind*/ None);
-    complete_failure(&mut chat, failed_at / 1_000_000_000);
-    // Second-resolution server timestamps must not let the next failure reuse the same reset.
+    complete_failure(&mut chat, server_completed_at);
+    // Repeated terminal/readiness notifications must not reuse the consumed reset.
     chat.resume_after_usage_reset("failed-turn", &account(), reset_at, &quota());
     assert_no_submit_op(&mut ops);
 }

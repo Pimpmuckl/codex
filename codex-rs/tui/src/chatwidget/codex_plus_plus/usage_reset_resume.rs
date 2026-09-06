@@ -32,7 +32,7 @@ impl ChatWidget {
                     &turn.turn.id,
                     turn.turn
                         .completed_at
-                        .map(|at| at.saturating_mul(1_000_000_000)),
+                        .map(|at| at.saturating_add(1).saturating_mul(1_000_000_000)),
                 ))
             }
             ServerNotification::TurnStarted(_)
@@ -62,7 +62,7 @@ impl ChatWidget {
                 && &waiting.turn_id == turn_id
                 && let Some(completed_at) = completed_at
             {
-                // Server completion time survives independent scheduler/notification delivery.
+                // Server time survives independent delivery; exclude its ambiguous whole second.
                 waiting.failed_at = completed_at;
             }
         }
