@@ -30,7 +30,7 @@ async fn automatic_usage_reset_reads_current_account_and_submits_one_continuatio
             backend.uri()
         ),
     )?;
-    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
     app.config.codex_home = home.path().to_path_buf().abs();
     app.config.chatgpt_base_url = backend.uri();
     app.config.sqlite = codex_state::SqliteConfig::new_for_testing(home.path().abs());
@@ -118,15 +118,16 @@ async fn automatic_usage_reset_reads_current_account_and_submits_one_continuatio
         )
         .await?;
     }
-    let mut submissions = Vec::new();
+    let submissions = std::iter::from_fn(|| ops.try_recv().ok())
+        .filter_map(|op| match op {
+            Op::UserTurn { items, .. } => Some(items),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let mut transcript = String::new();
     while let Ok(event) = events.try_recv() {
-        match event {
-            AppEvent::CodexOp(Op::UserTurn { items, .. }) => submissions.push(items),
-            AppEvent::InsertHistoryCell(cell) => {
-                transcript.push_str(&lines_to_single_string(&cell.display_lines(/*width*/ 80)))
-            }
-            _ => {}
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            transcript.push_str(&lines_to_single_string(&cell.display_lines(/*width*/ 80)));
         }
     }
     assert_eq!(
