@@ -5,6 +5,8 @@ use crate::history_cell::McpToolCallCell;
 use crate::history_cell::WebSearchCell;
 
 mod compact_activity;
+mod usage_reset_resume;
+pub(super) use usage_reset_resume::UsageResetWait;
 
 impl ChatWidget {
     pub(super) fn compact_tool_activity_enabled(&self) -> bool {

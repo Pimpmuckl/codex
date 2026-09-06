@@ -111,6 +111,8 @@ impl ChatWidget {
             transcript: TranscriptState::new(active_cell),
             user_message_inbox: crate::codex_plus_plus::UserMessageInboxState::default(),
             account_identity_freshness: crate::codex_plus_plus::AccountIdentityFreshness::default(),
+            usage_reset_wait: None,
+            last_resumed_usage_reset_at: None,
             raw_output_mode: config.tui_raw_output_mode,
             config,
             weekly_start_supported: false,

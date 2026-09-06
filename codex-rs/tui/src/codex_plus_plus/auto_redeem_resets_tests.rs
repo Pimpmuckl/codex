@@ -352,3 +352,51 @@ fn completion_notice_snapshot() {
         insta::assert_snapshot!("auto_redeem_completion_notice", text);
     });
 }
+
+#[test]
+fn completion_notice_precedes_ready_signals_until_recovery_finishes() {
+    let home = tempfile::tempdir().unwrap();
+    let store = AccountStore::new(home.path().into());
+    let id: AccountId = serde_json::from_str("\"acct_test\"").unwrap();
+    std::fs::create_dir_all(home.path().join("accounts")).unwrap();
+    std::fs::write(home.path().join("accounts/index.json"),
+        r#"{"accounts":[{"id":"acct_test","label":"Primary","auth":{"scope":"file","path":"accounts/acct_test/auth.json"}}]}"#).unwrap();
+    let mut notices = CompletionNotices::new();
+    let mut lease = store.acquire_reset_mutation_lease(&id).unwrap();
+    let ResetAttemptPhase::Redeeming {
+        redeem_request_id, ..
+    } = lease.load_or_begin("credit").unwrap()
+    else {
+        unreachable!()
+    };
+    lease
+        .confirm_redeemed(
+            &redeem_request_id,
+            Utc::now().timestamp_nanos_opt().unwrap(),
+        )
+        .unwrap();
+    drop(lease);
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let tx = AppEventSender::new(tx);
+    notices.poll(&store, &tx);
+    assert!(matches!(
+        events.try_recv(),
+        Ok(AppEvent::InsertHistoryCell(_))
+    ));
+    assert!(events.try_recv().is_err());
+    store
+        .acquire_reset_mutation_lease(&id)
+        .unwrap()
+        .finish_weekly_activation()
+        .unwrap();
+    for _ in 0..2 {
+        notices.poll(&store, &tx);
+        assert!(
+            matches!(events.try_recv(), Ok(AppEvent::UsageResetCompleted { account_id, .. }) if account_id == id)
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "redemption notice must remain deduplicated"
+        );
+    }
+}

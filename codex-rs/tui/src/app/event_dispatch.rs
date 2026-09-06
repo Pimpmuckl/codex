@@ -574,6 +574,16 @@ impl App {
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
             }
+            AppEvent::UsageResetCompleted { account_id, completed_at } => {
+                self.refresh_after_usage_reset(app_server, account_id, completed_at);
+            }
+            AppEvent::UsageResetQuotaLoaded { thread_id, turn_id, account_id, completed_at, hard_stop_generation, response } => {
+                if self.chat_widget.thread_id() == Some(thread_id)
+                    && self.rate_limit_hard_stop_generation == hard_stop_generation
+                {
+                    self.chat_widget.resume_after_usage_reset(&turn_id, &account_id, completed_at, &response);
+                }
+            }
             AppEvent::EndInitialHistoryReplayBuffer => {
                 self.scrollback_has_older_history = self
                     .chat_widget
