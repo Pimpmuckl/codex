@@ -931,6 +931,18 @@ pub(crate) enum AppEvent {
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
+    UsageResetCompleted {
+        account_id: codex_login::AccountId,
+        completed_at: i64,
+    },
+    UsageResetQuotaLoaded {
+        thread_id: ThreadId,
+        turn_id: String,
+        account_id: codex_login::AccountId,
+        hard_stop_generation: u64,
+        response: GetAccountRateLimitsResponse,
+    },
+
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
 

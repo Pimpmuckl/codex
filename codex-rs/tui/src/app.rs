@@ -248,6 +248,8 @@ mod thread_session_state;
 mod thread_settings;
 mod thread_title;
 mod transcript_export;
+#[path = "app/codex_plus_plus/usage_reset_resume.rs"]
+mod usage_reset_resume;
 #[path = "codex_plus_plus/user_messages.rs"]
 mod user_messages;
 mod working_directory;

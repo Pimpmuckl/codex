@@ -387,6 +387,10 @@ impl CompletionNotices {
             }
             self.seen.insert(profile.id, completion.id);
             if completion.completed_at >= self.started_at {
+                tx.send(AppEvent::UsageResetCompleted {
+                    account_id: profile.id,
+                    completed_at: completion.completed_at,
+                });
                 tx.send(AppEvent::InsertHistoryCell(Box::new(notice_cell(
                     &profile.label,
                 ))));

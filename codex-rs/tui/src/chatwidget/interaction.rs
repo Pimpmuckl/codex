@@ -509,6 +509,7 @@ impl ChatWidget {
     /// When the double-press quit shortcut is enabled, pressing the same shortcut again before
     /// expiry requests a shutdown-first quit.
     fn on_ctrl_c(&mut self) {
+        self.usage_reset_wait = None;
         let key = key_hint::ctrl(KeyCode::Char('c'));
         let modal_or_popup_active = !self.bottom_pane.no_modal_or_popup_active();
         let should_pause_active_goal = self
