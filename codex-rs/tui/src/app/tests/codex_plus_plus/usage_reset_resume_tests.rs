@@ -96,6 +96,7 @@ async fn automatic_usage_reset_reads_current_account_and_submits_one_continuatio
         thread_id,
         turn_id,
         account_id,
+        completed_at,
         hard_stop_generation,
         response,
     } = ready
@@ -110,6 +111,7 @@ async fn automatic_usage_reset_reads_current_account_and_submits_one_continuatio
                 thread_id,
                 turn_id: turn_id.clone(),
                 account_id: account_id.clone(),
+                completed_at,
                 hard_stop_generation,
                 response: response.clone(),
             },

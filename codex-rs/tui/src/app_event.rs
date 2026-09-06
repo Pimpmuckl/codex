@@ -939,6 +939,7 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
         turn_id: String,
         account_id: codex_login::AccountId,
+        completed_at: i64,
         hard_stop_generation: u64,
         response: GetAccountRateLimitsResponse,
     },

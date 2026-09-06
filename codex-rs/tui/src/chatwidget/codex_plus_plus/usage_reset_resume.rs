@@ -20,7 +20,7 @@ impl ChatWidget {
                 if !error.will_retry
                     && error.error.codex_error_info == Some(CodexErrorInfo::UsageLimitExceeded) =>
             {
-                Some(&error.turn_id)
+                Some((&error.turn_id, None))
             }
             ServerNotification::TurnCompleted(turn)
                 if turn.turn.status == TurnStatus::Failed
@@ -28,7 +28,12 @@ impl ChatWidget {
                         error.codex_error_info == Some(CodexErrorInfo::UsageLimitExceeded)
                     }) =>
             {
-                Some(&turn.turn.id)
+                Some((
+                    &turn.turn.id,
+                    turn.turn
+                        .completed_at
+                        .map(|at| at.saturating_mul(1_000_000_000)),
+                ))
             }
             ServerNotification::TurnStarted(_)
             | ServerNotification::AccountUpdated(_)
@@ -42,15 +47,24 @@ impl ChatWidget {
             }
             _ => None,
         };
-        if let Some(turn_id) = failed_turn
-            && self.turn_lifecycle.agent_turn_running
-            && !self.input_queue.user_turn_pending_start
-            && self.turn_lifecycle.last_turn_id.as_ref() == Some(turn_id)
-        {
-            self.usage_reset_wait = Some(UsageResetWait {
-                turn_id: turn_id.clone(),
-                failed_at: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX),
-            });
+        if let Some((turn_id, completed_at)) = failed_turn {
+            if self.turn_lifecycle.agent_turn_running
+                && !self.input_queue.user_turn_pending_start
+                && self.turn_lifecycle.last_turn_id.as_ref() == Some(turn_id)
+            {
+                self.usage_reset_wait = Some(UsageResetWait {
+                    turn_id: turn_id.clone(),
+                    failed_at: completed_at.unwrap_or_else(|| {
+                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX)
+                    }),
+                });
+            } else if let Some(waiting) = self.usage_reset_wait.as_mut()
+                && &waiting.turn_id == turn_id
+                && let Some(completed_at) = completed_at
+            {
+                // Server completion time survives independent scheduler/notification delivery.
+                waiting.failed_at = completed_at;
+            }
         }
     }
 
@@ -69,6 +83,9 @@ impl ChatWidget {
     pub(crate) fn usage_reset_turn(&self, completed_at: i64) -> Option<String> {
         let waiting = self.usage_reset_wait.as_ref()?;
         (completed_at >= waiting.failed_at
+            && self
+                .last_resumed_usage_reset_at
+                .is_none_or(|last| completed_at > last)
             && !self.turn_lifecycle.agent_turn_running
             && !self.input_queue.user_turn_pending_start
             && !self.input_queue.has_queued_follow_up_messages()
@@ -80,15 +97,17 @@ impl ChatWidget {
         &mut self,
         turn_id: &str,
         account_id: &AccountId,
+        completed_at: i64,
         response: &GetAccountRateLimitsResponse,
     ) {
-        if self.usage_reset_turn(i64::MAX).as_deref() != Some(turn_id)
+        if self.usage_reset_turn(completed_at).as_deref() != Some(turn_id)
             || !reset_account_has_quota(account_id, response)
         {
             return;
         }
         // Consume before submission: repeated completion/read callbacks cannot enqueue twice.
         self.usage_reset_wait = None;
+        self.last_resumed_usage_reset_at = Some(completed_at);
         self.submit_user_message("continue".into());
     }
 }

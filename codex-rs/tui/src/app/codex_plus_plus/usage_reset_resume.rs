@@ -31,6 +31,7 @@ impl App {
                     thread_id,
                     turn_id,
                     account_id,
+                    completed_at,
                     hard_stop_generation,
                     response,
                 });

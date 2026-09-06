@@ -36,6 +36,26 @@ fn failure(chat: &ChatWidget) -> ServerNotification {
     .unwrap()
 }
 
+fn complete_failure(chat: &mut ChatWidget, completed_at: i64) {
+    let ServerNotification::Error(error) = failure(chat) else {
+        unreachable!()
+    };
+    let mut turn = crate::chatwidget::tests::app_server_turn(
+        "failed-turn",
+        TurnStatus::Failed,
+        /*duration_ms*/ None,
+        Some(error.error),
+    );
+    turn.completed_at = Some(completed_at);
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
+            thread_id: error.thread_id,
+            turn,
+        }),
+        /*replay_kind*/ None,
+    );
+}
+
 #[tokio::test]
 async fn reset_resumes_live_failed_turn_once_with_available_matching_quota() {
     let (mut chat, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -43,9 +63,12 @@ async fn reset_resumes_live_failed_turn_once_with_available_matching_quota() {
     handle_turn_started(&mut chat, "failed-turn");
     chat.handle_server_notification(failure(&chat), /*replay_kind*/ None);
     let failed_at = chat.usage_reset_wait.as_ref().unwrap().failed_at;
-    assert_eq!(chat.usage_reset_turn(failed_at - 1), None);
-    assert_eq!(chat.usage_reset_turn(failed_at), Some("failed-turn".into()));
-    chat.resume_after_usage_reset("failed-turn", &account(), &quota());
+    let reset_at = failed_at - 1;
+    assert_eq!(chat.usage_reset_turn(reset_at), None);
+    // A completion was delivered before the failure; authoritative turn time corrects ordering.
+    complete_failure(&mut chat, failed_at / 1_000_000_000);
+    assert_eq!(chat.usage_reset_turn(reset_at), Some("failed-turn".into()));
+    chat.resume_after_usage_reset("failed-turn", &account(), reset_at, &quota());
     let AppCommand::UserTurn { items, .. } = next_submit_op(&mut ops) else {
         unreachable!()
     };
@@ -56,7 +79,13 @@ async fn reset_resumes_live_failed_turn_once_with_available_matching_quota() {
             text_elements: vec![],
         }]
     );
-    chat.resume_after_usage_reset("failed-turn", &account(), &quota());
+    chat.resume_after_usage_reset("failed-turn", &account(), reset_at, &quota());
+    assert_no_submit_op(&mut ops);
+    handle_turn_started(&mut chat, "failed-turn");
+    chat.handle_server_notification(failure(&chat), /*replay_kind*/ None);
+    complete_failure(&mut chat, failed_at / 1_000_000_000);
+    // Second-resolution server timestamps must not let the next failure reuse the same reset.
+    chat.resume_after_usage_reset("failed-turn", &account(), reset_at, &quota());
     assert_no_submit_op(&mut ops);
 }
 
@@ -85,7 +114,7 @@ async fn reset_does_not_resume_replayed_cancelled_completed_or_superseded_work()
             _ => {}
         }
         while ops.try_recv().is_ok() {}
-        chat.resume_after_usage_reset("failed-turn", &account(), &quota());
+        chat.resume_after_usage_reset("failed-turn", &account(), i64::MAX, &quota());
         assert_no_submit_op(&mut ops);
     }
 }
