@@ -18,6 +18,9 @@ impl ChatWidget {
         let was_replaying_turn_completion = self.thread_usage.replaying_turn_completion;
         self.thread_usage.replaying_turn_completion = replay_kind.is_some();
         let from_replay = replay_kind.is_some();
+        if !from_replay {
+            self.observe_usage_reset_turn(&notification);
+        }
         let is_resume_initial_replay =
             matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages));
         let is_retry_error = matches!(

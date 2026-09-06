@@ -536,6 +536,7 @@ impl ChatWidget {
             return;
         }
 
+        self.usage_reset_wait = None;
         if !DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED {
             if self.is_cancellable_work_active() {
                 self.quit_shortcut_expires_at = None;

@@ -113,6 +113,7 @@ impl ChatWidget {
         history_record: UserMessageHistoryRecord,
         shell_escape_policy: ShellEscapePolicy,
     ) -> (bool, Option<AppCommand>) {
+        self.usage_reset_wait = None;
         if self.misalignment_policy_violation {
             return (false, None);
         }

@@ -374,18 +374,29 @@ impl CompletionNotices {
             return;
         };
         for profile in profiles {
-            let Some(completion) = store
+            let Some(state) = store
                 .try_acquire_reset_mutation_lease(&profile.id)
                 .ok()
                 .flatten()
-                .and_then(|lease| lease.state().ok()?.completion)
+                .and_then(|lease| lease.state().ok())
             else {
                 continue;
             };
+            let Some(completion) = state.completion else {
+                continue;
+            };
+            // Reconcile readiness on existing scheduler scans, even after a notice was shown.
+            // Redemption can succeed while quota recovery is still pending.
+            if state.phase.is_none() && completion.completed_at >= self.started_at {
+                tx.send(AppEvent::UsageResetCompleted {
+                    account_id: profile.id.clone(),
+                    completed_at: completion.completed_at,
+                });
+            }
             if self.seen.get(&profile.id) == Some(&completion.id) {
                 continue;
             }
-            self.seen.insert(profile.id, completion.id);
+            self.seen.insert(profile.id.clone(), completion.id);
             if completion.completed_at >= self.started_at {
                 tx.send(AppEvent::InsertHistoryCell(Box::new(notice_cell(
                     &profile.label,
