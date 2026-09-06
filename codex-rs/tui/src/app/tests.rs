@@ -40,6 +40,8 @@ mod stream_animation_tests;
 mod thread_usage;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
+#[path = "tests/codex_plus_plus/usage_reset_resume_tests.rs"]
+mod usage_reset_resume_tests;
 
 use super::*;
 use crate::app_backtrack::BacktrackSelection;

@@ -4,6 +4,7 @@ use crate::chatwidget::tests::handle_turn_completed;
 use crate::chatwidget::tests::handle_turn_interrupted;
 use crate::chatwidget::tests::handle_turn_started;
 use crate::chatwidget::tests::make_chatwidget_manual;
+use crate::chatwidget::tests::next_submit_op;
 use codex_protocol::ThreadId;
 use pretty_assertions::assert_eq;
 
@@ -45,8 +46,16 @@ async fn reset_resumes_live_failed_turn_once_with_available_matching_quota() {
     assert_eq!(chat.usage_reset_turn(failed_at - 1), None);
     assert_eq!(chat.usage_reset_turn(failed_at), Some("failed-turn".into()));
     chat.resume_after_usage_reset("failed-turn", &account(), &quota());
-    let submitted = ops.try_recv().unwrap();
-    assert!(matches!(submitted, AppCommand::UserTurn { .. }));
+    let AppCommand::UserTurn { items, .. } = next_submit_op(&mut ops) else {
+        unreachable!()
+    };
+    assert_eq!(
+        items,
+        vec![codex_app_server_protocol::UserInput::Text {
+            text: "continue".into(),
+            text_elements: vec![],
+        }]
+    );
     chat.resume_after_usage_reset("failed-turn", &account(), &quota());
     assert_no_submit_op(&mut ops);
 }

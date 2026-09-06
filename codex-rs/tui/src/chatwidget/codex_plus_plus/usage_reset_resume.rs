@@ -15,25 +15,42 @@ pub(in crate::chatwidget) struct UsageResetWait {
 
 impl ChatWidget {
     pub(in crate::chatwidget) fn observe_usage_reset_turn(&mut self, event: &ServerNotification) {
-        match event {
+        let failed_turn = match event {
             ServerNotification::Error(error)
                 if !error.will_retry
-                    && error.error.codex_error_info == Some(CodexErrorInfo::UsageLimitExceeded)
-                    && self.turn_lifecycle.agent_turn_running
-                    && self.turn_lifecycle.last_turn_id.as_ref() == Some(&error.turn_id) =>
+                    && error.error.codex_error_info == Some(CodexErrorInfo::UsageLimitExceeded) =>
             {
-                self.usage_reset_wait = Some(UsageResetWait {
-                    turn_id: error.turn_id.clone(),
-                    failed_at: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX),
-                });
+                Some(&error.turn_id)
+            }
+            ServerNotification::TurnCompleted(turn)
+                if turn.turn.status == TurnStatus::Failed
+                    && turn.turn.error.as_ref().is_some_and(|error| {
+                        error.codex_error_info == Some(CodexErrorInfo::UsageLimitExceeded)
+                    }) =>
+            {
+                Some(&turn.turn.id)
             }
             ServerNotification::TurnStarted(_)
             | ServerNotification::AccountUpdated(_)
-            | ServerNotification::ThreadClosed(_) => self.usage_reset_wait = None,
+            | ServerNotification::ThreadClosed(_) => {
+                self.usage_reset_wait = None;
+                None
+            }
             ServerNotification::TurnCompleted(turn) if turn.turn.status != TurnStatus::Failed => {
                 self.usage_reset_wait = None;
+                None
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(turn_id) = failed_turn
+            && self.turn_lifecycle.agent_turn_running
+            && !self.input_queue.user_turn_pending_start
+            && self.turn_lifecycle.last_turn_id.as_ref() == Some(turn_id)
+        {
+            self.usage_reset_wait = Some(UsageResetWait {
+                turn_id: turn_id.clone(),
+                failed_at: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX),
+            });
         }
     }
 

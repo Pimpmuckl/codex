@@ -85,7 +85,10 @@ async fn refreshed_usage_reconciles_persisted_account_cooldown() {
             .await;
         let loaded = load(
             &config,
-            &[(profile.id.clone(), store.account_home(&profile.id))],
+            &[(
+                profile.id.clone(),
+                home.path().join("accounts").join(profile.id.as_str()),
+            )],
             &store,
         )
         .await;
