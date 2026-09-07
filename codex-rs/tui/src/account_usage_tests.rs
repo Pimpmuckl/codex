@@ -53,19 +53,19 @@ async fn refreshed_usage_reconciles_persisted_account_cooldown() {
     };
     for (rate_limit, blocked) in [
         (
-            serde_json::json!({"primary_window": window(/*used_percent*/ 0, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
+            serde_json::json!({"allowed": true, "limit_reached": false, "primary_window": window(/*used_percent*/ 0, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
             false,
         ),
         (
-            serde_json::json!({"primary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
+            serde_json::json!({"allowed": true, "limit_reached": false, "primary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
             false,
         ),
         (
-            serde_json::json!({"primary_window": window(/*used_percent*/ 100, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
+            serde_json::json!({"allowed": false, "limit_reached": true, "primary_window": window(/*used_percent*/ 100, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 0, /*seconds*/ 604_800)}),
             true,
         ),
         (
-            serde_json::json!({"primary_window": window(/*used_percent*/ 0, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 100, /*seconds*/ 604_800)}),
+            serde_json::json!({"allowed": false, "limit_reached": true, "primary_window": window(/*used_percent*/ 0, /*seconds*/ 18_000), "secondary_window": window(/*used_percent*/ 100, /*seconds*/ 604_800)}),
             true,
         ),
         (serde_json::Value::Null, true),
@@ -122,7 +122,9 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
             plan_type: None,
             rate_limit_reached_type: None,
         }],
-        rate_limit_reset_credits: None,
+        rate_limit_reset_credits: Some(codex_backend_client::RateLimitResetCreditsSummary {
+            available_count: 2,
+        }),
         account_id: None,
         user_id: None,
         rate_limit_upsell: None,
@@ -131,6 +133,7 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
     assert_eq!(
         account_usage(&response),
         AccountUsage {
+            available_resets: Some(2),
             primary_window_minutes: Some(300),
             five_hour_reset_at: Some(1_749_950_000),
             five_hour_remaining_percent: Some(32),
@@ -164,6 +167,7 @@ fn maps_weekly_only_primary_window_to_weekly_picker_usage() {
     assert_eq!(
         account_usage_from_snapshot(&snapshot),
         AccountUsage {
+            available_resets: None,
             primary_window_minutes: None,
             five_hour_reset_at: None,
             five_hour_remaining_percent: None,
@@ -179,6 +183,7 @@ fn maps_weekly_only_primary_window_to_weekly_picker_usage() {
 #[test]
 fn exhausted_until_uses_the_later_exhausted_window_reset() {
     let usage = AccountUsage {
+        available_resets: None,
         primary_window_minutes: Some(300),
         five_hour_reset_at: Some(1_749_950_000),
         five_hour_remaining_percent: Some(0),
@@ -219,6 +224,7 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
     assert_eq!(
         account_usage(&response),
         AccountUsage {
+            available_resets: None,
             primary_window_minutes: Some(300),
             five_hour_reset_at: Some(1_749_950_000),
             five_hour_remaining_percent: Some(0),

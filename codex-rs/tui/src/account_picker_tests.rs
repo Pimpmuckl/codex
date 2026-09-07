@@ -12,8 +12,9 @@ fn candidates() -> Vec<AccountPickerCandidate> {
         AccountPickerCandidate {
             id: "acct_a".to_string(),
             email: "first@example.com".to_string(),
+            available_resets: Some(0),
             primary_window_label: "5h".to_string(),
-            five_hour_reset: Some("Jul 10 17:00Z".to_string()),
+            five_hour_reset: Some("Jul 10 17:00".to_string()),
             five_hour_usage_left_percent: Some(0),
             five_hour_exhausted: true,
             weekly_reset: Some("Jul 14".to_string()),
@@ -28,8 +29,9 @@ fn candidates() -> Vec<AccountPickerCandidate> {
         AccountPickerCandidate {
             id: "acct_b".to_string(),
             email: "best@example.com".to_string(),
+            available_resets: Some(2),
             primary_window_label: "5h".to_string(),
-            five_hour_reset: Some("Jul 10 18:00Z".to_string()),
+            five_hour_reset: Some("Jul 10 18:00".to_string()),
             five_hour_usage_left_percent: Some(72),
             five_hour_exhausted: false,
             weekly_reset: None,
@@ -44,6 +46,7 @@ fn candidates() -> Vec<AccountPickerCandidate> {
         AccountPickerCandidate {
             id: "acct_c".to_string(),
             email: "unknown@example.com".to_string(),
+            available_resets: None,
             primary_window_label: "5h".to_string(),
             five_hour_reset: None,
             five_hour_usage_left_percent: None,
@@ -69,7 +72,7 @@ fn account_picker_snapshot() {
     weekly_only.email = "weekly@example.com".to_string();
     weekly_only.five_hour_reset = None;
     weekly_only.five_hour_usage_left_percent = None;
-    weekly_only.weekly_reset = Some("Jul 15 12:00Z".to_string());
+    weekly_only.weekly_reset = Some("Jul 15 12:00".to_string());
     weekly_only.weekly_usage_left_percent = Some(84);
     weekly_only.is_default = false;
     rows.push(weekly_only);
@@ -90,7 +93,7 @@ fn account_picker_snapshot() {
         .screen()
         .cell(/*row*/ 3, /*col*/ 33)
         .expect("first usage description");
-    assert_eq!(usage.contents(), "5");
+    assert_eq!(usage.contents(), "R");
     assert!(!usage.dim());
     insta::assert_snapshot!("account_picker_startup", terminal.backend());
 
@@ -215,7 +218,10 @@ async fn manual_mode_waits_for_selection() {
 fn row_description_uses_one_unknown_for_missing_usage_data() {
     let item = selection_item(&candidates()[2]);
 
-    assert_eq!(item.description.as_deref(), Some("Usage unknown"));
+    assert_eq!(
+        item.description.as_deref(),
+        Some("Resets: -  Usage unknown")
+    );
 }
 
 #[test]
@@ -223,11 +229,11 @@ fn row_description_uses_window_label_and_generic_blocked_reset() {
     let mut candidate = candidates()[2].clone();
     candidate.primary_window_label = "daily".to_string();
     candidate.five_hour_usage_left_percent = Some(42);
-    candidate.blocked_until = Some("Jul 14 08:00Z".to_string());
+    candidate.blocked_until = Some("Jul 14 08:00".to_string());
     let item = selection_item(&candidate);
 
     assert_eq!(
         item.description.as_deref(),
-        Some("daily  42%    Unavailable until Jul 14 08:00Z")
+        Some("Resets: -  daily  42%    Unavailable until Jul 14 08:00")
     );
 }

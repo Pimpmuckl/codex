@@ -147,7 +147,7 @@ pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
 }
 
 // --- Helpers for tests that need direct construction and event draining ---
-pub(super) async fn make_chatwidget_manual(
+pub(in crate::chatwidget) async fn make_chatwidget_manual(
     model_override: Option<&str>,
 ) -> (
     ChatWidget,
@@ -219,7 +219,9 @@ pub(crate) fn set_active_cell(chat: &mut ChatWidget, cell: Box<dyn HistoryCell>)
 
 // ChatWidget may emit other `Op`s (e.g. history/logging updates) on the same channel; this helper
 // filters until we see a submission op.
-pub(super) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
+pub(in crate::chatwidget) fn next_submit_op(
+    op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>,
+) -> Op {
     loop {
         match op_rx.try_recv() {
             Ok(op @ Op::UserTurn { .. }) => return op,
@@ -241,7 +243,9 @@ pub(super) fn next_interrupt_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver
     }
 }
 
-pub(super) fn assert_no_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
+pub(in crate::chatwidget) fn assert_no_submit_op(
+    op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
     while let Ok(op) = op_rx.try_recv() {
         assert!(
             !matches!(op, Op::UserTurn { .. }),
@@ -976,7 +980,7 @@ pub(super) fn complete_user_message_for_inputs(
     );
 }
 
-pub(super) fn app_server_turn(
+pub(in crate::chatwidget) fn app_server_turn(
     turn_id: &str,
     status: AppServerTurnStatus,
     duration_ms: Option<i64>,
@@ -994,7 +998,7 @@ pub(super) fn app_server_turn(
     }
 }
 
-pub(super) fn handle_turn_started(chat: &mut ChatWidget, turn_id: &str) {
+pub(in crate::chatwidget) fn handle_turn_started(chat: &mut ChatWidget, turn_id: &str) {
     chat.handle_server_notification(
         ServerNotification::TurnStarted(TurnStartedNotification {
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
@@ -1009,7 +1013,7 @@ pub(super) fn handle_turn_started(chat: &mut ChatWidget, turn_id: &str) {
     );
 }
 
-pub(super) fn handle_turn_completed(
+pub(in crate::chatwidget) fn handle_turn_completed(
     chat: &mut ChatWidget,
     turn_id: &str,
     duration_ms: Option<i64>,
@@ -1028,7 +1032,7 @@ pub(super) fn handle_turn_completed(
     );
 }
 
-pub(super) fn handle_turn_interrupted(chat: &mut ChatWidget, turn_id: &str) {
+pub(in crate::chatwidget) fn handle_turn_interrupted(chat: &mut ChatWidget, turn_id: &str) {
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {
             thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),

@@ -31,6 +31,7 @@ const STARTUP_AUTO_PICK_AFTER: Duration = Duration::from_secs(15);
 pub(crate) struct AccountPickerCandidate {
     pub(crate) id: String,
     pub(crate) email: String,
+    pub(crate) available_resets: Option<i64>,
     pub(crate) primary_window_label: String,
     pub(crate) five_hour_reset: Option<String>,
     pub(crate) five_hour_usage_left_percent: Option<u8>,
@@ -233,6 +234,9 @@ fn selection_params(
 }
 
 fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
+    let resets = candidate
+        .available_resets
+        .map_or_else(|| "-".to_string(), |count| count.to_string());
     let in_use = if candidate.in_use { "    In use" } else { "" };
     let blocked_until = candidate
         .blocked_until
@@ -257,11 +261,11 @@ fn selection_item(candidate: &AccountPickerCandidate) -> SelectionItem {
     let usage = if usage.is_empty() {
         "Usage unknown".to_string()
     } else {
-        usage.join("    ")
+        usage.join("  ")
     };
     SelectionItem {
         name: candidate.email.clone(),
-        description: Some(format!("{usage}{blocked_until}{in_use}")),
+        description: Some(format!("Resets: {resets}  {usage}{blocked_until}{in_use}")),
         description_style: Some(Style::default()),
         is_default: candidate.is_default,
         dismiss_on_select: true,
