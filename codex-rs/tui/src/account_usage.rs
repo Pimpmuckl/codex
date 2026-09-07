@@ -28,6 +28,7 @@ mod cooldown;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AccountUsage {
+    pub(crate) available_resets: Option<i64>,
     pub(crate) primary_window_minutes: Option<i64>,
     pub(crate) five_hour_reset_at: Option<i64>,
     pub(crate) five_hour_remaining_percent: Option<u8>,
@@ -218,13 +219,18 @@ pub(crate) fn login_required(err: &anyhow::Error) -> bool {
 }
 
 fn account_usage(response: &RateLimitsWithResetCredits) -> AccountUsage {
-    response
+    let mut usage = response
         .rate_limits
         .iter()
         .find(|snapshot| snapshot.limit_id.as_deref() == Some("codex"))
         .or_else(|| response.rate_limits.first())
         .map(account_usage_from_snapshot)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    usage.available_resets = response
+        .rate_limit_reset_credits
+        .as_ref()
+        .map(|credits| credits.available_count);
+    usage
 }
 
 fn account_usage_from_snapshot(snapshot: &RateLimitSnapshot) -> AccountUsage {
@@ -244,6 +250,7 @@ fn account_usage_from_snapshot(snapshot: &RateLimitSnapshot) -> AccountUsage {
         (primary, secondary)
     };
     AccountUsage {
+        available_resets: None,
         primary_window_minutes: five_hour.and_then(|window| window.window_minutes),
         five_hour_reset_at: five_hour.and_then(|window| window.resets_at),
         five_hour_remaining_percent: five_hour.map(|window| remaining_percent(window.used_percent)),

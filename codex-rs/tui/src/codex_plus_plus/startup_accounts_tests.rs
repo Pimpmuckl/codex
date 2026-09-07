@@ -17,6 +17,7 @@ fn picker_candidate(id: &str, is_current: bool) -> account_picker::AccountPicker
     account_picker::AccountPickerCandidate {
         id: id.to_string(),
         email: format!("{id}@example.com"),
+        available_resets: None,
         primary_window_label: "5h".to_string(),
         five_hour_reset: None,
         five_hour_usage_left_percent: Some(100),
@@ -120,4 +121,40 @@ fn automatic_default_ignores_automation_disabled_alternative() {
         automatic_default_index(&candidates, &picker_candidates),
         Some(1)
     );
+}
+
+#[test]
+fn picker_shows_local_reset_times_and_available_credits() {
+    use chrono::TimeZone;
+
+    for (month, expected) in [(1, "Jan 15 00:30"), (7, "Jul 15 00:30")] {
+        let timestamp = chrono::Local
+            .with_ymd_and_hms(
+                /*year*/ 2026, month, /*day*/ 15, /*hour*/ 0, /*min*/ 30,
+                /*sec*/ 0,
+            )
+            .single()
+            .unwrap()
+            .timestamp();
+        let usage = account_usage::AccountUsage {
+            available_resets: Some(2),
+            five_hour_reset_at: Some(timestamp),
+            weekly_reset_at: Some(timestamp),
+            ..Default::default()
+        };
+        let candidate = account_picker_candidate(
+            &account_candidate("acct_local", /*automation_enabled*/ true),
+            Some(&usage),
+            /*in_use*/ false,
+            /*is_current*/ false,
+        );
+        assert_eq!(
+            (
+                candidate.five_hour_reset.as_deref(),
+                candidate.weekly_reset.as_deref(),
+                candidate.available_resets
+            ),
+            (Some(expected), Some(expected), Some(2)),
+        );
+    }
 }

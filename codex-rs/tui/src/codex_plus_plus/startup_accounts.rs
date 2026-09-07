@@ -294,6 +294,7 @@ fn account_picker_candidate(
     account_picker::AccountPickerCandidate {
         id: candidate.id.to_string(),
         email: candidate.display_label.clone(),
+        available_resets: usage.and_then(|usage| usage.available_resets),
         primary_window_label: crate::chatwidget::limit_label_for_window(
             usage.and_then(|usage| usage.primary_window_minutes),
             /*is_secondary*/ false,
@@ -320,8 +321,12 @@ fn account_picker_candidate(
 }
 
 fn format_reset_timestamp(timestamp: i64) -> Option<String> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, /*nsecs*/ 0)
-        .map(|timestamp| timestamp.format("%b %d %H:%MZ").to_string())
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, /*nsecs*/ 0).map(|timestamp| {
+        timestamp
+            .with_timezone(&chrono::Local)
+            .format("%b %d %H:%M")
+            .to_string()
+    })
 }
 
 #[cfg(test)]
