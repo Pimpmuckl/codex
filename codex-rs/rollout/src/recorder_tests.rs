@@ -22,8 +22,12 @@ use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TokenCountEvent;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TokenUsageRecord;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_protocol::realtime::RealtimeItem;
+use codex_protocol::realtime::RealtimeItemContent;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
@@ -1056,6 +1060,81 @@ async fn resumed_paginated_rollout_continues_after_decimal_token_count() -> std:
         .map(|line| line.ordinal)
         .collect::<Vec<_>>();
     assert_eq!(ordinals, vec![Some(0), Some(1), Some(2)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumed_paginated_rollout_continues_after_usage_and_realtime_items() -> std::io::Result<()>
+{
+    for item in [
+        RolloutItem::TokenUsageRecord(TokenUsageRecord {
+            thread_id: ThreadId::new(),
+            turn_id: "turn".to_string(),
+            session_id: SessionId::new(),
+            root_turn_id: "turn".to_string(),
+            response_id: "response".to_string(),
+            usage: TokenUsage::default(),
+            turn_token_usage: TokenUsage::default(),
+            thread_token_usage: TokenUsage::default(),
+        }),
+        RolloutItem::RealtimeItem(RealtimeItem {
+            id: "item".to_string(),
+            realtime_session_id: "realtime-session".to_string(),
+            content: RealtimeItemContent::RealtimeSessionStarted,
+        }),
+    ] {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let rollout_path = home.path().join("rollout.jsonl");
+        write_paginated_rollout(&rollout_path, ThreadId::new(), &[])?;
+        append_rollout_item_to_path(&rollout_path, &item).await?;
+
+        let resumed =
+            RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
+                .await?;
+        resumed
+            .record_canonical_items(&[agent_message_item("after-resume")])
+            .await?;
+        resumed.shutdown().await?;
+
+        let lines = read_rollout_lines(&rollout_path)?;
+        assert_eq!(
+            lines.iter().map(|line| line.ordinal).collect::<Vec<_>>(),
+            vec![Some(0), Some(1), Some(2)]
+        );
+        assert_eq!(
+            serde_json::to_value(&lines[1].item)?,
+            serde_json::to_value(&item)?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumed_paginated_rollout_rejects_record_without_ordinal() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::new(), &[4])?;
+    let tail = serde_json::to_string(&RolloutLine {
+        timestamp: "2026-09-08T00:00:00Z".to_string(),
+        ordinal: None,
+        item: agent_message_item("missing ordinal"),
+    })?;
+    let mut file = fs::OpenOptions::new().append(true).open(&rollout_path)?;
+    writeln!(file, "{tail}")?;
+    drop(file);
+    let before = fs::read(&rollout_path)?;
+
+    let error =
+        match RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone()))
+            .await
+        {
+            Ok(_) => panic!("missing ordinal should fail closed"),
+            Err(error) => error,
+        };
+    assert!(error.to_string().contains("missing an ordinal"));
+    assert_eq!(fs::read(&rollout_path)?, before);
     Ok(())
 }
 
