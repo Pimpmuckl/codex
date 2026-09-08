@@ -17,7 +17,6 @@ use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
-use codex_history::RolloutLine;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuth;
@@ -427,7 +426,7 @@ fn annotate_retained_user_in_rollout(path: &Path, retained_text: &str) -> Result
     let mut rollout = fs::read_to_string(path)?
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     rollout
         .iter_mut()
@@ -455,7 +454,7 @@ fn assert_compacted_user_metadata(path: &Path, retained_text: &str) -> Result<()
     let replacement_history = fs::read_to_string(path)?
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<std::result::Result<Vec<_>, _>>()?
         .into_iter()
         .rev()
@@ -692,7 +691,7 @@ async fn remote_compact_v2_retains_only_client_developer_messages_when_enabled(
     codex.shutdown_and_wait().await?;
     let replacement_history = fs::read_to_string(&rollout_path)?
         .lines()
-        .filter_map(|line| serde_json::from_str::<RolloutLine>(line).ok())
+        .filter_map(|line| codex_rollout::parse_rollout_line(line).ok())
         .filter_map(|line| match line.item {
             RolloutItem::Compacted(compacted) => compacted.replacement_history,
             _ => None,
@@ -761,7 +760,7 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
 
     let record = fs::read_to_string(&rollout_path)?
         .lines()
-        .filter_map(|line| serde_json::from_str::<RolloutLine>(line).ok())
+        .filter_map(|line| codex_rollout::parse_rollout_line(line).ok())
         .filter_map(|line| match line.item {
             RolloutItem::TokenUsageRecord(record) => Some(record),
             _ => None,
@@ -3672,7 +3671,7 @@ async fn remote_compact_persists_replacement_history_in_rollout() -> Result<()> 
         .map(str::trim)
         .filter(|l| !l.is_empty())
     {
-        let Ok(entry) = serde_json::from_str::<RolloutLine>(line) else {
+        let Ok(entry) = codex_rollout::parse_rollout_line(line) else {
             continue;
         };
         if let RolloutItem::Compacted(compacted) = entry.item
