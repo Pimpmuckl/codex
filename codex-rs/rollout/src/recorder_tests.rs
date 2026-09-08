@@ -999,6 +999,14 @@ async fn resumed_paginated_rollout_continues_after_ordinal_gap() -> std::io::Res
 async fn resume_uses_latest_valid_envelope_ordinal() -> std::io::Result<()> {
     for (case, tail) in [
         (
+            "opaque token usage record",
+            r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"token_usage_record","payload":{"future_usage":0.5}}"#,
+        ),
+        (
+            "opaque realtime item",
+            r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"realtime_item","payload":{"type":"future_realtime_item"}}"#,
+        ),
+        (
             "structured token count",
             r#"{"timestamp":"2026-07-09T00:00:01Z","ordinal":1,"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":null,"limit_name":null,"primary":{"used_percent":0.0,"window_minutes":60,"resets_at":1800000000},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":null},"individual_limit":null,"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}"#,
         ),

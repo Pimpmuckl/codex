@@ -85,9 +85,11 @@ pub(crate) fn ordinal_state_for_rollout(
                                     | "inter_agent_communication_metadata"
                                     | "compacted"
                                     | "turn_context"
+                                    | "token_usage_record"
                                     | "world_state"
                                     | "security_risk_score"
                                     | "event_msg"
+                                    | "realtime_item"
                             )
                         )
                 });
