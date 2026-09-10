@@ -34,6 +34,29 @@ fn picker_candidate(id: &str, is_current: bool) -> account_picker::AccountPicker
 }
 
 #[test]
+fn startup_picker_candidates_are_sorted_alphabetically_by_label() {
+    let mut charlie = account_candidate("acct_c", /*automation_enabled*/ true);
+    charlie.display_label = "Charlie@example.com".to_string();
+    let mut alice = account_candidate("acct_a", /*automation_enabled*/ true);
+    alice.display_label = "alice@example.com".to_string();
+    let mut bob = account_candidate("acct_b", /*automation_enabled*/ true);
+    bob.display_label = "Bob@example.com".to_string();
+    let mut bob_again = account_candidate("acct_b2", /*automation_enabled*/ true);
+    bob_again.display_label = "bob@example.com".to_string();
+    let mut candidates = vec![charlie, alice, bob, bob_again];
+
+    sort_candidates_alphabetically(&mut candidates);
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>(),
+        ["acct_a", "acct_b", "acct_b2", "acct_c"]
+    );
+}
+
+#[test]
 fn startup_picker_preflight_is_conservative_for_enabled_or_unreadable_accounts() {
     let codex_home = tempfile::tempdir().expect("create Codex home");
     let index_path = codex_home.path().join("accounts/index.json");
