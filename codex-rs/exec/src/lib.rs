@@ -606,9 +606,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         build_config,
     )
     .await?;
-    let run_cli_overrides = cli_kv_overrides.clone();
-    let run_loader_overrides = loader_overrides.clone();
-    let run_cloud_config_bundle = cloud_config_bundle.clone();
     let resume_approvals_reviewer_override = cli_kv_overrides
         .iter()
         .any(|(key, _)| key == "approvals_reviewer")
