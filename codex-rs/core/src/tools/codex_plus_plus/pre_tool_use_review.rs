@@ -2,7 +2,7 @@ use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::format_guardian_action_pretty;
 use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
-use crate::guardian::review_approval_request;
+use crate::guardian::review_pre_tool_use;
 use crate::shell::ShellType;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -13,6 +13,7 @@ use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct PreToolUseExecutionTarget {
@@ -105,12 +106,11 @@ pub(crate) fn review<'a>(
             );
         }
         let review_id = new_guardian_review_id();
-        let decision = review_approval_request(
-            &invocation.session,
-            &invocation.turn,
+        let decision = review_pre_tool_use(
+            Arc::clone(&invocation.session),
+            (&invocation.step_context).into(),
             review_id,
             request,
-            crate::tools::sandboxing::ApprovalRequestReasons::default(),
         )
         .await;
         match decision {

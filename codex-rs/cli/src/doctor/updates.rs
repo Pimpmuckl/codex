@@ -1,10 +1,7 @@
 //! Diagnoses whether Codex update paths target the running installation.
 //!
-//! Update diagnostics combine cached release status and install-channel hints.
-//! For npm-managed launches, this module also
-//! verifies that npm install -g would update the package root that launched the
-//! current process, which catches PATH and prefix mismatches before the user runs
-//! an update command.
+//! Update diagnostics combine cached fork release status and install-channel hints.
+//! It never executes package managers or other helpers selected by PATH.
 
 use std::path::Path;
 #[cfg(target_os = "macos")]
@@ -26,6 +23,7 @@ use codex_install_context::codex_plus_plus::is_newer;
 use codex_tui::UpdateAction;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use http::Method;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use serde::Deserialize;
 #[cfg(target_os = "macos")]
 use url::Url;
@@ -34,14 +32,12 @@ use super::CheckStatus;
 use super::DoctorCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::DoctorIssue;
-use super::NpmRootCheck;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::desktop::platform::InstalledApp;
 use super::doctor_install_context;
 use super::doctor_managed_by_npm;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::network;
-use super::npm_global_root_check;
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
@@ -57,11 +53,9 @@ const DESKTOP_UPDATE_URL: &str =
 ///
 /// Missing or stale release status degrades the row to a warning instead of
 /// masking more direct install or configuration failures.
-pub(super) fn updates_check(config: &Config) -> DoctorCheck {
+pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
     let current_exe = std::env::current_exe().ok();
     let install_context = doctor_install_context(current_exe.as_deref());
-    let update_plan =
-        UpdatePlan::for_install_context(&install_context, UpdateChannel::CodexPlusPlus);
     let mut details = vec![
         format!(
             "check for update on startup: {}",
@@ -71,57 +65,17 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     ];
     let mut status = CheckStatus::Ok;
     let mut summary = "update configuration is locally consistent".to_string();
-    let mut remediation = None;
     if push_cached_version_details(&mut details, config.codex_home.as_path()) {
         status = CheckStatus::Warning;
         summary = "fork release status cache is stale or unavailable".to_string();
     }
 
-    if doctor_managed_by_npm(current_exe.as_deref())
-        && let Some(package) = update_plan.package_manager_package()
-    {
-        match npm_global_root_check(package) {
-            NpmRootCheck::Match { package_root } => {
-                details.push(format!("npm update target: {}", package_root.display()));
-            }
-            NpmRootCheck::Mismatch {
-                running_package_root,
-                npm_package_root,
-            } => {
-                status = CheckStatus::Fail;
-                summary = "update would target a different npm install".to_string();
-                details.push(format!(
-                    "running package root: {}",
-                    running_package_root.display()
-                ));
-                details.push(format!("npm package root: {}", npm_package_root.display()));
-                remediation = Some(format!(
-                    "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
-                    running_package_root.display(),
-                    npm_package_root.display()
-                ));
-            }
-            NpmRootCheck::MissingPackageRoot => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm update target could not be proven".to_string();
-                remediation = Some(
-                    "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
-                        .to_string(),
-                );
-            }
-            NpmRootCheck::NpmUnavailable(error) => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm update target could not be inspected".to_string();
-                details.push(format!("npm root -g failed: {error}"));
-            }
-        }
+    if doctor_managed_by_npm(current_exe.as_deref()) {
+        details
+            .push("npm update target: not inspected (PATH helpers are not executed)".to_string());
     }
 
-    let mut check = DoctorCheck::new("updates.status", "updates", status, summary).details(details);
-    if let Some(remediation) = remediation {
-        check = check.remediation(remediation);
-    }
-    check
+    DoctorCheck::new("updates.status", "updates", status, summary).details(details)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]

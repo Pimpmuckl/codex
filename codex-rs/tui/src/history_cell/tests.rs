@@ -695,6 +695,7 @@ async fn session_info_uses_availability_nux_tooltip_override() {
     let config = test_config().await;
     let cell = new_session_info(
         &config,
+        &crate::local_settings::LocalSettings::from(&config),
         "gpt-5",
         &session_configured_event("gpt-5"),
         /*is_first_event*/ false,
@@ -717,6 +718,7 @@ async fn session_info_availability_nux_tooltip_snapshot() {
     config.cwd = test_path_buf("/tmp/project").abs();
     let cell = new_session_info(
         &config,
+        &crate::local_settings::LocalSettings::from(&config),
         "gpt-5",
         &session_configured_event("gpt-5"),
         /*is_first_event*/ false,
@@ -734,6 +736,7 @@ async fn session_info_first_event_suppresses_tooltips_and_nux() {
     let config = test_config().await;
     let cell = new_session_info(
         &config,
+        &crate::local_settings::LocalSettings::from(&config),
         "gpt-5",
         &session_configured_event("gpt-5"),
         /*is_first_event*/ true,
@@ -753,6 +756,7 @@ async fn session_info_hides_tooltips_when_disabled() {
     config.show_tooltips = false;
     let cell = new_session_info(
         &config,
+        &crate::local_settings::LocalSettings::from(&config),
         "gpt-5",
         &session_configured_event("gpt-5"),
         /*is_first_event*/ false,
@@ -783,14 +787,21 @@ fn ps_output_multiline_snapshot() {
 
 #[test]
 fn cyber_policy_error_event_snapshot() {
-    let cell = new_cyber_policy_error_event(/*plan_type*/ None);
+    let cell = new_cyber_policy_error_event(crate::daybreak::Notice::Apply);
     let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
     insta::assert_snapshot!(rendered);
 }
 
 #[test]
-fn cyber_policy_error_event_individual_snapshot() {
-    let cell = new_cyber_policy_error_event(Some(PlanType::Pro));
+fn cyber_policy_error_event_astra_snapshot() {
+    let cell = new_cyber_policy_error_event(crate::daybreak::Notice::Astra);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn cyber_policy_error_event_limited_snapshot() {
+    let cell = new_cyber_policy_error_event(crate::daybreak::Notice::Limited);
     let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
     insta::assert_snapshot!(rendered);
 }
@@ -804,7 +815,7 @@ fn safety_access_block_event_snapshot() {
 
 #[test]
 fn cyber_policy_error_event_narrow_snapshot() {
-    let cell = new_cyber_policy_error_event(/*plan_type*/ None);
+    let cell = new_cyber_policy_error_event(crate::daybreak::Notice::Apply);
     let rendered = render_lines(&cell.display_lines(/*width*/ 36)).join("\n");
     insta::assert_snapshot!(rendered);
 }
@@ -1001,6 +1012,7 @@ async fn mcp_tools_output_lists_tools_for_hyphenated_server_names() {
 #[test]
 fn mcp_tools_output_from_statuses_renders_status_only_servers() {
     let statuses = vec![McpServerStatus {
+        tools_error: None,
         name: "plugin_docs".to_string(),
         runtime_status: None,
         plugin_id: None,
@@ -1033,6 +1045,7 @@ fn mcp_tools_output_from_statuses_renders_status_only_servers() {
 #[test]
 fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
     let statuses = vec![McpServerStatus {
+        tools_error: None,
         name: "plugin_docs".to_string(),
         runtime_status: None,
         plugin_id: None,

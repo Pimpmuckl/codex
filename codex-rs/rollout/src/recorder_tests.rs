@@ -1041,6 +1041,7 @@ async fn resumed_paginated_rollout_continues_after_decimal_token_count() -> std:
                     spend_control_reached: None,
                     plan_type: None,
                     rate_limit_reached_type: None,
+                    normal_model_slug: None,
                 }),
             },
         ))])
@@ -1672,11 +1673,13 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
     let filesystem_path = PathBuf::from("/tmp/filesystem-rollout.jsonl");
     let state_path = PathBuf::from("/tmp/state-rollout.jsonl");
     let mut item = ThreadItem {
+        originator: None,
         path: filesystem_path.clone(),
         thread_id: Some(filesystem_thread_id),
         first_user_message: Some("filesystem message".to_string()),
         preview: Some("filesystem preview".to_string()),
         project_id: None,
+        daybreak_enabled: None,
         section: None,
         cwd: None,
         git_branch: Some("filesystem-branch".to_string()),
@@ -1699,11 +1702,13 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         updated_at: None,
     };
     let state_item = ThreadItem {
+        originator: None,
         path: state_path,
         thread_id: Some(state_thread_id),
         first_user_message: Some("state message".to_string()),
         preview: Some("state preview".to_string()),
         project_id: None,
+        daybreak_enabled: Some(true),
         section: Some(codex_state::ThreadSection {
             id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
             name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
@@ -1734,6 +1739,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
 
     assert_eq!(item.path, filesystem_path);
     assert_eq!(item.thread_id, Some(filesystem_thread_id));
+    assert_eq!(item.daybreak_enabled, Some(true));
     assert_eq!(
         item.section,
         Some(codex_state::ThreadSection {

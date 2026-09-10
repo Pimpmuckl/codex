@@ -64,6 +64,7 @@ const EXEC_COMMAND_REJECTION_MAX_BYTES: usize = 900;
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
+    pub(crate) allow_tty: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
     pub(crate) include_shell_parameter: bool,
@@ -87,6 +88,7 @@ impl Default for ExecCommandHandler {
             lifetime: ExecCommandLifetime::Interactive,
             options: ExecCommandHandlerOptions {
                 allow_login_shell: false,
+                allow_tty: true,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
                 include_shell_parameter: true,
@@ -127,10 +129,19 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             self.options.include_shell_parameter,
             self.options.include_windows_shell_guidance,
         );
-        match self.lifetime {
+        let mut spec = match self.lifetime {
             ExecCommandLifetime::Interactive => spec,
             ExecCommandLifetime::OneShot => one_shot_exec_command_spec(spec),
+        };
+        if !self.options.allow_tty
+            && let ToolSpec::Function(spec) = &mut spec
+        {
+            spec.parameters
+                .properties
+                .get_or_insert_default()
+                .remove("tty");
         }
+        spec
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -240,6 +251,11 @@ impl ExecCommandHandler {
         };
         let use_login_shell = *args.login.get_or_insert_default();
         let requested_shell = args.shell.clone();
+        if args.tty && !session.features().enabled(Feature::UnifiedExecTty) {
+            return Err(FunctionCallError::RespondToModel(
+                "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
+            ));
+        }
         let sandbox_permissions =
             resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
         let hook_command = args.cmd.clone();

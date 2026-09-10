@@ -2,6 +2,7 @@ use super::App;
 use super::AppServerSession;
 use super::background_requests::fetch_account_rate_limits;
 use crate::app_event::AppEvent;
+use crate::app_event::RateLimitRefreshOrigin;
 use codex_login::AccountId;
 
 impl App {
@@ -23,7 +24,7 @@ impl App {
         tokio::spawn(async move {
             if let Ok(Ok(response)) = tokio::time::timeout(
                 std::time::Duration::from_secs(/*secs*/ 15),
-                fetch_account_rate_limits(handle),
+                fetch_account_rate_limits(handle, RateLimitRefreshOrigin::Recovery),
             )
             .await
             {
