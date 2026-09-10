@@ -145,6 +145,7 @@ pub(crate) async fn run_startup_account_picker(
                 && root_auth_is_marker
                 && current_account_id.as_ref() == Some(&candidate.id))
     });
+    sort_candidates_alphabetically(&mut candidates);
     if candidates.is_empty() {
         return continue_without_account(auto_account);
     }
@@ -211,6 +212,15 @@ pub(crate) async fn run_startup_account_picker(
         selected_account_id: selected_account.map(|candidate| candidate.id.clone()),
         reload_cloud_config,
     })
+}
+
+fn sort_candidates_alphabetically(candidates: &mut [AccountCandidate]) {
+    candidates.sort_by(|a, b| {
+        a.display_label
+            .to_lowercase()
+            .cmp(&b.display_label.to_lowercase())
+            .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+    });
 }
 
 fn automatic_default_index(
