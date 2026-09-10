@@ -56,6 +56,7 @@ fn usage(used_percent: f64, resets_at: Option<i64>, reached: bool) -> RateLimits
         rate_limits: vec![RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
+            normal_model_slug: None,
             primary: Some(RateLimitWindow {
                 used_percent: 100.0,
                 window_minutes: Some(300),
@@ -73,6 +74,7 @@ fn usage(used_percent: f64, resets_at: Option<i64>, reached: bool) -> RateLimits
             rate_limit_reached_type: reached.then_some(RateLimitReachedType::RateLimitReached),
         }],
         rate_limit_reset_credits: None,
+        ordinary_usage_allowed: None,
         account_id: None,
         user_id: None,
         rate_limit_upsell: None,

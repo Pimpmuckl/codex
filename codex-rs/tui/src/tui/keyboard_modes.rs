@@ -68,6 +68,9 @@ fn running_in_wsl() -> bool {
 }
 
 pub(super) fn running_in_vscode_terminal() -> bool {
+    if term_program_is_vscode(std::env::var("TERM_PROGRAM").ok().as_deref()) {
+        return true;
+    }
     vscode_terminal_detected(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         windows_term_program().as_deref(),
@@ -103,7 +106,11 @@ fn windows_term_program() -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn read_windows_term_program() -> Option<String> {
-    let output = std::process::Command::new("cmd.exe")
+    if !running_in_wsl() {
+        return None;
+    }
+    let executable = codex_utils_path::system_executable("cmd.exe")?;
+    let output = std::process::Command::new(executable)
         .args(["/d", "/s", "/c", "set TERM_PROGRAM"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -141,6 +148,7 @@ pub(super) fn enable_keyboard_enhancement() {
         DisableModifyOtherKeys,
         PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
             terminal_info().name,
+            running_in_tmux_session,
             tmux_extended_keys_format.as_deref()
         ))
     );
@@ -155,6 +163,7 @@ pub(super) fn enable_keyboard_enhancement() {
 
 fn keyboard_enhancement_flags(
     terminal_name: TerminalName,
+    running_in_tmux_session: bool,
     tmux_extended_keys_format: Option<&str>,
 ) -> KeyboardEnhancementFlags {
     let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -162,9 +171,10 @@ fn keyboard_enhancement_flags(
 
     // iTerm and Ghostty can leak shortcut release events that the terminal consumes.
     // tmux's xterm key format also loses Shift-Enter when event types are
-    // reported. Preserve repeat classification on transports that support it.
+    // reported. An unavailable/unrecognized tmux probe must take the same safe
+    // fallback. Preserve repeat classification on confirmed csi-u transports.
     if matches!(terminal_name, TerminalName::Ghostty | TerminalName::Iterm2)
-        || matches!(tmux_extended_keys_format, Some("xterm"))
+        || (running_in_tmux_session && !matches!(tmux_extended_keys_format, Some("csi-u")))
     {
         flags
     } else {
@@ -194,11 +204,14 @@ fn tmux_should_enable_modify_other_keys_for(
 }
 
 fn read_tmux_extended_keys_format() -> Option<String> {
+    let executable = codex_utils_path::system_executable("tmux")?;
+    let path = codex_utils_path::system_path().ok()?;
     for args in [
         ["display-message", "-p", "#{extended-keys-format}"],
         ["show-options", "-gqv", "extended-keys-format"],
     ] {
-        let output = std::process::Command::new("tmux")
+        let output = std::process::Command::new(&executable)
+            .env("PATH", &path)
             .args(args)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -331,6 +344,7 @@ mod tests {
         assert_eq!(
             ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
                 TerminalName::Iterm2,
+                /*running_in_tmux_session*/ false,
                 /*tmux_extended_keys_format*/ None
             ))),
             "\x1b[>5u"
@@ -342,6 +356,7 @@ mod tests {
         assert_eq!(
             ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
                 TerminalName::Ghostty,
+                /*running_in_tmux_session*/ false,
                 /*tmux_extended_keys_format*/ None
             ))),
             "\x1b[>5u"
@@ -353,6 +368,7 @@ mod tests {
         assert_eq!(
             ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
                 TerminalName::Kitty,
+                /*running_in_tmux_session*/ false,
                 /*tmux_extended_keys_format*/ None
             ))),
             "\x1b[>7u"
@@ -364,6 +380,7 @@ mod tests {
         assert_eq!(
             ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
                 TerminalName::Kitty,
+                /*running_in_tmux_session*/ true,
                 Some("csi-u")
             ))),
             "\x1b[>7u"
@@ -375,6 +392,7 @@ mod tests {
         assert_eq!(
             ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
                 TerminalName::Kitty,
+                /*running_in_tmux_session*/ true,
                 Some("xterm")
             ))),
             "\x1b[>5u"
@@ -386,9 +404,22 @@ mod tests {
         assert_eq!(
             ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
                 TerminalName::Unknown,
+                /*running_in_tmux_session*/ false,
                 /*tmux_extended_keys_format*/ None
             ))),
             "\x1b[>7u"
+        );
+    }
+
+    #[test]
+    fn keyboard_enhancement_uses_conservative_flags_when_tmux_format_is_unknown() {
+        assert_eq!(
+            ansi_for(PushKeyboardEnhancementFlags(keyboard_enhancement_flags(
+                TerminalName::Unknown,
+                /*running_in_tmux_session*/ true,
+                /*tmux_extended_keys_format*/ None,
+            ))),
+            "\x1b[>5u"
         );
     }
 

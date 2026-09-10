@@ -106,6 +106,7 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
         rate_limits: vec![RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
+            normal_model_slug: None,
             primary: Some(RateLimitWindow {
                 used_percent: 67.6,
                 window_minutes: Some(300),
@@ -128,6 +129,7 @@ fn maps_five_hour_and_weekly_windows_to_picker_usage() {
         account_id: None,
         user_id: None,
         rate_limit_upsell: None,
+        ordinary_usage_allowed: None,
     };
 
     assert_eq!(
@@ -151,6 +153,7 @@ fn maps_weekly_only_primary_window_to_weekly_picker_usage() {
     let snapshot = RateLimitSnapshot {
         limit_id: Some("codex".to_string()),
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 0.0,
             window_minutes: Some(10_080),
@@ -203,6 +206,7 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
         rate_limits: vec![RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
+            normal_model_slug: None,
             primary: Some(RateLimitWindow {
                 used_percent: 99.6,
                 window_minutes: Some(300),
@@ -219,6 +223,7 @@ fn rounded_zero_remaining_does_not_mark_window_exhausted() {
         account_id: None,
         user_id: None,
         rate_limit_upsell: None,
+        ordinary_usage_allowed: None,
     };
 
     assert_eq!(
