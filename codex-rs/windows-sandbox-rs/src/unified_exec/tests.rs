@@ -242,6 +242,10 @@ fn current_user_runner_isolates_console_and_closes_descendants() {
                 as usize;
         let parent_pid = std::env::var("CODEX_PARENT_PID").unwrap().parse().unwrap();
         assert!(count <= console_pids.len() && !console_pids[..count].contains(&parent_pid));
+        assert_eq!(
+            unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() },
+            0
+        );
         {
             let mut stdout = std::io::stdout().lock();
             stdout

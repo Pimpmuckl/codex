@@ -36,7 +36,7 @@ pub async fn spawn_current_user_runner_session(
         cwd: cwd.clone(),
         env,
         execution_mode: ipc::RunnerExecutionMode::CurrentUser,
-        child_console_mode: ipc::ChildConsoleMode::Inherit,
+        child_console_mode: ipc::ChildConsoleMode::NoWindow,
         permission_profile: codex_protocol::models::PermissionProfile::Disabled,
         workspace_roots: Vec::new(),
         codex_home: codex_home.clone(),
